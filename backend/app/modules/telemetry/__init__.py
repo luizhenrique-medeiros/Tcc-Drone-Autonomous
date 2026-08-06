@@ -1,0 +1,1 @@
+"""Normalized vehicle telemetry module."""

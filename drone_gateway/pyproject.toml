@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "drone-delivery-gateway"
+version = "0.1.0"
+description = "Gateway MAVLink seguro para o protótipo acadêmico DEVcore"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "httpx>=0.28,<0.29",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.9,<3",
+  "pymavlink>=2.4.49,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.0,<2",
+  "ruff>=0.12,<0.13",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"

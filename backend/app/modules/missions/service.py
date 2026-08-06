@@ -1,0 +1,558 @@
+from __future__ import annotations
+
+import hashlib
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings
+from app.core.enums import (
+    AuthorizationStatus,
+    EventSeverity,
+    GatewayCommandStatus,
+    GatewayCommandType,
+    MissionStatus,
+    OrderStatus,
+)
+from app.core.exceptions import ConflictError, InvalidStateError, NotFoundError
+from app.database.types import point_ewkt
+from app.modules.approvals.models import FlightAuthorization
+from app.modules.delivery_points.models import DeliveryPoint
+from app.modules.missions.models import GatewayCommand, Mission, MissionWaypoint
+from app.modules.missions.schemas import FlightAuthorizationCreate, GatewayCommandAck
+from app.modules.orders.models import Order
+from app.modules.system_events.service import record_event
+from app.modules.users.models import User
+from app.modules.vehicles.models import VehicleHealthSnapshot
+from app.modules.vehicles.service import health_failures, latest_health
+
+
+def _waypoint(
+    sequence: int,
+    command: int,
+    latitude: Decimal,
+    longitude: Decimal,
+    altitude: Decimal,
+    label: str,
+    *,
+    current: int = 0,
+    param1: float = 0,
+) -> MissionWaypoint:
+    return MissionWaypoint(
+        sequence=sequence,
+        command=command,
+        frame=3,
+        current=current,
+        autocontinue=1,
+        param1=param1,
+        param2=0,
+        param3=0,
+        param4=0,
+        latitude=latitude,
+        longitude=longitude,
+        altitude_m=altitude,
+        label=label,
+    )
+
+
+def _mission_file(waypoints: list[MissionWaypoint]) -> str:
+    lines = ["QGC WPL 110"]
+    for waypoint in waypoints:
+        lines.append(
+            "\t".join(
+                (
+                    str(waypoint.sequence),
+                    str(waypoint.current),
+                    str(waypoint.frame),
+                    str(waypoint.command),
+                    f"{waypoint.param1:.6f}",
+                    f"{waypoint.param2:.6f}",
+                    f"{waypoint.param3:.6f}",
+                    f"{waypoint.param4:.6f}",
+                    f"{waypoint.latitude:.7f}",
+                    f"{waypoint.longitude:.7f}",
+                    f"{waypoint.altitude_m:.2f}",
+                    str(waypoint.autocontinue),
+                )
+            )
+        )
+    return "\n".join(lines) + "\n"
+
+
+def prepare_mission(session: Session, order: Order, admin: User, settings: Settings) -> Mission:
+    if order.status != OrderStatus.APPROVED:
+        raise InvalidStateError("A missão só pode ser preparada para um pedido aprovado")
+    existing = session.scalar(select(Mission).where(Mission.order_id == order.id))
+    if existing:
+        raise ConflictError("O pedido já possui uma missão")
+    point = session.get(DeliveryPoint, order.delivery_point_id)
+    if not point:
+        raise NotFoundError("Ponto de entrega do pedido não encontrado")
+    order.status = OrderStatus.MISSION_PREPARING
+    origin_lat = Decimal(str(settings.maps_default_latitude))
+    origin_lon = Decimal(str(settings.maps_default_longitude))
+    destination_lat = point.final_latitude
+    destination_lon = point.final_longitude
+    altitude = Decimal(str(settings.default_takeoff_altitude_m))
+    waypoints = [
+        _waypoint(0, 16, origin_lat, origin_lon, Decimal("0"), "Origem", current=1),
+        _waypoint(1, 22, origin_lat, origin_lon, altitude, "Decolagem"),
+        _waypoint(2, 16, destination_lat, destination_lon, altitude, "Destino"),
+        _waypoint(
+            3,
+            19,
+            destination_lat,
+            destination_lon,
+            altitude,
+            "Espera para entrega",
+            param1=5,
+        ),
+        _waypoint(4, 211, destination_lat, destination_lon, altitude, "Entrega"),
+        _waypoint(5, 16, origin_lat, origin_lon, altitude, "Retorno"),
+        _waypoint(6, 21, origin_lat, origin_lon, Decimal("0"), "Pouso"),
+    ]
+    mission_file = _mission_file(waypoints)
+    mission = Mission(
+        order_id=order.id,
+        status=MissionStatus.GENERATED,
+        origin_latitude=origin_lat,
+        origin_longitude=origin_lon,
+        origin=point_ewkt(float(origin_lat), float(origin_lon)),
+        destination_latitude=destination_lat,
+        destination_longitude=destination_lon,
+        destination=point_ewkt(float(destination_lat), float(destination_lon)),
+        takeoff_altitude_m=altitude,
+        estimated_distance_m=point.distance_from_base_m,
+        mission_file=mission_file,
+        mission_sha256=hashlib.sha256(mission_file.encode()).hexdigest(),
+        version=1,
+        waypoints=waypoints,
+    )
+    session.add(mission)
+    session.flush()
+    order.status = OrderStatus.MISSION_READY
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=order.id,
+        mission_id=mission.id,
+        event_type="MISSION_GENERATED",
+        message="Missão e arquivo Mission Planner gerados",
+        metadata={"version": 1, "sha256": mission.mission_sha256},
+    )
+    session.commit()
+    session.refresh(mission)
+    return mission
+
+
+def export_mission(session: Session, mission: Mission, admin: User) -> str:
+    if mission.status in {MissionStatus.GENERATED, MissionStatus.EXPORTED_TO_MISSION_PLANNER}:
+        mission.status = MissionStatus.EXPORTED_TO_MISSION_PLANNER
+        mission.exported_at = datetime.now(UTC)
+        record_event(
+            session,
+            actor_type="ADMIN",
+            actor_user_id=admin.id,
+            order_id=mission.order_id,
+            mission_id=mission.id,
+            event_type="MISSION_EXPORTED",
+            message="Arquivo compatível com Mission Planner exportado",
+            metadata={"version": mission.version, "sha256": mission.mission_sha256},
+        )
+        session.commit()
+    elif mission.status not in {
+        MissionStatus.UNDER_REVIEW,
+        MissionStatus.READY_FOR_AUTHORIZATION,
+    }:
+        raise InvalidStateError("Esta missão não pode ser exportada no estado atual")
+    return mission.mission_file
+
+
+def mark_under_review(session: Session, mission: Mission, admin: User) -> Mission:
+    if mission.status not in {
+        MissionStatus.GENERATED,
+        MissionStatus.EXPORTED_TO_MISSION_PLANNER,
+    }:
+        raise InvalidStateError("A missão não está disponível para revisão")
+    mission.status = MissionStatus.UNDER_REVIEW
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        event_type="MISSION_REVIEW_STARTED",
+        message="Revisão da rota no Mission Planner iniciada",
+    )
+    session.commit()
+    session.refresh(mission)
+    return mission
+
+
+def mark_reviewed(session: Session, mission: Mission, admin: User, notes: str | None) -> Mission:
+    if mission.status != MissionStatus.UNDER_REVIEW:
+        raise InvalidStateError("A missão precisa estar em revisão")
+    mission.status = MissionStatus.READY_FOR_AUTHORIZATION
+    mission.reviewed_by_id = admin.id
+    mission.reviewed_at = datetime.now(UTC)
+    mission.review_notes = notes
+    order = session.get(Order, mission.order_id)
+    if not order:
+        raise NotFoundError("Pedido da missão não encontrado")
+    order.status = OrderStatus.WAITING_FLIGHT_AUTHORIZATION
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        event_type="MISSION_REVIEWED",
+        message="Missão revisada; ainda requer autorização de voo separada",
+    )
+    session.commit()
+    session.refresh(mission)
+    return mission
+
+
+def authorize_flight(
+    session: Session,
+    mission: Mission,
+    admin: User,
+    payload: FlightAuthorizationCreate,
+    settings: Settings,
+) -> FlightAuthorization:
+    if mission.status != MissionStatus.READY_FOR_AUTHORIZATION:
+        raise InvalidStateError("A missão ainda não está pronta para autorização")
+    if not payload.controlled_area_confirmed:
+        raise ConflictError("A área controlada deve ser confirmada explicitamente")
+    checklist = payload.checklist.model_dump()
+    failed_items = [name for name, passed in checklist.items() if not passed]
+    if failed_items:
+        raise ConflictError(
+            "Todos os itens do checklist devem estar aprovados",
+            fields={name: "required" for name in failed_items},
+        )
+    snapshot = latest_health(session, payload.vehicle_id)
+    failures = health_failures(snapshot, settings)
+    if failures:
+        raise ConflictError(
+            "O estado real do veículo não permite autorizar o voo",
+            fields={"preflight": ",".join(failures)},
+        )
+    active = session.scalar(
+        select(FlightAuthorization).where(
+            FlightAuthorization.mission_id == mission.id,
+            FlightAuthorization.status == AuthorizationStatus.ACTIVE,
+        )
+    )
+    if active:
+        raise ConflictError("A missão já possui autorização ativa")
+    now = datetime.now(UTC)
+    authorization = FlightAuthorization(
+        mission_id=mission.id,
+        administrator_id=admin.id,
+        vehicle_health_snapshot_id=snapshot.id,
+        mission_version=mission.version,
+        mission_sha256=mission.mission_sha256,
+        checklist=checklist,
+        controlled_area_confirmed=True,
+        operator_name=payload.operator_name,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=settings.flight_authorization_ttl_seconds),
+    )
+    mission.vehicle_id = payload.vehicle_id
+    mission.status = MissionStatus.AUTHORIZED
+    session.add(authorization)
+    session.flush()
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=payload.vehicle_id,
+        event_type="FLIGHT_AUTHORIZED",
+        message="Autorização de voo de uso único emitida",
+        metadata={
+            "authorization_id": str(authorization.id),
+            "expires_at": authorization.expires_at.isoformat(),
+            "operator_name": payload.operator_name,
+        },
+    )
+    session.commit()
+    session.refresh(authorization)
+    return authorization
+
+
+def active_authorization(session: Session, mission: Mission) -> FlightAuthorization:
+    authorization = session.scalar(
+        select(FlightAuthorization)
+        .where(
+            FlightAuthorization.mission_id == mission.id,
+            FlightAuthorization.status == AuthorizationStatus.ACTIVE,
+        )
+        .order_by(FlightAuthorization.issued_at.desc())
+        .limit(1)
+    )
+    if not authorization:
+        raise ConflictError("A missão não possui autorização ativa")
+    expires_at = authorization.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= datetime.now(UTC):
+        authorization.status = AuthorizationStatus.EXPIRED
+        session.commit()
+        raise ConflictError("A autorização de voo expirou")
+    if authorization.mission_version != mission.version:
+        authorization.status = AuthorizationStatus.REVOKED
+        session.commit()
+        raise ConflictError("A missão mudou após a autorização")
+    if authorization.mission_sha256 != mission.mission_sha256:
+        authorization.status = AuthorizationStatus.REVOKED
+        session.commit()
+        raise ConflictError("O arquivo da missão mudou após a autorização")
+    return authorization
+
+
+def claim_mission(
+    session: Session, mission: Mission, gateway_id: str, settings: Settings
+) -> FlightAuthorization:
+    if mission.status == MissionStatus.UPLOADING and mission.claimed_by_gateway == gateway_id:
+        authorization = session.scalar(
+            select(FlightAuthorization)
+            .where(FlightAuthorization.mission_id == mission.id)
+            .order_by(FlightAuthorization.issued_at.desc())
+            .limit(1)
+        )
+        if not authorization:
+            raise ConflictError("Claim existente sem autorização")
+        return authorization
+    if mission.status != MissionStatus.AUTHORIZED:
+        raise InvalidStateError("A missão não está autorizada para claim")
+    authorization = active_authorization(session, mission)
+    snapshot_at_authorization = session.get(
+        VehicleHealthSnapshot, authorization.vehicle_health_snapshot_id
+    )
+    current_snapshot = latest_health(session, mission.vehicle_id)
+    if not snapshot_at_authorization or (
+        current_snapshot.critical_state_hash != snapshot_at_authorization.critical_state_hash
+    ):
+        authorization.status = AuthorizationStatus.REVOKED
+        mission.status = MissionStatus.READY_FOR_AUTHORIZATION
+        session.commit()
+        raise ConflictError("O estado crítico do veículo mudou; autorize novamente")
+    failures = health_failures(current_snapshot, settings)
+    if failures:
+        authorization.status = AuthorizationStatus.REVOKED
+        mission.status = MissionStatus.READY_FOR_AUTHORIZATION
+        session.commit()
+        raise ConflictError(
+            "O veículo falhou nas verificações antes do claim",
+            fields={"preflight": ",".join(failures)},
+        )
+    now = datetime.now(UTC)
+    authorization.status = AuthorizationStatus.CONSUMED
+    authorization.used_at = now
+    mission.claimed_by_gateway = gateway_id
+    mission.claimed_at = now
+    mission.status = MissionStatus.UPLOADING
+    order = session.get(Order, mission.order_id)
+    if order:
+        order.status = OrderStatus.MISSION_UPLOADING
+    record_event(
+        session,
+        actor_type="GATEWAY",
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=mission.vehicle_id,
+        event_type="MISSION_CLAIMED",
+        message="Gateway consumiu a autorização de uso único",
+        metadata={"gateway_id": gateway_id, "authorization_id": str(authorization.id)},
+    )
+    session.commit()
+    session.refresh(mission)
+    return authorization
+
+
+GATEWAY_TRANSITIONS: dict[MissionStatus, set[MissionStatus]] = {
+    MissionStatus.UPLOADING: {MissionStatus.UPLOADED, MissionStatus.FAILED},
+    MissionStatus.UPLOADED: {MissionStatus.EXECUTING, MissionStatus.FAILED},
+    MissionStatus.EXECUTING: {
+        MissionStatus.DESTINATION_REACHED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.DESTINATION_REACHED: {
+        MissionStatus.DELIVERY_CONFIRMED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.DELIVERY_CONFIRMED: {
+        MissionStatus.RETURNING,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.RETURNING: {
+        MissionStatus.COMPLETED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+}
+
+
+ORDER_STATUS_FROM_MISSION: dict[MissionStatus, OrderStatus] = {
+    MissionStatus.UPLOADING: OrderStatus.MISSION_UPLOADING,
+    MissionStatus.UPLOADED: OrderStatus.MISSION_UPLOADING,
+    MissionStatus.EXECUTING: OrderStatus.IN_TRANSIT,
+    MissionStatus.DESTINATION_REACHED: OrderStatus.AT_DESTINATION,
+    MissionStatus.DELIVERY_CONFIRMED: OrderStatus.DELIVERED,
+    MissionStatus.RETURNING: OrderStatus.RETURNING,
+    MissionStatus.COMPLETED: OrderStatus.COMPLETED,
+    MissionStatus.ABORTED: OrderStatus.FAILED,
+    MissionStatus.FAILED: OrderStatus.FAILED,
+}
+
+
+def apply_gateway_status(
+    session: Session,
+    mission: Mission,
+    status: MissionStatus,
+    event_id: str,
+    detail: str | None,
+) -> tuple[Mission, bool]:
+    _event, created = record_event(
+        session,
+        event_id=event_id,
+        actor_type="GATEWAY",
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=mission.vehicle_id,
+        event_type=f"MISSION_{status.value}",
+        message=detail or f"Gateway informou estado {status.value}",
+        severity=(
+            EventSeverity.ERROR
+            if status in {MissionStatus.ABORTED, MissionStatus.FAILED}
+            else EventSeverity.INFO
+        ),
+    )
+    if not created:
+        return mission, False
+    if status == mission.status:
+        session.commit()
+        return mission, True
+    allowed = GATEWAY_TRANSITIONS.get(mission.status, set())
+    if status not in allowed:
+        session.rollback()
+        raise InvalidStateError(
+            f"Transição de {mission.status.value} para {status.value} não permitida"
+        )
+    mission.status = status
+    order = session.get(Order, mission.order_id)
+    if order and status in ORDER_STATUS_FROM_MISSION:
+        order.status = ORDER_STATUS_FROM_MISSION[status]
+        if status == MissionStatus.COMPLETED:
+            order.completed_at = datetime.now(UTC)
+    session.commit()
+    session.refresh(mission)
+    return mission, True
+
+
+def request_safety_action(session: Session, mission: Mission, admin: User, action: str) -> Mission:
+    allowed_states = {
+        MissionStatus.UPLOADING,
+        MissionStatus.UPLOADED,
+        MissionStatus.EXECUTING,
+        MissionStatus.DESTINATION_REACHED,
+        MissionStatus.DELIVERY_CONFIRMED,
+        MissionStatus.RETURNING,
+    }
+    if mission.status not in allowed_states:
+        raise InvalidStateError("A ação de segurança não é válida para o estado atual")
+    command_type = GatewayCommandType(action)
+    existing = session.scalar(
+        select(GatewayCommand).where(
+            GatewayCommand.mission_id == mission.id,
+            GatewayCommand.command == command_type,
+            GatewayCommand.status.in_(
+                {GatewayCommandStatus.PENDING, GatewayCommandStatus.ACKNOWLEDGED}
+            ),
+        )
+    )
+    if existing:
+        return mission
+    command = GatewayCommand(
+        mission_id=mission.id,
+        requested_by_id=admin.id,
+        command=command_type,
+        status=GatewayCommandStatus.PENDING,
+    )
+    session.add(command)
+    session.flush()
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=mission.vehicle_id,
+        event_type=f"{action}_REQUESTED",
+        message=f"Administrador solicitou {action}; aguarda confirmação do gateway/ArduPilot",
+        severity=EventSeverity.CRITICAL,
+        metadata={"command_id": str(command.id)},
+    )
+    session.commit()
+    return mission
+
+
+def acknowledge_gateway_command(
+    session: Session, command: GatewayCommand, payload: GatewayCommandAck
+) -> GatewayCommand:
+    if payload.status not in {
+        GatewayCommandStatus.ACKNOWLEDGED,
+        GatewayCommandStatus.COMPLETED,
+        GatewayCommandStatus.FAILED,
+    }:
+        raise InvalidStateError("O gateway não pode definir este estado de comando")
+    _event, created = record_event(
+        session,
+        event_id=payload.event_id,
+        actor_type="GATEWAY",
+        mission_id=command.mission_id,
+        event_type=f"GATEWAY_COMMAND_{payload.status.value}",
+        message=payload.detail or f"Comando {command.command.value}: {payload.status.value}",
+        severity=(
+            EventSeverity.ERROR
+            if payload.status == GatewayCommandStatus.FAILED
+            else EventSeverity.INFO
+        ),
+        metadata={"command_id": str(command.id), "gateway_id": payload.gateway_id},
+    )
+    if not created:
+        return command
+    if command.gateway_id and command.gateway_id != payload.gateway_id:
+        session.rollback()
+        raise ConflictError("O comando já foi assumido por outro gateway")
+    if command.status in {GatewayCommandStatus.COMPLETED, GatewayCommandStatus.FAILED}:
+        session.rollback()
+        raise InvalidStateError("O comando já está encerrado")
+    now = datetime.now(UTC)
+    if payload.status == GatewayCommandStatus.ACKNOWLEDGED:
+        if command.status != GatewayCommandStatus.PENDING:
+            session.rollback()
+            raise InvalidStateError("O comando já foi reconhecido")
+        command.gateway_id = payload.gateway_id
+        command.status = GatewayCommandStatus.ACKNOWLEDGED
+        command.acknowledged_at = now
+    else:
+        if command.status == GatewayCommandStatus.PENDING:
+            command.gateway_id = payload.gateway_id
+            command.acknowledged_at = now
+        command.status = payload.status
+        command.completed_at = now
+        command.result_detail = payload.detail
+    session.commit()
+    session.refresh(command)
+    return command

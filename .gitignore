@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+**/key.properties
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+*.egg-info/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+mobile/android/local.properties
+
+# A Flutter SDK may be kept locally at the repository root, but is not product code.
+/flutter/
+
+# IDE and operating system
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Runtime artifacts
+*.log
+*.sqlite3
+mission_exports/
+telemetry_exports/
+ardupilot/

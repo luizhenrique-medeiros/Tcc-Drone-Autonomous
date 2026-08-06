@@ -1,0 +1,78 @@
+name: drone-delivery
+
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-drone_delivery}
+      POSTGRES_USER: ${DATABASE_USER:-drone_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_HOST: db
+      DATABASE_URL: postgresql+psycopg://${DATABASE_USER:-drone_user}:${DATABASE_PASSWORD:-change_me}@db:5432/${DATABASE_NAME:-drone_delivery}
+      AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-development-gateway-key}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && python scripts/seed.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  admin:
+    build:
+      context: ./admin_web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost:8000/api/v1}
+        VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
+        VITE_GOOGLE_MAPS_BROWSER_API_KEY: ${VITE_GOOGLE_MAPS_BROWSER_API_KEY:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5173:80"
+
+  gateway:
+    build:
+      context: ./drone_gateway
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      API_BASE_URL: http://backend:8000
+      MAVLINK_MODE: ${MAVLINK_MODE:-simulation}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-development-gateway-key}
+      GATEWAY_JOURNAL_PATH: /var/lib/drone-gateway/journal.json
+    volumes:
+      - gateway_state:/var/lib/drone-gateway
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles: ["gateway"]
+
+volumes:
+  postgres_data:
+  gateway_state:
