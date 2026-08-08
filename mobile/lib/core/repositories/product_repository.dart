@@ -21,7 +21,7 @@ class DemoProductRepository implements ProductRepository {
     Product(
       id: 'demo-grocery',
       name: 'Cesta Essencial',
-      description: 'Seleção acadêmica de itens de mercado para demonstração.',
+      description: 'Seleção de itens essenciais de mercado.',
       category: 'Mercado',
       kind: ProductKind.grocery,
       price: 38.50,
@@ -41,7 +41,7 @@ class DemoProductRepository implements ProductRepository {
     Product(
       id: 'demo-sushi',
       name: 'Combinado Sushi',
-      description: 'Combinado demonstrativo com peças variadas.',
+      description: 'Combinado com peças variadas e ingredientes frescos.',
       category: 'Sushi',
       kind: ProductKind.sushi,
       price: 57.90,

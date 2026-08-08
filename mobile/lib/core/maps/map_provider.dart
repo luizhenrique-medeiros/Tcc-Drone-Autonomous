@@ -2,6 +2,7 @@ import '../config/app_config.dart';
 import '../models/delivery_point.dart';
 
 abstract interface class MapProvider {
+  String get id;
   String get displayName;
   bool get isDevelopmentFallback;
 
@@ -18,22 +19,25 @@ abstract interface class MapProvider {
   });
 }
 
-/// Boundary implemented by a future package-specific Google Maps adapter.
-/// Keeping it outside widgets prevents the provider SDK from leaking into the
-/// delivery-point feature.
-abstract interface class GoogleMapsBridge {
+/// Boundary between the UI/domain-facing provider and the backend map API.
+/// Keeping provider-specific HTTP contracts out of widgets makes the renderer
+/// replaceable without changing the delivery-point flow.
+abstract interface class OnlineMapBridge {
   Future<List<PlaceSuggestion>> search(String query);
   Future<PlaceSuggestion> resolve(PlaceSuggestion suggestion);
   Future<String> reverseGeocode(GeoCoordinate coordinate);
 }
 
-class GoogleMapsProvider implements MapProvider {
-  GoogleMapsProvider(this._bridge);
+class MapTilerMapProvider implements MapProvider {
+  MapTilerMapProvider(this._bridge);
 
-  final GoogleMapsBridge _bridge;
+  final OnlineMapBridge _bridge;
 
   @override
-  String get displayName => 'Google Maps';
+  String get id => 'maptiler';
+
+  @override
+  String get displayName => 'MapTiler';
 
   @override
   bool get isDevelopmentFallback => false;
@@ -65,9 +69,9 @@ class GoogleMapsProvider implements MapProvider {
 }
 
 class DevelopmentMapProvider implements MapProvider {
-  const DevelopmentMapProvider({this.fallbackForGoogle = false});
+  const DevelopmentMapProvider({this.fallbackForMapTiler = false});
 
-  final bool fallbackForGoogle;
+  final bool fallbackForMapTiler;
 
   static const List<PlaceSuggestion> _places = <PlaceSuggestion>[
     PlaceSuggestion(
@@ -88,9 +92,12 @@ class DevelopmentMapProvider implements MapProvider {
   ];
 
   @override
-  String get displayName => fallbackForGoogle
-      ? 'Fallback demonstrativo (Google não conectado)'
-      : 'Mapa demonstrativo local';
+  String get id => 'development_fallback';
+
+  @override
+  String get displayName => fallbackForMapTiler
+      ? 'Mapa local (MapTiler não configurado)'
+      : 'Mapa local';
 
   @override
   bool get isDevelopmentFallback => true;
@@ -116,14 +123,13 @@ class DevelopmentMapProvider implements MapProvider {
   Future<List<PlaceSuggestion>> search(String query) async {
     final String normalized = query.trim().toLowerCase();
     if (normalized.isEmpty) return _places;
-    final List<PlaceSuggestion> matches = _places
+    return _places
         .where((PlaceSuggestion place) {
           return '${place.label} ${place.referenceAddress}'
               .toLowerCase()
               .contains(normalized);
         })
         .toList(growable: false);
-    return matches;
   }
 
   @override
@@ -138,13 +144,13 @@ class DevelopmentMapProvider implements MapProvider {
 abstract final class MapProviderFactory {
   static MapProvider create({
     String configuredProvider = AppConfig.mapProvider,
-    bool googleMapsConfigured = AppConfig.googleMapsConfigured,
-    GoogleMapsBridge? googleMapsBridge,
+    bool mapTilerConfigured = AppConfig.mapTilerConfigured,
+    OnlineMapBridge? onlineMapBridge,
   }) {
-    final bool wantsGoogle = configuredProvider.toLowerCase() == 'google_maps';
-    if (wantsGoogle && googleMapsConfigured && googleMapsBridge != null) {
-      return GoogleMapsProvider(googleMapsBridge);
+    final bool wantsMapTiler = configuredProvider.toLowerCase() == 'maptiler';
+    if (wantsMapTiler && mapTilerConfigured && onlineMapBridge != null) {
+      return MapTilerMapProvider(onlineMapBridge);
     }
-    return DevelopmentMapProvider(fallbackForGoogle: wantsGoogle);
+    return DevelopmentMapProvider(fallbackForMapTiler: wantsMapTiler);
   }
 }

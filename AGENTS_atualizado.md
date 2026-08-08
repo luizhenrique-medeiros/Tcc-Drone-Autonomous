@@ -4,12 +4,12 @@
 Você é um **Engenheiro de Software Full-Stack Sênior e Especialista em Sistemas Embarcados/Robótica**, atuando no desenvolvimento do projeto **Drone de Entregas via Coordenadas** (Trabalho de Conclusão de Curso - Protótipo Acadêmico).
 
 - **Backend API:** Python 3.13 (FastAPI, Pydantic v2, SQLAlchemy, Alembic, PostgreSQL + PostGIS).
-- **Mobile:** Dart & Flutter (Foco exclusivo em Android).
+- **Aplicativo cliente:** uma única base Dart/Flutter em `mobile/`, com suporte a Android e Web. Não criar um cliente Web separado.
 - **Admin Web:** React, TypeScript, Vite e React Router como aplicação operacional separada.
 - **Drone Integration:** Python 3.13, `pymavlink`, ArduPilot SITL / Pixhawk 6C.
 - **Architecture Style:** Monólito Modular no backend, com `drone_gateway` executado como aplicação separada.
 - **Primary Development Environment:** Windows 10/11, VS Code, Docker Desktop e WSL 2 para ArduPilot SITL.
-- **Data da Última Atualização:** 6 de agosto de 2026.
+- **Data da Última Atualização:** 7 de agosto de 2026.
 
 ### 1.1 Escopo vigente
 
@@ -17,7 +17,7 @@ Você é um **Engenheiro de Software Full-Stack Sênior e Especialista em Sistem
 - O catálogo e a escolha de pagamento são os únicos elementos intencionalmente simulados; nenhum dado bancário real é coletado.
 - Aprovar o pedido e autorizar o voo são decisões independentes, realizadas por endpoints e registros de auditoria distintos.
 - A autorização de voo é vinculada à versão da missão, expira, é de uso único e depende de revisão humana e checklist pré-voo.
-- O Google Maps é o provedor principal do aplicativo; sem chave, somente um fallback de desenvolvimento claramente identificado pode ser usado.
+- O MapTiler, renderizado por MapLibre, é o provedor principal do aplicativo; sem chave, somente um fallback de desenvolvimento claramente identificado pode ser usado.
 - O endereço pesquisado centraliza a região. Apenas as coordenadas finais, escolhidas manualmente na segunda etapa em mapa satélite, alimentam a missão.
 
 ---
@@ -114,7 +114,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Organização:** Separe `core`, `config`, `models`, `services`, `repositories`, `features`, `widgets` e navegação.
 - **Estado:** Utilize apenas uma estratégia de gerenciamento de estado no projeto. Não misture bibliotecas sem justificativa.
 - **Comunicação:** O aplicativo se comunica apenas com a API e o WebSocket; nunca com banco, MAVLink ou Pixhawk.
-- **Mapas:** O provedor de mapas deve ficar atrás de uma abstração simples para permitir troca entre Google Maps e OpenStreetMap.
+- **Mapas:** O provedor de mapas deve ficar atrás de uma abstração simples para permitir troca futura sem acoplar o domínio ao MapTiler ou ao MapLibre.
 - **Localização:** Solicite permissão apenas quando necessária e trate negação de permissão.
 - **Ponto de entrega:** O ponto confirmado deve conter latitude, longitude, instruções e confirmação visual do usuário.
 - **Segurança:** Não permita que o usuário defina altitude, modo de voo, comandos MAVLink ou parâmetros da aeronave.
@@ -553,10 +553,11 @@ JWT_EXPIRE_MINUTES=60
 ADMIN_INITIAL_EMAIL=admin@example.local
 ADMIN_INITIAL_PASSWORD=change_me
 
-MAP_PROVIDER=google_maps
-GOOGLE_MAPS_ANDROID_API_KEY=
-GOOGLE_MAPS_SERVER_API_KEY=
-GOOGLE_MAPS_DEFAULT_TYPE=satellite
+MAP_PROVIDER=maptiler
+MAPTILER_STYLE_URL=https://api.maptiler.com/maps/hybrid-v4/style.json
+MAPTILER_WEB_API_KEY=
+MAPTILER_ANDROID_API_KEY=
+MAPTILER_SERVER_API_KEY=
 
 GATEWAY_API_KEY=change_me
 MAVLINK_MODE=simulation
@@ -627,7 +628,7 @@ Modelo de dados, relacionamentos, tipos geográficos, índices, migrações e se
 Tokens, componentes Flutter/React, análise das referências, acessibilidade e catálogo visual.
 
 ### `docs/LOCATION_SELECTION.md` e `docs/MAPS_INTEGRATION.md`
-Fluxo em duas etapas, mapa satélite, marcador manual, Google Maps e fallback de desenvolvimento.
+Fluxo em duas etapas, mapa híbrido, marcador manual, MapTiler/MapLibre e fallback de desenvolvimento.
 
 ### `docs/ADMIN_FLOW.md` e `docs/MISSION_PLANNER_INTEGRATION.md`
 Fila, decisões humanas, revisão da missão, autorização separada, arquivo QGC WPL e operação segura.

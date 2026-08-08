@@ -1,5 +1,6 @@
 import { ShieldCheck, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
 import {
   Button,
   Feedback,
@@ -12,8 +13,14 @@ import type {
   Vehicle,
   VehicleHealth,
 } from '../../services';
-import { formatDistance, shortId } from '../../utils/format';
-import { isVehicleReadyForAuthorization } from './vehicle-readiness';
+import {
+  formatDistance,
+  formatNullableText,
+  formatOptionalNumber,
+  formatPercent,
+  shortId,
+} from '../../utils/format';
+import { getVehicleReadiness } from './vehicle-readiness';
 
 const initialChecklist: PreflightChecklist = {
   mission_reviewed: false,
@@ -98,13 +105,13 @@ export function FlightAuthorizationDialog({
   const [operatorName, setOperatorName] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const requiredPhrase = `AUTORIZAR VOO ${shortId(mission.id)}`;
-  const healthReady = isVehicleReadyForAuthorization(health);
+  const readiness = getVehicleReadiness(health);
   const allChecked = useMemo(
     () => Object.values(checklist).every(Boolean),
     [checklist],
   );
   const canSubmit =
-    healthReady &&
+    readiness.ready &&
     vehicle !== null &&
     allChecked &&
     operatorName.trim().length >= 3 &&
@@ -163,16 +170,17 @@ export function FlightAuthorizationDialog({
           <div><dt>Distância</dt><dd>{formatDistance(mission.estimated_distance_m)}</dd></div>
           <div><dt>Altitude</dt><dd>{mission.altitude_m} m</dd></div>
           <div><dt>Veículo</dt><dd>{vehicle?.name ?? 'Nenhum disponível'}</dd></div>
-          <div><dt>Bateria</dt><dd>{health ? `${health.battery_percent}%` : 'Sem leitura'}</dd></div>
-          <div><dt>GPS / EKF</dt><dd>{health ? `${health.satellites} sat. · ${health.ekf_ok ? 'EKF OK' : 'EKF inválido'}` : 'Sem leitura'}</dd></div>
+          <div><dt>Origem técnica</dt><dd>{health ? <OperationalSourceBadge {...health} /> : '--'}</dd></div>
+          <div><dt>Bateria</dt><dd>{health ? formatPercent(health.battery_percent) : '--'}</dd></div>
+          <div><dt>GPS / EKF</dt><dd>{health ? `${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} sat. · ${health.ekf_ok === true ? 'EKF OK' : health.ekf_ok === false ? 'EKF inválido' : 'EKF --'}` : '--'}</dd></div>
         </dl>
 
-        {!healthReady ? (
+        {!readiness.ready ? (
           <Feedback tone="error">
             <TriangleAlert size={18} />
             <div>
               <strong>Veículo não atende aos requisitos mínimos.</strong>
-              <p>Atualize a saúde e resolva todos os bloqueios antes de autorizar.</p>
+              <p>{readiness.blockers.join(' ')}</p>
             </div>
           </Feedback>
         ) : null}

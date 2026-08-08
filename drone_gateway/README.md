@@ -38,7 +38,25 @@ python -m venv .venv
 .\.venv\Scripts\python -m app.main
 ```
 
-Variáveis principais: `API_BASE_URL`, `GATEWAY_API_KEY`, `GATEWAY_ID`, `MAVLINK_MODE`, `MAVLINK_CONNECTION`, `GATEWAY_JOURNAL_PATH`, limites preflight e intervalos. Consulte `../.env.example` e `../docs/DRONE_PROTOCOL.md`. O journal atômico evita repetir claim/start após reinício; em container, monte um volume persistente e aponte `GATEWAY_JOURNAL_PATH` para ele.
+Variáveis principais: `API_BASE_URL`, `GATEWAY_API_KEY`, `GATEWAY_ID`, `MAVLINK_MODE`,
+`MAVLINK_CONNECTION`, `MAVLINK_BAUD`, `MAVLINK_SOURCE_SYSTEM_ID`,
+`MAVLINK_TARGET_SYSTEM_ID`, `MAVLINK_TARGET_COMPONENT_ID`, `GATEWAY_JOURNAL_PATH`, limites
+preflight e intervalos. IDs-alvo vazios ativam descoberta pelo primeiro heartbeat de autopiloto;
+quando conhecidos, configure-os para rejeitar qualquer outro veículo no mesmo enlace. O gateway
+reporta a fonte como `SIMULATION`, `SITL` ou `HARDWARE_REAL`, sem completar mensagens MAVLink ainda
+não recebidas com zero ou `false`.
+
+Para listar portas seriais sem abri-las nem competir com o Mission Planner:
+
+```powershell
+python -m app.tools.list_ports
+python -m app.tools.list_ports --json
+```
+
+Também é instalado o comando `drone-gateway-list-ports`. A listagem é apenas assistiva: a porta e
+o baud rate ainda precisam ser confirmados pelo operador. Consulte `../.env.example` e
+`../docs/DRONE_PROTOCOL.md`. O journal atômico evita repetir claim/start após reinício; em
+container, monte um volume persistente e aponte `GATEWAY_JOURNAL_PATH` para ele.
 
 ## Testes
 

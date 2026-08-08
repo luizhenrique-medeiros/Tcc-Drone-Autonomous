@@ -24,6 +24,9 @@ Solicitações administrativas de `RTL`/`ABORT` viram comandos persistidos. O ga
   "vehicle_identifier": "pixhawk-6c-01",
   "vehicle_name": "Drone acadêmico",
   "autopilot_system": "ARDUPILOT",
+  "source": "HARDWARE_REAL",
+  "received_at": "2026-08-06T18:42:10Z",
+  "is_stale": false,
   "connected": true,
   "heartbeat": true,
   "flight_mode": "GUIDED",
@@ -41,11 +44,11 @@ Solicitações administrativas de `RTL`/`ABORT` viram comandos persistidos. O ga
 }
 ```
 
-Ausência/desatualização não vira `connected=true`. Campo desconhecido é `null` e falha na verificação que o exige.
+`source` é sempre um dos valores `UNKNOWN`, `SIMULATION`, `SITL` ou `HARDWARE_REAL`; somente o gateway determina essa origem a partir do modo configurado. `received_at` é carimbado no servidor e `is_stale` é derivado do limite de frescor. Ausência/desatualização não vira `connected=true`. Campo desconhecido é `null` e falha na verificação que o exige.
 
 ## Telemetria normalizada
 
-`event_id`, missão, veículo, `occurred_at`, latitude, longitude, altitude relativa, velocidade, bateria, GPS, modo, armamento e estado. MAVLink bruto não cruza o contrato nem é persistido indiscriminadamente. A frequência de envio pode exceder a de persistência; amostras antigas não substituem o snapshot.
+`event_id`, missão, veículo, `occurred_at`, `received_at`, `source`, `is_stale`, latitude, longitude, altitude relativa, velocidade, bateria, GPS, modo, armamento e estado. Campos físicos ausentes permanecem `null`; não são convertidos em zero ou `false`. MAVLink bruto não cruza o contrato nem é persistido indiscriminadamente. A frequência de envio pode exceder a de persistência; amostras antigas não substituem o snapshot.
 
 ## Estado e mapeamento
 
@@ -66,7 +69,9 @@ O gateway propõe no máximo uma transição operacional por ciclo, não pula re
 
 ## Modos
 
-`simulation` usa fake determinístico, sem socket. `sitl` usa pymavlink com conexão de desenvolvimento. `real` exige confirmação explícita, operador e checklist. O mesmo DTO é usado nos três, mas evidências permanecem rotuladas.
+`simulation` usa fake determinístico, sem socket, e publica `SIMULATION`. `sitl` usa pymavlink com conexão de desenvolvimento e publica `SITL`. `real` exige confirmação explícita, operador e checklist e publica `HARDWARE_REAL`. O mesmo DTO é usado nos três, mas evidências permanecem rotuladas; valor ausente ou legado é `UNKNOWN` e nunca recebe prontidão operacional.
+
+No adaptador MAVLink, `MAVLINK_TARGET_SYSTEM_ID` e `MAVLINK_TARGET_COMPONENT_ID` filtram globalmente todas as mensagens operacionais. O gateway solicita `AUTOPILOT_VERSION` e intervalos dos tipos de telemetria necessários, sem alterar parâmetros de segurança. A conexão serial usa porta e baud explícitos; `python -m app.tools.list_ports` lista candidatas sem selecionar uma automaticamente.
 
 ## Abortamento e RTL
 

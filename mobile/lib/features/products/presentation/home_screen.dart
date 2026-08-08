@@ -1,7 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../../app/app_controller.dart';
 import '../../../app/app_scope.dart';
+import '../../../core/config/app_config.dart';
 import '../../../core/models/product.dart';
 import '../../../design_system/components/app_banner.dart';
 import '../../../design_system/components/app_button.dart';
@@ -10,7 +12,6 @@ import '../../../design_system/components/brand_mark.dart';
 import '../../../design_system/components/product_card.dart';
 import '../../../design_system/components/section_header.dart';
 import '../../../design_system/components/surface_card.dart';
-import '../../../design_system/design_catalog/design_catalog_screen.dart';
 import '../../../design_system/tokens/app_breakpoints.dart';
 import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_icon_sizes.dart';
@@ -19,6 +20,7 @@ import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
 import '../../auth/presentation/login_screen.dart';
 import '../../cart/presentation/cart_screen.dart';
+import '../../diagnostics/presentation/runtime_diagnostics_screen.dart';
 import 'product_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -52,36 +54,80 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       _ProfileTab(controller: controller),
     ];
-    return Scaffold(
-      appBar: AppBar(
-        title: _selectedIndex == 0
-            ? const BrandMark(compact: true)
-            : Text(_selectedIndex == 1 ? 'Buscar produtos' : 'Minha conta'),
-        actions: <Widget>[
-          _CartAction(count: controller.cartCount),
-          const SizedBox(width: AppSpacing.xs),
-        ],
-      ),
-      body: IndexedStack(index: _selectedIndex, children: pages),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (int value) {
-          setState(() => _selectedIndex = value);
-        },
-        destinations: const <NavigationDestination>[
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home_rounded),
-            label: 'Início',
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final bool desktop = constraints.maxWidth >= AppBreakpoints.expanded;
+        final Widget content = IndexedStack(
+          index: _selectedIndex,
+          children: pages,
+        );
+        return Scaffold(
+          appBar: AppBar(
+            title: _selectedIndex == 0
+                ? const BrandMark(compact: true)
+                : Text(_selectedIndex == 1 ? 'Buscar produtos' : 'Minha conta'),
+            actions: <Widget>[
+              _CartAction(count: controller.cartCount),
+              const SizedBox(width: AppSpacing.xs),
+            ],
           ),
-          NavigationDestination(icon: Icon(Icons.search), label: 'Buscar'),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Conta',
-          ),
-        ],
-      ),
+          body: desktop
+              ? Row(
+                  children: <Widget>[
+                    NavigationRail(
+                      extended: constraints.maxWidth >= 1120,
+                      selectedIndex: _selectedIndex,
+                      onDestinationSelected: (int value) {
+                        setState(() => _selectedIndex = value);
+                      },
+                      destinations: const <NavigationRailDestination>[
+                        NavigationRailDestination(
+                          icon: Icon(Icons.home_outlined),
+                          selectedIcon: Icon(Icons.home_rounded),
+                          label: Text('Início'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.search),
+                          label: Text('Buscar'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.settings_outlined),
+                          selectedIcon: Icon(Icons.settings),
+                          label: Text('Conta'),
+                        ),
+                      ],
+                    ),
+                    const VerticalDivider(width: 1),
+                    Expanded(child: content),
+                  ],
+                )
+              : content,
+          bottomNavigationBar: desktop
+              ? null
+              : NavigationBar(
+                  selectedIndex: _selectedIndex,
+                  onDestinationSelected: (int value) {
+                    setState(() => _selectedIndex = value);
+                  },
+                  destinations: const <NavigationDestination>[
+                    NavigationDestination(
+                      icon: Icon(Icons.home_outlined),
+                      selectedIcon: Icon(Icons.home_rounded),
+                      label: 'Início',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.search),
+                      label: 'Buscar',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.settings_outlined),
+                      selectedIcon: Icon(Icons.settings),
+                      label: 'Conta',
+                    ),
+                  ],
+                ),
+        );
+      },
     );
   }
 }
@@ -141,43 +187,42 @@ class _HomeTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      onRefresh: controller.loadProducts,
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        slivers: <Widget>[
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(
-              AppSpacing.screen,
-              AppSpacing.md,
-              AppSpacing.screen,
-              AppSpacing.lg,
-            ),
-            sliver: SliverList.list(
-              children: <Widget>[
-                if (controller.isDemoMode) ...<Widget>[
-                  const AppBanner(
-                    title: 'Demonstração acadêmica',
-                    message:
-                        'Produtos e progressão do pedido são locais. Pagamento nunca é processado.',
-                  ),
-                  const SizedBox(height: AppSpacing.md),
-                ],
-                const _PromotionHero(),
-                const SizedBox(height: AppSpacing.xl),
-                const SectionHeader(
-                  title: 'Talvez você se interesse',
-                  subtitle: 'Catálogo acadêmico de demonstração',
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: AppBreakpoints.contentMaxWidth,
+        ),
+        child: RefreshIndicator(
+          onRefresh: controller.loadProducts,
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: <Widget>[
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.screen,
+                  AppSpacing.md,
+                  AppSpacing.screen,
+                  AppSpacing.lg,
                 ),
-              ],
-            ),
+                sliver: SliverList.list(
+                  children: <Widget>[
+                    const _PromotionHero(),
+                    const SizedBox(height: AppSpacing.xl),
+                    const SectionHeader(
+                      title: 'Talvez você se interesse',
+                      subtitle: 'Categorias e produtos disponíveis',
+                    ),
+                  ],
+                ),
+              ),
+              _ProductsSliver(
+                controller: controller,
+                products: controller.products,
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xl)),
+            ],
           ),
-          _ProductsSliver(
-            controller: controller,
-            products: controller.products,
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xl)),
-        ],
+        ),
       ),
     );
   }
@@ -242,7 +287,7 @@ class _PromotionHero extends StatelessWidget {
                     borderRadius: AppRadii.pill,
                   ),
                   child: Text(
-                    'CATÁLOGO DEMO',
+                    '20% OFF',
                     style: AppTypography.label.copyWith(
                       color: AppColors.surface,
                     ),
@@ -250,7 +295,7 @@ class _PromotionHero extends StatelessWidget {
                 ),
                 const SizedBox(height: AppSpacing.md),
                 Text(
-                  'ENTREGA\nACADÊMICA',
+                  'PROMOÇÃO\nESPECIAL',
                   style: AppTypography.headline.copyWith(
                     color: AppColors.surface,
                     fontSize: 28,
@@ -258,7 +303,7 @@ class _PromotionHero extends StatelessWidget {
                 ),
                 const SizedBox(height: AppSpacing.xs),
                 Text(
-                  'Experimente o fluxo de entregas por coordenadas.',
+                  'Desconto aplicado aos produtos do carrinho.',
                   style: AppTypography.caption.copyWith(
                     color: AppColors.surface,
                   ),
@@ -385,23 +430,30 @@ class _SearchTab extends StatelessWidget {
           return value.contains(query.trim().toLowerCase());
         })
         .toList(growable: false);
-    return CustomScrollView(
-      slivers: <Widget>[
-        SliverPadding(
-          padding: const EdgeInsets.all(AppSpacing.screen),
-          sliver: SliverToBoxAdapter(
-            child: AppTextField(
-              controller: searchController,
-              label: 'Buscar no catálogo',
-              hint: 'Pizza, sushi, bebidas…',
-              icon: Icons.search,
-              onChanged: onChanged,
-            ),
-          ),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(
+          maxWidth: AppBreakpoints.contentMaxWidth,
         ),
-        _ProductsSliver(controller: controller, products: results),
-        const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xl)),
-      ],
+        child: CustomScrollView(
+          slivers: <Widget>[
+            SliverPadding(
+              padding: const EdgeInsets.all(AppSpacing.screen),
+              sliver: SliverToBoxAdapter(
+                child: AppTextField(
+                  controller: searchController,
+                  label: 'Buscar no catálogo',
+                  hint: 'Pizza, sushi, bebidas…',
+                  icon: Icons.search,
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
+            _ProductsSliver(controller: controller, products: results),
+            const SliverToBoxAdapter(child: SizedBox(height: AppSpacing.xl)),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -413,81 +465,72 @@ class _ProfileTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(AppSpacing.screen),
-      children: <Widget>[
-        SurfaceCard(
-          child: Row(
-            children: <Widget>[
-              const CircleAvatar(
-                radius: AppIconSizes.large,
-                backgroundColor: AppColors.brandBlueSoft,
-                foregroundColor: AppColors.brandBlue,
-                child: Icon(Icons.person),
-              ),
-              const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      controller.session?.name ?? 'Cliente',
-                      style: AppTypography.bodyStrong,
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: ListView(
+          padding: const EdgeInsets.all(AppSpacing.screen),
+          children: <Widget>[
+            SurfaceCard(
+              child: Row(
+                children: <Widget>[
+                  const CircleAvatar(
+                    radius: AppIconSizes.large,
+                    backgroundColor: AppColors.brandBlueSoft,
+                    foregroundColor: AppColors.brandBlue,
+                    child: Icon(Icons.person),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          controller.session?.name ?? 'Cliente',
+                          style: AppTypography.bodyStrong,
+                        ),
+                        Text(
+                          controller.session?.email ?? '',
+                          style: AppTypography.caption,
+                        ),
+                      ],
                     ),
-                    Text(
-                      controller.session?.email ?? '',
-                      style: AppTypography.caption,
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
+            ),
+            const SizedBox(height: AppSpacing.xl),
+            if (kDebugMode && AppConfig.diagnosticsEnabled) ...<Widget>[
+              AppButton(
+                label: 'Diagnóstico de desenvolvimento',
+                variant: AppButtonVariant.secondary,
+                icon: Icons.bug_report_outlined,
+                onPressed: () async {
+                  await Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const RuntimeDiagnosticsScreen(),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: AppSpacing.sm),
             ],
-          ),
+            AppButton(
+              label: 'Sair',
+              variant: AppButtonVariant.secondary,
+              icon: Icons.logout,
+              onPressed: () async {
+                await controller.logout();
+                if (!context.mounted) return;
+                await Navigator.of(context).pushAndRemoveUntil<void>(
+                  MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+                  (Route<Object?> route) => false,
+                );
+              },
+            ),
+          ],
         ),
-        const SizedBox(height: AppSpacing.lg),
-        const SectionHeader(title: 'Desenvolvimento'),
-        SurfaceCard(
-          onTap: () async {
-            await Navigator.of(context).push<void>(
-              MaterialPageRoute<void>(
-                builder: (_) => const DesignCatalogScreen(),
-              ),
-            );
-          },
-          child: const ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.palette_outlined, color: AppColors.brandBlue),
-            title: Text('Catálogo do design system'),
-            subtitle: Text('Tokens e componentes usados no aplicativo'),
-            trailing: Icon(Icons.chevron_right),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        AppBanner(
-          title: controller.isDemoMode
-              ? 'Backend local desativado'
-              : 'API conectada',
-          message: controller.isDemoMode
-              ? 'Compile com --dart-define=DEMO_MODE=false para usar a API configurada.'
-              : 'Os estados exibidos são recebidos do backend.',
-          tone: controller.isDemoMode
-              ? AppBannerTone.warning
-              : AppBannerTone.success,
-        ),
-        const SizedBox(height: AppSpacing.xl),
-        AppButton(
-          label: 'Sair',
-          variant: AppButtonVariant.secondary,
-          icon: Icons.logout,
-          onPressed: () async {
-            controller.logout();
-            await Navigator.of(context).pushAndRemoveUntil<void>(
-              MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
-              (Route<Object?> route) => false,
-            );
-          },
-        ),
-      ],
+      ),
     );
   }
 }

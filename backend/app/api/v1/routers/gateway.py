@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Query
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.api.dependencies import AppSettings, DatabaseSession, GatewayAuth
 from app.core.enums import GatewayCommandStatus, MissionStatus
@@ -28,14 +28,13 @@ from app.modules.missions.service import (
 from app.modules.system_events.schemas import GatewayEventCreate, SystemEventRead
 from app.modules.system_events.service import record_event
 from app.modules.telemetry.schemas import TelemetryCreate, TelemetryRead
-from app.modules.telemetry.service import record_telemetry
+from app.modules.telemetry.service import record_telemetry, telemetry_to_read
 from app.modules.vehicles.schemas import (
     VehicleHealthInput,
-    VehicleHealthRead,
     VehicleHeartbeatResult,
     VehicleRead,
 )
-from app.modules.vehicles.service import record_heartbeat
+from app.modules.vehicles.service import health_to_read, record_heartbeat
 
 router = APIRouter(prefix="/gateway", tags=["Gateway"])
 
@@ -63,7 +62,7 @@ async def heartbeat(
     vehicle, health, failures = record_heartbeat(session, payload, settings)
     response = VehicleHeartbeatResult(
         vehicle=VehicleRead.model_validate(vehicle),
-        health=VehicleHealthRead.model_validate(health),
+        health=health_to_read(health, settings),
         authorization_eligible=not failures,
         failures=failures,
     )
@@ -181,20 +180,22 @@ async def telemetry(
     mission_id: UUID,
     payload: TelemetryCreate,
     session: DatabaseSession,
+    settings: AppSettings,
     _gateway: GatewayAuth,
 ) -> object:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    result, created = record_telemetry(session, mission, payload)
+    result, created = record_telemetry(session, mission, payload, settings)
+    response = telemetry_to_read(result, settings)
     if created:
         message = {
             "type": "mission.telemetry",
-            "data": TelemetryRead.model_validate(result).model_dump(mode="json"),
+            "data": response.model_dump(mode="json"),
         }
         await manager.broadcast_order(mission.order_id, message)
         await manager.broadcast_admin(message)
-    return result
+    return response
 
 
 @router.post(
@@ -251,8 +252,14 @@ def pending_commands(
             select(GatewayCommand)
             .join(Mission, Mission.id == GatewayCommand.mission_id)
             .where(
-                GatewayCommand.status == GatewayCommandStatus.PENDING,
                 Mission.claimed_by_gateway == gateway_id,
+                or_(
+                    GatewayCommand.status == GatewayCommandStatus.PENDING,
+                    and_(
+                        GatewayCommand.status == GatewayCommandStatus.ACKNOWLEDGED,
+                        GatewayCommand.gateway_id == gateway_id,
+                    ),
+                ),
             )
             .order_by(GatewayCommand.requested_at)
             .limit(limit)

@@ -104,6 +104,6 @@ async def test_event_payload_stays_within_backend_severity_contract() -> None:
             occurred_at=occurred_at,
         )
 
-    assert captured["severity"] == "ERROR"
+    assert captured["severity"] == "CRITICAL"
     assert "occurred_at" not in captured
     assert captured["metadata"] == {"source_occurred_at": occurred_at.isoformat()}

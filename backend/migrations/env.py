@@ -3,7 +3,7 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import Enum, String, engine_from_config, pool
 
 from app.core.config import get_settings
 from app.database.base import Base
@@ -33,13 +33,31 @@ def include_application_object(
 def compare_column_types(
     _context: object,
     _inspected_column: object,
-    _metadata_column: object,
-    _inspected_type: object,
+    metadata_column: object,
+    inspected_type: object,
     metadata_type: object,
 ) -> bool | None:
     # The stock PostgreSQL dialect reflects PostGIS geography as an unknown type.
     # Scope the exception to the three metadata columns that deliberately use it.
     if isinstance(metadata_type, GeographyPoint):
+        return False
+    # Revision 0002 stores operational provenance as VARCHAR(20). The domain
+    # model deliberately wraps those same values in a non-native Enum for
+    # validation, which is not a database type change.
+    table_name = getattr(getattr(metadata_column, "table", None), "name", None)
+    column_name = getattr(metadata_column, "name", None)
+    operational_columns = {
+        ("vehicles", "operational_source"),
+        ("vehicle_health_snapshots", "source"),
+        ("telemetry_logs", "source"),
+    }
+    if (
+        (table_name, column_name) in operational_columns
+        and isinstance(metadata_type, Enum)
+        and not metadata_type.native_enum
+        and isinstance(inspected_type, String)
+        and inspected_type.length == 20
+    ):
         return False
     return None
 

@@ -17,6 +17,29 @@ from app.modules.users.models import User
 router = APIRouter(prefix="/ws", tags=["Tempo real"])
 
 
+async def _origin_is_allowed(websocket: WebSocket, settings: AppSettings) -> bool:
+    origin = websocket.headers.get("origin")
+    if origin and origin not in settings.cors_origin_list:
+        await websocket.close(code=4403)
+        return False
+    return True
+
+
+@router.websocket("/diagnostics")
+async def development_diagnostics(
+    websocket: WebSocket,
+    settings: AppSettings,
+) -> None:
+    if not await _origin_is_allowed(websocket, settings):
+        return
+    if settings.app_env not in {"development", "test"}:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    await websocket.send_json({"type": "diagnostics.connected"})
+    await websocket.close(code=1000)
+
+
 def _websocket_user(token: str, session: DatabaseSession, settings: AppSettings) -> User:
     claims = decode_access_token(token, settings)
     try:
@@ -51,6 +74,8 @@ async def order_updates(
     session: DatabaseSession,
     settings: AppSettings,
 ) -> None:
+    if not await _origin_is_allowed(websocket, settings):
+        return
     try:
         token = await _websocket_token(websocket)
         user = _websocket_user(token, session, settings)
@@ -85,6 +110,8 @@ async def admin_operations(
     session: DatabaseSession,
     settings: AppSettings,
 ) -> None:
+    if not await _origin_is_allowed(websocket, settings):
+        return
     try:
         token = await _websocket_token(websocket)
         user = _websocket_user(token, session, settings)

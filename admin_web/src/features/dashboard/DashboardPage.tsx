@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { OperationalAlerts } from '../../components/OperationalAlerts';
+import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
 import {
   Button,
   Card,
@@ -23,19 +25,29 @@ import {
 import { useAsyncData } from '../../hooks/useAsyncData';
 import {
   adminApi,
+  generateOperationalAlerts,
+  getErrorMessage,
   type Mission,
   type Order,
   type SystemEvent,
   type Vehicle,
   type VehicleHealth,
 } from '../../services';
-import { formatDateTime, shortId } from '../../utils/format';
+import {
+  formatDateTime,
+  formatNullableText,
+  formatOptionalNumber,
+  formatPercent,
+  shortId,
+} from '../../utils/format';
 
 interface DashboardData {
   orders: Order[];
   missions: Mission[];
   vehicles: Vehicle[];
   health: VehicleHealth | null;
+  healthError: string;
+  missionErrors: number;
   events: SystemEvent[];
 }
 
@@ -46,19 +58,38 @@ export function DashboardPage() {
       adminApi.listVehicles(),
       adminApi.listEvents(),
     ]);
-    const missions = (
-      await Promise.all(
+    const missionResults = await Promise.all(
         orders
           .filter((order) => order.mission_id)
-          .map((order) =>
-            adminApi.getMission(order.mission_id as string).catch(() => null),
-          ),
-      )
-    ).filter((mission): mission is Mission => mission !== null);
-    const health = vehicles[0]
-      ? await adminApi.getVehicleHealth(vehicles[0].id).catch(() => null)
-      : null;
-    return { orders, missions, vehicles, health, events };
+          .map(async (order) => {
+            try {
+              return await adminApi.getMission(order.mission_id as string);
+            } catch {
+              return null;
+            }
+          }),
+      );
+    const missions = missionResults.filter(
+      (mission): mission is Mission => mission !== null,
+    );
+    let health: VehicleHealth | null = null;
+    let healthError = '';
+    if (vehicles[0]) {
+      try {
+        health = await adminApi.getVehicleHealth(vehicles[0].id);
+      } catch (loadError) {
+        healthError = getErrorMessage(loadError);
+      }
+    }
+    return {
+      orders,
+      missions,
+      vehicles,
+      health,
+      healthError,
+      missionErrors: missionResults.length - missions.length,
+      events,
+    };
   }, []);
   const { data, isLoading, error, reload } = useAsyncData(loader);
 
@@ -88,10 +119,19 @@ export function DashboardPage() {
     (mission) => mission.status === 'READY_FOR_AUTHORIZATION',
   ).length;
   const active = data.missions.filter((mission) => mission.status === 'EXECUTING');
-  const alerts = data.events.filter((event) =>
-    ['WARNING', 'ERROR', 'CRITICAL'].includes(event.severity),
-  );
   const vehicle = data.vehicles[0];
+  const operationalAlerts = generateOperationalAlerts({
+    backendError:
+      data.healthError ||
+      (data.missionErrors > 0
+        ? `${data.missionErrors} missão(ões) não puderam ser carregadas.`
+        : undefined),
+    vehicle,
+    health: data.health,
+    mission: active[0] ?? null,
+    events: data.events,
+    expectVehicle: true,
+  });
 
   return (
     <>
@@ -150,37 +190,44 @@ export function DashboardPage() {
                   <span className="vehicle-pulse" aria-hidden="true"><Radio size={21} /></span>
                   <div><strong>{vehicle.name}</strong><small>{vehicle.system}</small></div>
                 </div>
-                <StatusBadge status={vehicle.status} />
+                <div className="cluster">
+                  <OperationalSourceBadge {...data.health} />
+                  <StatusBadge status={vehicle.status} />
+                </div>
               </div>
               <div className="health-grid">
                 <HealthMetric
                   icon={<BatteryCharging size={20} />}
                   label="Bateria"
-                  value={`${data.health.battery_percent}%`}
-                  ok={data.health.battery_percent >= 40}
+                  value={formatPercent(data.health.battery_percent)}
+                  ok={data.health.battery_percent !== null && data.health.battery_percent >= 40}
                 />
                 <HealthMetric
                   icon={<Satellite size={20} />}
                   label="GPS"
-                  value={`${data.health.satellites} sat. · ${data.health.gps_fix}`}
-                  ok={data.health.satellites >= 10}
+                  value={`${formatOptionalNumber(data.health.satellites)} sat. · ${formatNullableText(data.health.gps_fix)}`}
+                  ok={data.health.satellites !== null && data.health.satellites >= 10}
                 />
                 <HealthMetric
                   icon={<Navigation size={20} />}
                   label="Modo"
-                  value={data.health.flight_mode}
-                  ok={!data.health.armed}
+                  value={formatNullableText(data.health.flight_mode)}
+                  ok={data.health.armed === false}
                 />
                 <HealthMetric
                   icon={<Activity size={20} />}
                   label="Heartbeat / EKF"
-                  value={data.health.ekf_ok ? 'Nominal' : 'Verificar'}
-                  ok={data.health.heartbeat_ok && data.health.ekf_ok}
+                  value={data.health.ekf_ok === true ? 'Nominal' : data.health.ekf_ok === false ? 'Verificar' : '--'}
+                  ok={data.health.heartbeat_ok === true && data.health.ekf_ok === true}
                 />
               </div>
               <p className="last-update">
-                Última leitura: {formatDateTime(data.health.measured_at)} · veículo
-                {data.health.armed ? ' armado' : ' desarmado'}
+                Medido: {formatDateTime(data.health.measured_at)} · recebido: {formatDateTime(data.health.received_at)} · veículo{' '}
+                {data.health.armed === true
+                  ? 'armado'
+                  : data.health.armed === false
+                    ? 'desarmado'
+                    : '--'}
               </p>
             </>
           )}
@@ -190,21 +237,11 @@ export function DashboardPage() {
           title="Alertas recentes"
           action={<Link to="/history">Ver eventos</Link>}
         >
-          {alerts.length === 0 ? (
-            <div className="quiet-state"><CheckCircle2 size={22} /><span>Nenhum alerta operacional recente.</span></div>
-          ) : (
-            <div className="event-list">
-              {alerts.slice(0, 4).map((event) => (
-                <article className={`event-row event-row--${event.severity.toLowerCase()}`} key={event.id}>
-                  <span className="event-row__dot" aria-hidden="true" />
-                  <div>
-                    <strong>{event.message}</strong>
-                    <small>{event.type.replaceAll('_', ' ')} · {formatDateTime(event.created_at)}</small>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
+          <OperationalAlerts
+            alerts={operationalAlerts}
+            max={4}
+            emptyMessage="Nenhum alerta operacional ativo."
+          />
         </Card>
       </div>
 

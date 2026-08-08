@@ -70,6 +70,13 @@ class VehicleStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class OperationalSource(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    SIMULATION = "SIMULATION"
+    SITL = "SITL"
+    HARDWARE_REAL = "HARDWARE_REAL"
+
+
 class EventSeverity(StrEnum):
     INFO = "INFO"
     WARNING = "WARNING"

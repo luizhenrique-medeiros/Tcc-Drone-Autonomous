@@ -55,7 +55,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final bool demoMode = AppScope.of(context).isDemoMode;
+    final String? startupError = AppScope.of(context).initializationError;
     return AuthFrame(
       child: Form(
         key: _formKey,
@@ -64,23 +64,15 @@ class _LoginScreenState extends State<LoginScreen> {
             const Text('Bem-vindo', style: AppTypography.headline),
             const SizedBox(height: AppSpacing.xs),
             const Text(
-              'Entre para planejar sua entrega acadêmica.',
+              'Entre para escolher produtos e o ponto da entrega.',
               style: AppTypography.body,
               textAlign: TextAlign.center,
             ),
-            if (demoMode) ...<Widget>[
-              const SizedBox(height: AppSpacing.md),
-              const AppBanner(
-                title: 'Modo demonstração local',
-                message:
-                    'As credenciais são ilustrativas e nenhum dado é persistido.',
-              ),
-            ],
-            if (_error != null) ...<Widget>[
+            if (_error != null || startupError != null) ...<Widget>[
               const SizedBox(height: AppSpacing.md),
               AppBanner(
                 title: 'Não foi possível entrar',
-                message: _error!,
+                message: _error ?? startupError!,
                 tone: AppBannerTone.danger,
               ),
             ],

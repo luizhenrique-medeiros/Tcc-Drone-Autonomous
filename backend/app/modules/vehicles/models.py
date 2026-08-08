@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import VehicleStatus
+from app.core.enums import OperationalSource, VehicleStatus
 from app.database.base import Base, TimestampMixin, utc_now
 
 
@@ -29,6 +29,12 @@ class Vehicle(TimestampMixin, Base):
     identifier: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     autopilot_system: Mapped[str] = mapped_column(String(80), nullable=False)
+    autopilot_version: Mapped[str | None] = mapped_column(String(120))
+    operational_source: Mapped[OperationalSource] = mapped_column(
+        Enum(OperationalSource, name="operational_source", native_enum=False),
+        default=OperationalSource.UNKNOWN,
+        nullable=False,
+    )
     gateway_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     status: Mapped[VehicleStatus] = mapped_column(
         Enum(VehicleStatus, name="vehicle_status", native_enum=False),
@@ -48,19 +54,27 @@ class VehicleHealthSnapshot(Base):
     )
     connected: Mapped[bool] = mapped_column(Boolean, nullable=False)
     heartbeat: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    gps_fix_type: Mapped[int] = mapped_column(Integer, nullable=False)
-    satellites: Mapped[int] = mapped_column(Integer, nullable=False)
-    ekf_ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    battery_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[OperationalSource] = mapped_column(
+        Enum(OperationalSource, name="operational_source", native_enum=False),
+        default=OperationalSource.UNKNOWN,
+        nullable=False,
+    )
+    gps_fix_type: Mapped[int | None] = mapped_column(Integer)
+    satellites: Mapped[int | None] = mapped_column(Integer)
+    ekf_ok: Mapped[bool | None] = mapped_column(Boolean)
+    battery_percent: Mapped[float | None] = mapped_column(Float)
     battery_voltage: Mapped[float | None] = mapped_column(Float)
-    flight_mode: Mapped[str] = mapped_column(String(40), nullable=False)
-    armed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    preflight_ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    rtl_configured: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    geofence_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    flight_mode: Mapped[str | None] = mapped_column(String(40))
+    armed: Mapped[bool | None] = mapped_column(Boolean)
+    preflight_ok: Mapped[bool | None] = mapped_column(Boolean)
+    rtl_configured: Mapped[bool | None] = mapped_column(Boolean)
+    geofence_enabled: Mapped[bool | None] = mapped_column(Boolean)
     origin_latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     origin_longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     critical_state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False, index=True
+    )
+    received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False, index=True
     )

@@ -1,5 +1,17 @@
 export type Role = 'ADMIN' | 'CUSTOMER';
 
+export type OperationalSource =
+  | 'UNKNOWN'
+  | 'SIMULATION'
+  | 'SITL'
+  | 'HARDWARE_REAL';
+
+export interface OperationalMetadata {
+  source: OperationalSource;
+  received_at: string | null;
+  is_stale: boolean;
+}
+
 export type OrderStatus =
   | 'DRAFT'
   | 'PENDING_ADMIN_APPROVAL'
@@ -158,23 +170,23 @@ export interface Vehicle {
   last_seen_at: string;
 }
 
-export interface VehicleHealth {
+export interface VehicleHealth extends OperationalMetadata {
   vehicle_id: string;
-  connected: boolean;
-  heartbeat_ok: boolean;
-  flight_mode: string;
-  armed: boolean;
-  gps_fix: string;
-  satellites: number;
-  ekf_ok: boolean;
-  battery_percent: number;
-  battery_voltage?: number;
-  origin_known: boolean;
-  geofence_enabled: boolean;
-  rtl_configured: boolean;
-  preflight_ok: boolean;
+  connected: boolean | null;
+  heartbeat_ok: boolean | null;
+  flight_mode: string | null;
+  armed: boolean | null;
+  gps_fix: string | null;
+  satellites: number | null;
+  ekf_ok: boolean | null;
+  battery_percent: number | null;
+  battery_voltage: number | null;
+  origin_known: boolean | null;
+  geofence_enabled: boolean | null;
+  rtl_configured: boolean | null;
+  preflight_ok: boolean | null;
   preflight_messages: string[];
-  measured_at: string;
+  measured_at: string | null;
 }
 
 export type EventSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
@@ -191,16 +203,18 @@ export interface SystemEvent {
   created_at: string;
 }
 
-export interface TelemetryPoint extends Coordinates {
+export interface TelemetryPoint extends OperationalMetadata {
   id: string;
   mission_id: string;
-  altitude_m: number;
-  ground_speed_m_s: number;
-  battery_percent: number;
-  satellites: number;
-  flight_mode: string;
-  armed: boolean;
-  recorded_at: string;
+  latitude: number | null;
+  longitude: number | null;
+  altitude_m: number | null;
+  ground_speed_m_s: number | null;
+  battery_percent: number | null;
+  satellites: number | null;
+  flight_mode: string | null;
+  armed: boolean | null;
+  recorded_at: string | null;
 }
 
 export interface PreflightChecklist {

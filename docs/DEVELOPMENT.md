@@ -2,7 +2,7 @@
 
 ## Ambiente
 
-Windows 10/11, PowerShell, Python 3.13, Node, Docker Desktop e Flutter/Android SDK. WSL 2 é usado para SITL. O SDK Flutter pode existir em `./flutter` local, mas fica ignorado e não deve ser commitado.
+Windows 10/11, PowerShell, Python 3.13, Node, Docker Desktop, Flutter, Chrome e Android SDK. WSL 2 é usado para SITL. O SDK Flutter pode existir em `./flutter` local, mas fica ignorado e não deve ser commitado.
 
 ## Primeira execução
 
@@ -40,6 +40,8 @@ npm.cmd install
 npm.cmd run dev
 ```
 
+O admin carrega MapLibre GL JS com `MAPTILER_WEB_API_KEY` e `MAPTILER_STYLE_URL` no `.env.local`/ambiente de build. A chave Web aparece no bundle e deve ser restrita por origem; a URL de estilo permanece sem `?key=`.
+
 ### Flutter
 
 ```powershell
@@ -48,16 +50,31 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -
 
 No Windows, o servidor de análise e o Gradle podem falhar quando o caminho absoluto contém acentos. Os scripts `bootstrap.ps1`, `start_mobile.ps1` e `test_all.ps1` detectam esse caso e reutilizam uma junção ASCII validada dentro do diretório temporário. Projeto, SDK e cache Pub continuam no mesmo disco, evitando a limitação de raízes diferentes do compilador Kotlin; não mova o repositório nem versione aliases locais.
 
-Configuração Google/Android fica em arquivo local ignorado. O fallback de mapa é apenas desenvolvimento.
+A configuração de mapas usa `MAP_PROVIDER=maptiler`, `MAPTILER_STYLE_URL` e chaves MapTiler separadas para Web, Android e servidor. Todos os valores ficam no ambiente ou em arquivo local ignorado. A chave recebida na migração foi exposta e precisa ser rotacionada; não a copie para comandos, logs ou Git. O fallback de mapa é apenas desenvolvimento.
 
-O script inicia com demonstração local por padrão. Para integração, configure a chave Android e execute:
+Para abrir Flutter Web integrado à API local:
 
 ```powershell
-$env:GOOGLE_MAPS_ANDROID_API_KEY='chave-restrita-local'
-.\scripts\start_mobile.ps1 -Integrated -GoogleMapsConfigured -ApiBaseUrl http://10.0.2.2:8000
+.\scripts\start_mobile_web.ps1
 ```
 
-Fora do debug local, a URL integrada deve usar HTTPS e uma distribuição exige keystore privado externo.
+Para abrir deliberadamente sem MapTiler e conferir somente os estados locais:
+
+```powershell
+.\scripts\start_mobile_web.ps1 -WithoutMapTiler
+```
+
+Para o emulador Android, configure a chave restrita e execute:
+
+```powershell
+$env:MAPTILER_ANDROID_API_KEY='chave-android-restrita-local'
+.\scripts\start_mobile.ps1 `
+  -Integrated `
+  -Profile android_emulator `
+  -MapTilerConfigured
+```
+
+Dispositivo físico usa `-Profile android_physical_device -ApiBaseUrl http://<IP-LAN>:8000 -AllowInsecureLanHttp -MapTilerConfigured` e requer exposição consciente da API. A chave Android é incorporada ao APK; observe e valide o `User-Agent` real antes de configurar sua restrição. Fora do debug local, a URL integrada deve usar HTTPS e uma distribuição exige keystore privado externo.
 
 ## Banco e seed
 
@@ -65,12 +82,12 @@ Compose habilita PostGIS pelo init. `alembic upgrade head` deve funcionar em ban
 
 ## Qualidade
 
-Python: Ruff e Pytest. React: ESLint, testes e build TypeScript. Flutter: formatter, analyze, tests e APK debug quando SDK Android estiver disponível. Mudança de schema ganha migração; bug ganha regressão.
+Python: Ruff e Pytest. React: ESLint, testes e build TypeScript. Flutter: formatter, analyze, testes, build Web release e APK debug quando os SDKs estiverem disponíveis. Mudança de schema ganha migração; bug ganha regressão.
 
 Com a stack simulada healthy, o smoke vertical reproduzível é:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\integration_smoke.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\integration_smoke.ps1 -ConfirmSimulationMutation
 ```
 
 Ele persiste um cliente, pedido, missão, eventos e telemetria fake no banco local. Não o execute contra produção e não trate `COMPLETED` simulado como prova de entrega física.
@@ -82,7 +99,8 @@ Branches `feature/...`/`fix/...`, commits Conventional Commits. Não versionar S
 ## Troubleshooting
 
 - API `ready` falha: verificar Postgres, URL e migração.
-- mapa vazio: verificar restrições da chave/manifest; não colocar a chave no Dart.
+- mapa vazio: verificar `MAPTILER_CONFIGURED`, estilo sem query, chave da plataforma, restrição de origem/`User-Agent`, CSP/CORS e quota; não declarar sucesso pelo simples HTTP 200 do estilo.
+- busca falha: verificar `MAPTILER_SERVER_API_KEY` somente no backend e respostas 403/429 sem registrar a query com credencial.
 - admin CORS: incluir origem exata em `CORS_ORIGINS`.
 - gateway sem heartbeat: validar modo/conexão e SITL antes do real.
 - pre-arm: ler mensagem no Mission Planner; não desabilitar check.

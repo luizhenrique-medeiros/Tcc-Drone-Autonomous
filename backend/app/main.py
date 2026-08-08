@@ -51,7 +51,7 @@ app.add_middleware(
         "X-Gateway-API-Key",
         "X-Request-ID",
     ],
-    expose_headers=["Idempotency-Replayed"],
+    expose_headers=["Idempotency-Replayed", "X-Mission-SHA256", "Content-Disposition"],
 )
 app.include_router(api_router)
 

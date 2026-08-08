@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../app/app_scope.dart';
 import '../../../design_system/components/brand_mark.dart';
 import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_durations.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
+import '../../products/presentation/home_screen.dart';
 import 'login_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -17,17 +19,29 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  bool _started = false;
+
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
     unawaited(_openLogin());
   }
 
   Future<void> _openLogin() async {
-    await Future<void>.delayed(AppDurations.splash);
+    final controller = AppScope.of(context);
+    await Future.wait<void>(<Future<void>>[
+      Future<void>.delayed(AppDurations.splash),
+      controller.initialize(),
+    ]);
     if (!mounted) return;
     await Navigator.of(context).pushReplacement<void, void>(
-      MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) => controller.isAuthenticated
+            ? const HomeScreen()
+            : const LoginScreen(),
+      ),
     );
   }
 

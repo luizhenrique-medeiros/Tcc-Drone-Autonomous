@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([switch]$SkipMigration)
+param(
+    [switch]$SkipMigration,
+    [string]$HostAddress = '127.0.0.1',
+    [int]$Port = 8000
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -15,7 +19,8 @@ try {
     }
     & $pythonCommand scripts/seed.py
     if ($LASTEXITCODE -ne 0) { throw "Seed falhou com exit code $LASTEXITCODE." }
-    & $pythonCommand -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    Write-Host "Backend: http://localhost:$Port"
+    & $pythonCommand -m uvicorn app.main:app --reload --host $HostAddress --port $Port
     if ($LASTEXITCODE -ne 0) { throw "Backend encerrou com exit code $LASTEXITCODE." }
 }
 finally { Pop-Location }

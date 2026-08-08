@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,12 +35,16 @@ class Settings(BaseSettings):
 
     gateway_api_key: str = "development-gateway-key"
     cors_origins: str = (
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174,"
+        "http://localhost:8080,http://127.0.0.1:8080,"
+        "http://localhost:8081,http://127.0.0.1:8081"
     )
 
-    map_provider: str = "google_maps"
-    google_maps_server_api_key: str | None = None
-    maps_search_country: str = "BR"
+    map_provider: Literal["maptiler"] = "maptiler"
+    maptiler_server_api_key: str | None = None
+    maps_search_country: str | None = None
     maps_default_latitude: float = Field(default=-23.1175, ge=-90, le=90)
     maps_default_longitude: float = Field(default=-46.5502, ge=-180, le=180)
 
@@ -58,6 +63,30 @@ class Settings(BaseSettings):
         normalized = value.lower()
         if normalized not in {"development", "test", "demo", "production"}:
             raise ValueError("APP_ENV deve ser development, test, demo ou production")
+        return normalized
+
+    @field_validator("maps_search_country", mode="before")
+    @classmethod
+    def normalize_optional_country(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        if normalized and (len(normalized) != 2 or not normalized.isalpha()):
+            raise ValueError("MAPS_SEARCH_COUNTRY deve ser um código ISO de duas letras")
+        return normalized or None
+
+    @field_validator("maptiler_server_api_key", mode="before")
+    @classmethod
+    def normalize_optional_maptiler_key(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        if "://" in normalized or "key=" in normalized.lower():
+            raise ValueError(
+                "MAPTILER_SERVER_API_KEY deve conter somente a chave, não a URL completa"
+            )
         return normalized
 
     @model_validator(mode="after")

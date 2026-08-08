@@ -18,8 +18,8 @@ PostgreSQL + PostGIS, tabelas/colunas `snake_case`, UUID para entidades principa
 | `mission_waypoints` | sequence, command, lat/lon/alt, params | sequência única por missão |
 | `flight_authorizations` | mission/version, admin, status, expiry, used_at, checklist | uso único e expiração |
 | `vehicles` | identifier, name, autopilot, status, last_seen | identificador único |
-| `vehicle_health_snapshots` | heartbeat, GPS, satellites, EKF, battery, mode, armed | dados normalizados e timestamp |
-| `telemetry_logs` | mission/vehicle, point, altitude, speed, battery, GPS, mode, armed | retenção/amostragem configurável |
+| `vehicle_health_snapshots` | source, received_at, heartbeat, GPS, satellites, EKF, battery, mode, armed | campos físicos nulos quando desconhecidos; frescor derivado |
+| `telemetry_logs` | mission/vehicle, source, received_at, point, altitude, speed, battery, GPS, mode, armed | retenção/amostragem configurável; campos físicos anuláveis |
 | `system_events` | actor/order/mission/vehicle, type, severity, message, metadata | event_id único para deduplicação |
 
 ## Geografia
@@ -56,6 +56,8 @@ python scripts/seed.py
 ```
 
 O seed é idempotente e cria produtos de demonstração e, somente quando variáveis explícitas existem, o primeiro administrador. Nunca usa uma senha fixa silenciosa. Downgrade não apaga evidência em ambiente real sem backup e procedimento aprovado.
+
+`0003_schema_names` normaliza, de forma idempotente, nomes de índices e constraints encontrados em volumes antigos criados antes da cadeia Alembic atual. Em banco novo ela não altera a estrutura funcional. Valide com `alembic check`; os três tipos `geography` e os enums operacionais não nativos possuem comparação explícita para evitar falsos drifts.
 
 ## Retenção
 

@@ -16,7 +16,7 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "127.0.0.1:5432:5432"
+      - "${DATABASE_BIND_ADDRESS:-127.0.0.1}:5432:5432"
 
   backend:
     build:
@@ -34,26 +34,27 @@ services:
         condition: service_healthy
     command: ["sh", "-c", "alembic upgrade head && python scripts/seed.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 10s
       timeout: 5s
       retries: 10
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:8000:8000"
 
   admin:
     build:
       context: ./admin_web
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api/v1}
-        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-ws://localhost:8000/api/v1}
+        VITE_WS_BASE_URL: ${VITE_WS_BASE_URL:-}
         VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
-        VITE_GOOGLE_MAPS_BROWSER_API_KEY: ${VITE_GOOGLE_MAPS_BROWSER_API_KEY:-}
+        MAPTILER_WEB_API_KEY: ${MAPTILER_WEB_API_KEY:-}
+        MAPTILER_STYLE_URL: ${MAPTILER_STYLE_URL:-https://api.maptiler.com/maps/hybrid-v4/style.json}
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "127.0.0.1:5173:80"
+      - "${ADMIN_BIND_ADDRESS:-127.0.0.1}:5173:80"
 
   gateway:
     build:
@@ -64,10 +65,17 @@ services:
     environment:
       API_BASE_URL: http://backend:8000
       MAVLINK_MODE: ${MAVLINK_MODE:-simulation}
+      MAVLINK_CONNECTION: ${MAVLINK_CONNECTION:-udp:127.0.0.1:14550}
+      MAVLINK_BAUD: ${MAVLINK_BAUD:-115200}
+      MAVLINK_SOURCE_SYSTEM_ID: ${MAVLINK_SOURCE_SYSTEM_ID:-254}
+      MAVLINK_TARGET_SYSTEM_ID: ${MAVLINK_TARGET_SYSTEM_ID:-}
+      MAVLINK_TARGET_COMPONENT_ID: ${MAVLINK_TARGET_COMPONENT_ID:-}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-development-gateway-key}
       GATEWAY_JOURNAL_PATH: /var/lib/drone-gateway/journal.json
     volumes:
       - gateway_state:/var/lib/drone-gateway
+    ports:
+      - "${MAVLINK_UDP_BIND_ADDRESS:-127.0.0.1}:14550:14550/udp"
     depends_on:
       backend:
         condition: service_healthy

@@ -19,8 +19,8 @@ class DeliveryPointInput(BaseModel):
     final_longitude: float = Field(ge=-180, le=180)
     label: str | None = Field(default=None, max_length=120)
     instructions: str | None = Field(default=None, max_length=1000)
-    map_provider: str = Field(default="google_maps", max_length=40)
-    map_type: str = Field(default="satellite", max_length=30)
+    map_provider: str = Field(default="maptiler", max_length=40)
+    map_type: str = Field(default="hybrid", max_length=30)
     accuracy_meters: float | None = Field(default=None, ge=0, le=1000)
     region_confirmed: bool
     exact_point_selected: bool

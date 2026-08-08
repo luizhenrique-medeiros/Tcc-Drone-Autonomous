@@ -4,12 +4,12 @@ import '../../../app/app_controller.dart';
 import '../../../app/app_scope.dart';
 import '../../../core/models/order.dart';
 import '../../../core/models/product.dart';
-import '../../../design_system/components/app_banner.dart';
 import '../../../design_system/components/app_button.dart';
 import '../../../design_system/components/product_artwork.dart';
 import '../../../design_system/components/product_card.dart';
 import '../../../design_system/components/section_header.dart';
 import '../../../design_system/components/surface_card.dart';
+import '../../../design_system/tokens/app_breakpoints.dart';
 import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_icon_sizes.dart';
 import '../../../design_system/tokens/app_spacing.dart';
@@ -27,36 +27,35 @@ class CartScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Seu carrinho')),
       body: lines.isEmpty
           ? const _EmptyCart()
-          : ListView(
-              padding: const EdgeInsets.all(AppSpacing.screen),
-              children: <Widget>[
-                const AppBanner(
-                  title: 'Itens demonstrativos',
-                  message:
-                      'O catálogo não representa venda real. O fluxo acadêmico inicia após a confirmação.',
+          : Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: ListView(
+                  padding: const EdgeInsets.all(AppSpacing.screen),
+                  children: <Widget>[
+                    const SectionHeader(title: 'Itens selecionados'),
+                    for (final CartLine line in lines) ...<Widget>[
+                      _CartLineCard(line: line, controller: controller),
+                      const SizedBox(height: AppSpacing.sm),
+                    ],
+                    const SizedBox(height: AppSpacing.lg),
+                    _OrderSummary(controller: controller),
+                    const SizedBox(height: AppSpacing.lg),
+                    AppButton(
+                      label: 'Escolher ponto de entrega',
+                      variant: AppButtonVariant.accent,
+                      icon: Icons.map_outlined,
+                      onPressed: () async {
+                        await Navigator.of(context).push<void>(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const ApproximateLocationScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
-                const SizedBox(height: AppSpacing.lg),
-                const SectionHeader(title: 'Itens selecionados'),
-                for (final CartLine line in lines) ...<Widget>[
-                  _CartLineCard(line: line, controller: controller),
-                  const SizedBox(height: AppSpacing.sm),
-                ],
-                const SizedBox(height: AppSpacing.lg),
-                _OrderSummary(controller: controller),
-                const SizedBox(height: AppSpacing.lg),
-                AppButton(
-                  label: 'Escolher ponto de entrega',
-                  variant: AppButtonVariant.accent,
-                  icon: Icons.map_outlined,
-                  onPressed: () async {
-                    await Navigator.of(context).push<void>(
-                      MaterialPageRoute<void>(
-                        builder: (_) => const ApproximateLocationScreen(),
-                      ),
-                    );
-                  },
-                ),
-              ],
+              ),
             ),
     );
   }
@@ -73,44 +72,66 @@ class _CartLineCard extends StatelessWidget {
     final Product product = controller.products.firstWhere(
       (Product item) => item.id == line.productId,
     );
-    return SurfaceCard(
-      child: Row(
-        children: <Widget>[
-          SizedBox(
-            width: 72,
-            child: ProductArtwork(kind: product.kind, height: 72),
-          ),
-          const SizedBox(width: AppSpacing.md),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(line.name, style: AppTypography.bodyStrong),
-                const SizedBox(height: AppSpacing.xxs),
-                Text(
-                  formatCurrency(line.unitPrice),
-                  style: AppTypography.caption,
-                ),
-              ],
-            ),
-          ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
+    final Widget productSummary = Row(
+      children: <Widget>[
+        SizedBox(
+          width: 72,
+          child: ProductArtwork(kind: product.kind, height: 72),
+        ),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              IconButton(
-                tooltip: 'Remover uma unidade',
-                onPressed: () => controller.decrementProduct(product),
-                icon: const Icon(Icons.remove_circle_outline),
-              ),
-              Text('${line.quantity}', style: AppTypography.bodyStrong),
-              IconButton(
-                tooltip: 'Adicionar uma unidade',
-                onPressed: () => controller.addProduct(product),
-                icon: const Icon(Icons.add_circle, color: AppColors.brandBlue),
+              Text(line.name, style: AppTypography.bodyStrong),
+              const SizedBox(height: AppSpacing.xxs),
+              Text(
+                formatCurrency(line.unitPrice),
+                style: AppTypography.caption,
               ),
             ],
           ),
-        ],
+        ),
+      ],
+    );
+    final Widget quantityControls = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        IconButton(
+          tooltip: 'Remover uma unidade',
+          onPressed: () => controller.decrementProduct(product),
+          icon: const Icon(Icons.remove_circle_outline),
+        ),
+        Text('${line.quantity}', style: AppTypography.bodyStrong),
+        IconButton(
+          tooltip: 'Adicionar uma unidade',
+          onPressed: () => controller.addProduct(product),
+          icon: const Icon(Icons.add_circle, color: AppColors.brandBlue),
+        ),
+      ],
+    );
+    return SurfaceCard(
+      child: LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          if (constraints.maxWidth < AppBreakpoints.compact) {
+            return Column(
+              children: <Widget>[
+                productSummary,
+                const SizedBox(height: AppSpacing.sm),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: quantityControls,
+                ),
+              ],
+            );
+          }
+          return Row(
+            children: <Widget>[
+              Expanded(child: productSummary),
+              quantityControls,
+            ],
+          );
+        },
       ),
     );
   }
@@ -135,9 +156,14 @@ class _OrderSummary extends StatelessWidget {
             label: 'Taxa de entrega',
             value: formatCurrency(controller.deliveryFee),
           ),
+          const SizedBox(height: AppSpacing.sm),
+          _SummaryLine(
+            label: 'Desconto (20%)',
+            value: '- ${formatCurrency(controller.discount)}',
+          ),
           const Divider(height: AppSpacing.lg),
           _SummaryLine(
-            label: 'Total simulado',
+            label: 'Total',
             value: formatCurrency(controller.total),
             emphasized: true,
           ),
@@ -192,7 +218,7 @@ class _EmptyCart extends StatelessWidget {
             const Text('Seu carrinho está vazio', style: AppTypography.title),
             const SizedBox(height: AppSpacing.xs),
             const Text(
-              'Volte ao catálogo e escolha um produto demonstrativo.',
+              'Volte ao catálogo e escolha um produto.',
               style: AppTypography.body,
               textAlign: TextAlign.center,
             ),

@@ -5,6 +5,7 @@ from app.core.exceptions import MissionUploadError, UnsafeOperationError
 from app.models import (
     AuthorizedMission,
     MissionStatus,
+    OperationalSource,
     TelemetrySnapshot,
     UploadResult,
     VehicleEvent,
@@ -26,6 +27,8 @@ class FakeVehicleGateway:
 
     async def read_health(self) -> VehicleHealth:
         return VehicleHealth(
+            source=OperationalSource.SIMULATION,
+            autopilot_version="FAKE-SIMULATION",
             connected=self._connected,
             heartbeat=self._connected,
             gps_fix_type=3,
@@ -103,6 +106,7 @@ class FakeVehicleGateway:
             self._active_mission_id = None
         return VehiclePoll(
             telemetry=TelemetrySnapshot(
+                source=OperationalSource.SIMULATION,
                 latitude=latitude,
                 longitude=longitude,
                 relative_altitude_m=0

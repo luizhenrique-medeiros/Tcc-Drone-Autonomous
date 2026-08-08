@@ -2,6 +2,8 @@
 
 Este documento é a fonte de verdade visual para o aplicativo Flutter e o painel React. Novas cores, tamanhos, raios ou sombras só entram após verificar os tokens e componentes existentes.
 
+Android e Web compartilham a mesma implementação Flutter em `mobile/`; não existe um segundo design system para o cliente Web. O painel React continua separado porque possui densidade e responsabilidade operacional diferentes.
+
 ## Referências medidas
 
 As quatro imagens foram inspecionadas em 6 de agosto de 2026. Todas medem **1024 × 1536 px**, RGB 24 bits, proporção 2:3. São referências de alta densidade, não dimensões lógicas para widgets.
@@ -26,6 +28,8 @@ Fundo quase branco (`#FBFAFD` observado), cartões brancos, azul para navegaçã
 - campos com ícone à esquerda, rótulo e dica, borda cinza discreta;
 - CTA azul largo; pixel interno medido próximo a `#3B79CB`;
 - recuperação e cadastro são ações secundárias; erros precisam de contraste, não do cinza claro original.
+- no Web, o bootstrap do Flutter injeta a viewport necessária; não adicionar uma meta manual duplicada ao `index.html`;
+- o formulário usa largura máxima de 460, padding responsivo e nunca deve exigir rolagem horizontal.
 
 ### Home
 
@@ -34,6 +38,7 @@ Fundo quase branco (`#FBFAFD` observado), cartões brancos, azul para navegaçã
 - cartões têm borda mínima e título inferior; layout vira uma coluna em largura pequena/texto ampliado;
 - barra inferior fixa tem três destinos, azul ativo medido em `#306BCE` e cinza inativo;
 - promoção é dado acadêmico, não regra fixa da aplicação.
+- em largura expandida, a navegação inferior vira `NavigationRail`; a grade usa de uma a quatro colunas conforme o espaço disponível.
 
 ### Detalhes do produto
 
@@ -103,7 +108,7 @@ Escala do sistema permanece habilitada; nenhum container de texto tem altura fix
 - Ícones: `small=16`, `medium=20`, `large=24`, `xlarge=32`; alvo de toque mínimo 48.
 - Sombras: `none`; `subtle=0 1 2 rgba(36,50,71,.06)`; `card=0 8 24 rgba(36,50,71,.08)`; `overlay=0 16 40 rgba(36,50,71,.16)`.
 - Durações: rápida 120 ms, normal 200 ms, lenta 320 ms; respeitar redução de movimento.
-- Breakpoints mobile: compact `<360`, regular `360–599`, expanded `≥600`; admin: compact `<768`, tablet `768–1199`, desktop `≥1200`.
+- Breakpoints Flutter: compact `<360`, regular `360–599`, medium `600–839`, expanded `≥840`, com conteúdo global limitado a 1440; admin: compact `<768`, tablet `768–1199`, desktop `≥1200`.
 
 ## Componentes implementáveis e responsabilidade
 
@@ -120,6 +125,7 @@ Não é uma lista para gerar arquivos vazios. Um componente só existe quando é
 | pagamento | `PaymentMethodTile`, `PriceSummaryCard` | não aplicável | sem campos bancários |
 | localização | `LocationStepIndicator`, `SatelliteMapView`, `DeliveryPointSummaryCard` | `MapPanel`, `OrderSummaryCard` | regras ficam na feature |
 | operação | `MissionStatusTimeline`, `TelemetrySummaryCard` | `MissionSummaryCard`, `VehicleHealthCard`, `PreflightChecklist`, `FlightAuthorizationPanel` | admin mais denso |
+| diagnóstico | linhas responsivas na `RuntimeDiagnosticsScreen` | ferramentas equivalentes somente quando necessárias | somente debug; nunca exibir chave ou token |
 
 Flutter centraliza padrões em `AppColors`, `AppTypography`, `AppSpacing`, `AppRadii`, `AppShadows`, `AppIconSizes`, `AppDurations`, `AppBreakpoints` e `AppTheme`. React usa CSS custom properties e componentes em `src/design-system`; features não criam cópias globais.
 
@@ -131,6 +137,7 @@ Flutter centraliza padrões em `AppColors`, `AppTypography`, `AppSpacing`, `AppR
 4. Exceção de valor único deve ter motivo e virar token apenas após segundo uso real.
 5. Componente novo ganha exemplo no catálogo e teste do comportamento relevante.
 6. `DesignCatalogScreen` e `/design-system` aparecem somente em desenvolvimento/proteção adequada.
+7. `RuntimeDiagnosticsScreen` e `/debug` aparecem somente em build debug e ambiente não hospedado; o diagnóstico segue tokens, quebra linhas longas e informa apenas presença de sessão.
 
 Exemplo conceitual:
 
@@ -157,9 +164,14 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 ## Responsividade e acessibilidade
 
 - 48 × 48 mínimo para toque e 44 × 44 CSS mínimo no painel;
+- deixar a viewport sob responsabilidade do bootstrap Flutter Web; uma meta manual duplicada gera aviso e deve permanecer ausente do `index.html`;
 - ordem de foco previsível, `aria-label`/semantics, escape em modal e retorno do foco;
 - contraste AA para texto; estrelas e chips têm label textual;
 - mapa possui resumo textual de coordenadas e controles por teclado quando suportado;
+- mapa real usa MapLibre com o estilo híbrido MapTiler e pino fixo no centro; o mapa recebe o gesto e o pino visual usa `IgnorePointer`;
+- atribuição MapTiler/OpenStreetMap e logo oficial MapTiler permanecem visíveis/linkados, sem competir com o pino ou controles;
+- telas de autenticação limitam o formulário a 460; produto/pagamento a 760; localização a 960; a Home limita o canvas a 1440;
+- o mapa interativo mede 430 em larguras menores e 520 a partir do breakpoint expanded, sem impor largura fixa;
 - tabelas viram cartões/scroll controlado em tablet; grade mobile vira uma coluna se necessário;
 - loading, vazio, erro e retry não dependem de cor; animações respeitam preferência reduzida.
 
@@ -170,9 +182,17 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 - [ ] componente já existente foi reutilizado;
 - [ ] loading, vazio, erro, disabled, focus e selected foram vistos;
 - [ ] texto a 200% não corta nem sobrepõe;
+- [ ] viewport compacta Web (inclusive 320/360/412 px) não tem overflow horizontal;
+- [ ] desktop usa largura máxima, grade/rail adequados e não estica formulários indefinidamente;
 - [ ] contraste e alvo de toque foram verificados;
 - [ ] produto/pagamento são identificados como demonstração;
 - [ ] confirmação laranja usa par de cores acessível;
-- [ ] mapa final está em satélite e há alternativa textual;
+- [ ] mapa final está no estilo híbrido MapTiler, com alternativa textual, atribuição e logo visíveis;
 - [ ] golden/component test só muda após revisão consciente;
 - [ ] captura final foi comparada manualmente com hierarquia, ritmo e composição das referências.
+
+## Evidência visual desta rodada
+
+A integração atual MapTiler/MapLibre ainda não recebeu revisão visual em browser ou Android. Os requests HTTP diretos de 2026-08-07 (estilo, pesquisa e reverse geocoding com HTTP 200) comprovam somente acesso aos endpoints, não layout, tiles, eventos, CORS/CSP, atribuição ou logo. A chave usada nesse ensaio foi exposta e deve ser rotacionada.
+
+O admin aprovou lint, 33 testes e build, incluindo estados e desenho do mapa, mas isso não fecha o checklist visual. Seleção/pedido pela UI e recebimento autenticado no admin continuam pendentes de smoke manual com credenciais restritas. O pedido controlado criado diretamente pela API permanece apenas como dado de integração e não deve ser despachado.

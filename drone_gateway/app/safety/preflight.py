@@ -52,25 +52,40 @@ def evaluate_preflight(
         CheckResult(code="VEHICLE_CONNECTED", passed=health.connected, detail="Conexão MAVLink"),
         CheckResult(code="HEARTBEAT", passed=health.heartbeat, detail="Heartbeat válido"),
         CheckResult(
-            code="VEHICLE_DISARMED", passed=not health.armed, detail="Upload com veículo desarmado"
+            code="VEHICLE_DISARMED",
+            passed=health.armed is False,
+            detail="Upload com veículo desarmado",
         ),
         CheckResult(
-            code="GPS_FIX", passed=health.gps_fix_type >= 3, detail="Fix GPS 3D ou superior"
+            code="GPS_FIX",
+            passed=health.gps_fix_type is not None and health.gps_fix_type >= 3,
+            detail="Fix GPS 3D ou superior",
         ),
         CheckResult(
             code="GPS_SATELLITES",
-            passed=health.satellites >= settings.min_gps_satellites,
+            passed=(
+                health.satellites is not None and health.satellites >= settings.min_gps_satellites
+            ),
             detail=f"Mínimo {settings.min_gps_satellites} satélites",
         ),
-        CheckResult(code="EKF", passed=health.ekf_ok, detail="EKF saudável"),
+        CheckResult(code="EKF", passed=health.ekf_ok is True, detail="EKF saudável"),
         CheckResult(
             code="BATTERY",
-            passed=health.battery_percent >= settings.min_battery_percent,
+            passed=(
+                health.battery_percent is not None
+                and health.battery_percent >= settings.min_battery_percent
+            ),
             detail=f"Bateria mínima {settings.min_battery_percent}%",
         ),
-        CheckResult(code="PREFLIGHT", passed=health.preflight_ok, detail="Preflight do veículo"),
-        CheckResult(code="RTL", passed=health.rtl_configured, detail="RTL configurado"),
-        CheckResult(code="GEOFENCE", passed=health.geofence_enabled, detail="Geofence habilitada"),
+        CheckResult(
+            code="PREFLIGHT", passed=health.preflight_ok is True, detail="Preflight do veículo"
+        ),
+        CheckResult(code="RTL", passed=health.rtl_configured is True, detail="RTL configurado"),
+        CheckResult(
+            code="GEOFENCE",
+            passed=health.geofence_enabled is True,
+            detail="Geofence habilitada",
+        ),
         CheckResult(
             code="ORIGIN",
             passed=origin_matches,
@@ -103,12 +118,15 @@ def evaluate_start_readiness(
         (
             CheckResult(
                 code="VEHICLE_ARMED",
-                passed=health.armed,
+                passed=health.armed is True,
                 detail="Armamento realizado pelo operador",
             ),
             CheckResult(
                 code="FLIGHT_MODE",
-                passed=health.flight_mode.upper() == settings.required_start_flight_mode.upper(),
+                passed=(
+                    health.flight_mode is not None
+                    and health.flight_mode.upper() == settings.required_start_flight_mode.upper()
+                ),
                 detail=f"Modo exigido: {settings.required_start_flight_mode}",
             ),
         )

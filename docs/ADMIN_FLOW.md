@@ -6,7 +6,7 @@ Não há cadastro público admin. Um usuário provisionado entra pela rota separ
 
 ## Fila e análise
 
-Dashboard resume pendentes, aprovados, missões em revisão/autorização/execução e saúde do veículo com timestamp. A fila suporta filtro/paginação. O detalhe mostra cliente, snapshots de produto/preço, forma simulada, mapa satélite, aproximação/final, instruções, distância e validações.
+Dashboard resume pendentes, aprovados, missões em revisão/autorização/execução e saúde do veículo com horário de recebimento. Telemetria e saúde sempre exibem a origem `Simulação`, `SITL`, `Hardware real` ou `Origem desconhecida`; dados vencidos recebem destaque explícito. A fila suporta filtro/paginação. O detalhe mostra cliente, snapshots de produto/preço, forma simulada, mapa satélite, aproximação/final, instruções, distância e validações.
 
 ## Primeira decisão
 
@@ -22,13 +22,15 @@ Uma ação posterior prepara missão, exibe versão/hash/waypoints e oferece dow
 
 ## Saúde, checklist e segunda decisão
 
-Antes de autorizar, o painel mostra conexão, idade do heartbeat, modo, armamento, GPS/satélites, EKF, bateria, origem/destino/distância/altitude, versão e resultados preflight. O checklist inclui área controlada e operador.
+Antes de autorizar, o painel mostra conexão, origem da evidência, idade do heartbeat, modo, armamento, GPS/satélites, EKF, bateria, origem/destino/distância/altitude, versão e resultados preflight. Campo desconhecido é `--`, nunca zero/`false`. Snapshot vencido, origem desconhecida, campo obrigatório nulo ou desconexão bloqueiam prontidão. O checklist inclui área controlada e operador.
 
 `Autorizar voo` abre confirmação reforçada com frase/checkbox, envia endpoint próprio e mostra validade curta. Não aparece como continuação automática do botão Aprovar.
 
 ## Acompanhamento e incidentes
 
-WebSocket atualiza missão, posição, bateria e eventos; desconexão marca dados vencidos e faz refetch. Abortamento e RTL são botões separados, vermelhos somente quando destrutivos, com motivo, modal e resultado. O operador continua usando Mission Planner como estação de segurança.
+WebSocket só fica visualmente conectado depois do evento de confirmação do servidor, agrupa rajadas de atualização e, após desconexão, marca dados vencidos e refaz o snapshot canônico. Abortamento e RTL são botões separados, vermelhos somente quando destrutivos, com motivo obrigatório, chave de idempotência, modal e resultado. O operador continua usando Mission Planner como estação de segurança.
+
+Alertas operacionais são derivados dos snapshots canônicos e informam o que ocorreu, impacto, última evidência e ação sugerida. A combinação de tipo/veículo/missão é deduplicada e respeita cooldown; alertas não transformam valor ausente em falha física nem inventam diagnóstico.
 
 ## Auditoria
 
@@ -36,4 +38,4 @@ Timeline registra ator, decisão/motivo, versão, revisão, checklist, autoriza�
 
 ## Estados de interface
 
-Toda página cobre loading, vazio, erro com retry, sucesso e sessão expirada. Tablet reorganiza painéis; ações críticas continuam próximas do resumo e nunca desaparecem em scroll sem contexto.
+Toda página cobre loading, vazio, erro explícito com retry, sucesso, dados vencidos e sessão expirada. Erro de API não é apresentado como lista vazia. Tablet reorganiza painéis; ações críticas continuam próximas do resumo e nunca desaparecem em scroll sem contexto.

@@ -21,69 +21,89 @@ class ProductDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Detalhes do produto')),
-      body: ListView(
-        padding: const EdgeInsets.all(AppSpacing.screen),
-        children: <Widget>[
-          ProductArtwork(kind: product.kind, height: 240),
-          const SizedBox(height: AppSpacing.lg),
-          Text(product.name, style: AppTypography.headline),
-          const SizedBox(height: AppSpacing.sm),
-          Row(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            padding: const EdgeInsets.all(AppSpacing.screen),
             children: <Widget>[
-              const Icon(
-                Icons.star_rounded,
-                color: AppColors.accentYellow,
-                size: AppIconSizes.medium,
+              ProductArtwork(kind: product.kind, height: 240),
+              const SizedBox(height: AppSpacing.lg),
+              Text(product.name, style: AppTypography.headline),
+              const SizedBox(height: AppSpacing.sm),
+              Row(
+                children: <Widget>[
+                  Icon(
+                    product.rating == null
+                        ? Icons.info_outline
+                        : Icons.star_rounded,
+                    color: product.rating == null
+                        ? AppColors.slateLight
+                        : AppColors.accentYellow,
+                    size: AppIconSizes.medium,
+                  ),
+                  const SizedBox(width: AppSpacing.xs),
+                  Text(
+                    product.rating == null
+                        ? 'Avaliação não informada'
+                        : '${product.rating} de 5',
+                  ),
+                ],
               ),
-              const SizedBox(width: AppSpacing.xs),
-              Text('${product.rating} (avaliação demonstrativa)'),
+              const SizedBox(height: AppSpacing.md),
+              Text(
+                'De ${formatCurrency(product.price)} / un.',
+                style: AppTypography.title,
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              SurfaceCard(
+                child: Column(
+                  children: <Widget>[
+                    _DetailLine(
+                      icon: Icons.schedule,
+                      label: 'Entrega aproximada',
+                      value: product.estimatedMinutes == null
+                          ? 'A calcular'
+                          : '${product.estimatedMinutes} min',
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    const _DetailLine(
+                      icon: Icons.location_on_outlined,
+                      label: 'Taxa de entrega',
+                      value: 'R\$ 7,50',
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    const _DetailLine(
+                      icon: Icons.local_offer_outlined,
+                      label: 'Oferta',
+                      value: '20% de desconto',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              const SectionHeader(title: 'Descrição'),
+              Text(
+                product.description.isEmpty
+                    ? 'Descrição não informada.'
+                    : product.description,
+                style: AppTypography.body,
+              ),
+              const SizedBox(height: AppSpacing.xl),
+              AppButton(
+                label: 'Adicionar ao carrinho',
+                variant: AppButtonVariant.accent,
+                icon: Icons.add_shopping_cart,
+                onPressed: () {
+                  AppScope.of(context).addProduct(product);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('${product.name} adicionado.')),
+                  );
+                },
+              ),
             ],
           ),
-          const SizedBox(height: AppSpacing.md),
-          Text(
-            'De ${formatCurrency(product.price)} / un.',
-            style: AppTypography.title,
-          ),
-          const SizedBox(height: AppSpacing.lg),
-          SurfaceCard(
-            child: Column(
-              children: <Widget>[
-                _DetailLine(
-                  icon: Icons.schedule,
-                  label: 'Entrega aproximada',
-                  value: '${product.estimatedMinutes} min',
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                const _DetailLine(
-                  icon: Icons.location_on_outlined,
-                  label: 'Taxa de entrega',
-                  value: 'R\$ 7,50',
-                ),
-                const SizedBox(height: AppSpacing.sm),
-                const _DetailLine(
-                  icon: Icons.verified_outlined,
-                  label: 'Catálogo',
-                  value: 'Demonstração acadêmica',
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: AppSpacing.lg),
-          const SectionHeader(title: 'Descrição'),
-          Text(product.description, style: AppTypography.body),
-          const SizedBox(height: AppSpacing.xl),
-          AppButton(
-            label: 'Adicionar ao carrinho',
-            variant: AppButtonVariant.accent,
-            icon: Icons.add_shopping_cart,
-            onPressed: () {
-              AppScope.of(context).addProduct(product);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('${product.name} adicionado.')),
-              );
-            },
-          ),
-        ],
+        ),
       ),
     );
   }

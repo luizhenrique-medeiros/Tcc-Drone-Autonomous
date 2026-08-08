@@ -25,6 +25,9 @@ export const readyVehicle: Vehicle = {
 };
 
 export const readyHealth: VehicleHealth = {
+  source: 'SITL',
+  received_at: '2026-08-06T12:00:01Z',
+  is_stale: false,
   vehicle_id: readyVehicle.id,
   connected: true,
   heartbeat_ok: true,
@@ -34,6 +37,7 @@ export const readyHealth: VehicleHealth = {
   satellites: 14,
   ekf_ok: true,
   battery_percent: 80,
+  battery_voltage: null,
   origin_known: true,
   geofence_enabled: true,
   rtl_configured: true,

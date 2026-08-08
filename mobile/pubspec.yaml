@@ -1,5 +1,5 @@
 name: drone_delivery_mobile
-description: Aplicativo Android do cliente para entregas acadêmicas por drone.
+description: Aplicativo Flutter Android e Web do cliente para entregas por drone.
 publish_to: "none"
 version: 0.1.0+1
 
@@ -9,8 +9,15 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  cupertino_icons: 1.0.9
+  flutter_svg: 2.3.0
   geolocator: 14.0.3
-  google_maps_flutter: 2.18.0
+  http: 1.6.0
+  maplibre_gl: 0.26.2
+  url_launcher: 6.3.2
+  web_socket_channel: 3.0.3
+  flutter_secure_storage: 10.3.1
+  web: 1.1.1
 
 dev_dependencies:
   flutter_test:

@@ -19,6 +19,8 @@ class AppController extends ChangeNotifier {
     required this.mapProvider,
     required this.locationService,
     required this.isDemoMode,
+    this.mapInitializationMessage,
+    this.disposeResources,
   }) : _authRepository = authRepository,
        _productRepository = productRepository,
        _checkoutRepository = checkoutRepository;
@@ -29,11 +31,14 @@ class AppController extends ChangeNotifier {
   final MapProvider mapProvider;
   final LocationService locationService;
   final bool isDemoMode;
+  String? mapInitializationMessage;
+  final VoidCallback? disposeResources;
 
   UserSession? session;
   List<Product> products = <Product>[];
   bool isLoadingProducts = false;
   String? productsError;
+  String? initializationError;
   final Map<String, int> _quantities = <String, int>{};
   PlaceSuggestion? approximatePlace;
   GeoCoordinate? exactCoordinate;
@@ -43,7 +48,9 @@ class AppController extends ChangeNotifier {
   OrderSnapshot? order;
   bool isSubmittingOrder = false;
   String? checkoutError;
+  bool mapViewReady = false;
   StreamSubscription<OrderSnapshot>? _trackingSubscription;
+  Future<void>? _initialization;
 
   bool get isAuthenticated => session != null;
   int get cartCount => _quantities.values.fold<int>(0, (int a, int b) => a + b);
@@ -65,12 +72,33 @@ class AppController extends ChangeNotifier {
     (double total, CartLine line) => total + line.total,
   );
   double get deliveryFee => cartCount == 0 ? 0 : 7.50;
-  double get total => subtotal + deliveryFee;
+  double get discount => _money(subtotal * 0.20);
+  double get total => _money(subtotal + deliveryFee - discount);
+
+  double _money(double value) => (value * 100).roundToDouble() / 100;
 
   /// Demo data is public and can be prepared while the login screen is shown.
   /// The API catalog is authenticated, so real mode waits for a valid session.
-  Future<void> initialize() async {
-    if (isDemoMode) await loadProducts();
+  Future<void> initialize() => _initialization ??= _initialize();
+
+  Future<void> _initialize() async {
+    try {
+      if (isDemoMode) {
+        await loadProducts();
+        return;
+      }
+      session = await _authRepository.restoreSession();
+      if (session != null) {
+        await loadProducts();
+        await _restoreActiveOrder();
+      }
+    } on Object {
+      session = null;
+      initializationError =
+          'Não foi possível restaurar a sessão local. Entre novamente.';
+    } finally {
+      notifyListeners();
+    }
   }
 
   Future<void> loadProducts() async {
@@ -87,12 +115,50 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _restoreActiveOrder() async {
+    try {
+      final OrderSnapshot? activeOrder = await _checkoutRepository
+          .findLatestActiveOrder();
+      if (activeOrder == null ||
+          activeOrder.status == OrderStatus.draft ||
+          activeOrder.status.isTerminal) {
+        return;
+      }
+      order = activeOrder;
+      checkoutError = null;
+      await _startTracking(activeOrder);
+    } on Object catch (error) {
+      checkoutError =
+          'Não foi possível recuperar o pedido em andamento: $error';
+    }
+  }
+
+  Future<void> _startTracking(OrderSnapshot initialOrder) async {
+    await _trackingSubscription?.cancel();
+    _trackingSubscription = null;
+    if (initialOrder.status.isTerminal) return;
+
+    _trackingSubscription = _checkoutRepository
+        .watchOrder(initialOrder.id)
+        .listen(
+          (OrderSnapshot snapshot) {
+            order = snapshot;
+            notifyListeners();
+          },
+          onError: (Object error) {
+            checkoutError = 'Não foi possível atualizar o pedido: $error';
+            notifyListeners();
+          },
+        );
+  }
+
   Future<String?> login({
     required String email,
     required String password,
   }) async {
     try {
       session = await _authRepository.login(email: email, password: password);
+      initializationError = null;
       await loadProducts();
       notifyListeners();
       return null;
@@ -114,6 +180,7 @@ class AppController extends ChangeNotifier {
         password: password,
         phone: phone,
       );
+      initializationError = null;
       await loadProducts();
       notifyListeners();
       return null;
@@ -122,22 +189,26 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  void logout() {
-    _authRepository.clearSession();
-    session = null;
-    products = <Product>[];
-    productsError = null;
-    _quantities.clear();
-    approximatePlace = null;
-    exactCoordinate = null;
-    deliveryInstructions = '';
-    safeAreaConfirmed = false;
-    paymentMethod = SimulatedPaymentMethod.pix;
-    order = null;
-    checkoutError = null;
-    unawaited(_trackingSubscription?.cancel());
-    _trackingSubscription = null;
-    notifyListeners();
+  Future<void> logout() async {
+    try {
+      await _authRepository.clearSession();
+    } finally {
+      session = null;
+      products = <Product>[];
+      productsError = null;
+      initializationError = null;
+      _quantities.clear();
+      approximatePlace = null;
+      exactCoordinate = null;
+      deliveryInstructions = '';
+      safeAreaConfirmed = false;
+      paymentMethod = SimulatedPaymentMethod.pix;
+      order = null;
+      checkoutError = null;
+      await _trackingSubscription?.cancel();
+      _trackingSubscription = null;
+      notifyListeners();
+    }
   }
 
   void addProduct(Product product) {
@@ -183,6 +254,20 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void markMapViewReady() {
+    if (mapViewReady && mapInitializationMessage == null) return;
+    mapViewReady = true;
+    mapInitializationMessage = null;
+    notifyListeners();
+  }
+
+  void markMapViewFailed(String message) {
+    if (!mapViewReady && mapInitializationMessage == message) return;
+    mapViewReady = false;
+    mapInitializationMessage = message;
+    notifyListeners();
+  }
+
   Future<String?> submitOrder() async {
     final PlaceSuggestion? place = approximatePlace;
     final GeoCoordinate? coordinate = exactCoordinate;
@@ -192,10 +277,13 @@ class AppController extends ChangeNotifier {
     if (!safeAreaConfirmed) {
       return 'Confirme manualmente que o marcador está em uma área aberta.';
     }
+    if (!coordinate.isValid || !(place.coordinate?.isValid ?? false)) {
+      return 'As coordenadas de entrega estão fora da faixa válida.';
+    }
 
     if (!isDemoMode && mapProvider.isDevelopmentFallback) {
-      return 'Pedido bloqueado: o modo integrado exige Google Maps configurado; '
-          'o fallback local é exclusivo da demonstração.';
+      return 'Pedido bloqueado: configure o MapTiler online antes de '
+          'confirmar coordenadas no modo integrado.';
     }
 
     isSubmittingOrder = true;
@@ -210,27 +298,12 @@ class AppController extends ChangeNotifier {
             finalCoordinate: coordinate,
             instructions: deliveryInstructions,
             safeAreaConfirmed: safeAreaConfirmed,
-            mapProvider: mapProvider.isDevelopmentFallback
-                ? 'development_fallback'
-                : 'google_maps',
+            mapProvider: mapProvider.id,
           ),
           paymentMethod: paymentMethod,
         ),
       );
-      final String orderId = order!.id;
-      await _trackingSubscription?.cancel();
-      _trackingSubscription = _checkoutRepository
-          .watchOrder(orderId)
-          .listen(
-            (OrderSnapshot snapshot) {
-              order = snapshot;
-              notifyListeners();
-            },
-            onError: (Object error) {
-              checkoutError = 'Não foi possível atualizar o pedido: $error';
-              notifyListeners();
-            },
-          );
+      await _startTracking(order!);
       return null;
     } on Object catch (error) {
       checkoutError = error.toString();
@@ -244,6 +317,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     unawaited(_trackingSubscription?.cancel());
+    disposeResources?.call();
     super.dispose();
   }
 }

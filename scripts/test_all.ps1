@@ -1,5 +1,9 @@
 [CmdletBinding()]
-param([switch]$SkipBuilds)
+param(
+    [switch]$SkipBuilds,
+    [switch]$SkipWebBuild,
+    [switch]$BuildReleaseApk
+)
 
 $ErrorActionPreference = 'Continue'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -51,19 +55,31 @@ if ($flutterCommand -and $dartCommand) {
     }
     $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
     $env:DART_SUPPRESS_ANALYTICS = 'true'
+    Invoke-Checked 'flutter pub get' $mobileRoot { & $flutterCommand pub get }
     Invoke-Checked 'dart format' $mobileRoot { & $dartCommand format --output=none --set-exit-if-changed lib test }
     Invoke-Checked 'flutter analyze' $mobileRoot { & $flutterCommand analyze }
     Invoke-Checked 'flutter test' $mobileRoot { & $flutterCommand test }
     if (-not $SkipBuilds) {
         Invoke-Checked 'flutter clean' $mobileRoot { & $flutterCommand clean }
+        if (-not $SkipWebBuild) {
+            Invoke-Checked 'flutter web release' $mobileRoot {
+                & $flutterCommand build web --release `
+                    --dart-define=APP_ENVIRONMENT=local_web `
+                    --dart-define=DEMO_MODE=true `
+                    --dart-define=MAPTILER_CONFIGURED=false
+            }
+        }
         Invoke-Checked 'flutter apk debug' $mobileRoot { & $flutterCommand build apk --debug --dart-define=DEMO_MODE=true }
+        if ($BuildReleaseApk) {
+            Invoke-Checked 'flutter apk release' $mobileRoot { & $flutterCommand build apk --release --dart-define=DEMO_MODE=true }
+        }
     }
 } else {
     $failures.Add('Flutter/Dart não encontrados')
 }
 Remove-AsciiWorkspaceAlias $workspaceAlias
 
-Invoke-Checked 'docker compose config' $projectRoot { & docker compose config }
+Invoke-Checked 'docker compose config' $projectRoot { & docker compose config --quiet }
 
 if ($failures.Count -gt 0) {
     Write-Host "`nFalhas:" -ForegroundColor Red

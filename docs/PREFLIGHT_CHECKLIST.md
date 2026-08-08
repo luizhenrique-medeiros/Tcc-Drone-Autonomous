@@ -32,6 +32,8 @@ Este checklist é preenchido por operador responsável para uma missão e versã
 - [ ] RTL altitude/destino/comportamento revisados;
 - [ ] RC conectado, modos e failsafe testados; operador mantém controle;
 - [ ] telemetria e heartbeat estáveis, antenas corretas e bateria exibida coerente.
+- [ ] painel identifica `HARDWARE REAL`, `received_at` recente e nenhum campo obrigatório como `--`;
+- [ ] Mission Planner e gateway recebem o mesmo veículo sem disputar a porta COM.
 
 ## 4. Sistema e missão
 
@@ -39,7 +41,7 @@ Este checklist é preenchido por operador responsável para uma missão e versã
 - [ ] hash/versão exibidos são os revisados no Mission Planner;
 - [ ] distância e altitude respeitam limites;
 - [ ] veículo está desarmado durante revisão/upload;
-- [ ] health snapshot é recente e todos os checks automatizados passaram;
+- [ ] health snapshot recebido pelo servidor é recente, possui origem conhecida e todos os checks automatizados passaram;
 - [ ] autorização de voo ainda não expirou e pertence à versão;
 - [ ] logs/API/gateway estão prontos, sem depender deles para failsafe físico;
 - [ ] comando de abortamento/RTL foi verificado no estágio anterior (fake/SITL/bancada).

@@ -93,7 +93,6 @@ class BackendClient:
             "POST",
             f"/api/v1/gateway/missions/{mission_id}/claim",
             json={"gateway_id": self._settings.gateway_id},
-            headers={"Idempotency-Key": f"claim:{self._settings.gateway_id}:{mission_id}"},
         )
         return self._model(ClaimResponse, response)
 
@@ -197,9 +196,7 @@ class BackendClient:
         event_id: UUID | None = None,
     ) -> UUID:
         normalized_severity = severity.upper()
-        if normalized_severity == "CRITICAL":
-            normalized_severity = "ERROR"
-        if normalized_severity not in {"INFO", "WARNING", "ERROR"}:
+        if normalized_severity not in {"INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise BackendContractError(f"Severidade de evento inválida: {severity}.")
         identifier = event_id or uuid4()
         event_metadata = dict(metadata or {})

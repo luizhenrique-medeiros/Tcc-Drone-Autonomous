@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.models import TelemetrySnapshot
+from app.models import OperationalSource, TelemetrySnapshot
 
 
 def normalize_telemetry(
@@ -15,10 +15,12 @@ def normalize_telemetry(
     satellites: int,
     flight_mode: str,
     armed: bool,
+    source: OperationalSource = OperationalSource.UNKNOWN,
     recorded_at: datetime | None = None,
 ) -> TelemetrySnapshot:
     ground_speed = (velocity_x_cm_s**2 + velocity_y_cm_s**2) ** 0.5 / 100
     return TelemetrySnapshot(
+        source=source,
         latitude=latitude_e7 / 10_000_000,
         longitude=longitude_e7 / 10_000_000,
         relative_altitude_m=relative_altitude_mm / 1000,

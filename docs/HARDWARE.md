@@ -30,7 +30,9 @@ Este documento prepara a integração, mas não confirma montagem. O único cont
 
 ## Pixhawk, ArduPilot e Mission Planner
 
-Firmware/frame e parâmetros só são definidos após a montagem. O software não desativa `ARMING_CHECK`, geofence ou failsafes, nem força EKF/GPS. Mission Planner permanece ferramenta de calibração, mensagens, logs e operação.
+Firmware/frame e parâmetros só são definidos após a montagem. O software não desativa `ARMING_CHECK`, geofence ou failsafes, nem força EKF/GPS. Mission Planner permanece ferramenta de calibração, mensagens, logs e operação. A primeira topologia recomendada é Mission Planner na porta COM e encaminhamento UDP ao gateway; dois programas não devem disputar a mesma COM. Consulte [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md).
+
+Antes da bancada, registrar sem estimativa: revisão exata da Pixhawk, firmware/versão do ArduPilot, frame, Windows utilizado, conexão USB ou rádio, modelo/frequência do rádio, porta COM, baud, endpoint UDP/TCP encaminhado, parâmetros `SERIALx_*` relevantes, system/component ID observados, mensagem de heartbeat e logs de conexão.
 
 ## Energia e propulsão
 
@@ -49,6 +51,7 @@ Definir retenção mecânica, massa/CG, comando, confirmação e estado seguro s
 - nenhuma pinagem validada;
 - nenhum frame/propulsão/bateria identificado;
 - nenhuma conexão Pixhawk executada nesta implementação de software;
+- porta COM, baud, firmware, frame, rádio e endpoint real ainda não fornecidos;
 - nenhuma calibração, bancada, motor, voo manual, missão ou entrega real comprovados.
 
 Use [Checklist](PREFLIGHT_CHECKLIST.md), [Segurança](SECURITY.md) e [Plano de demonstração](DEMO_PLAN.md) para registrar evidências.

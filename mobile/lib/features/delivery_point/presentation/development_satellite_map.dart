@@ -33,9 +33,15 @@ class DevelopmentSatelliteMap extends StatefulWidget {
 class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
   Offset _normalized = Offset.zero;
 
-  void _move(Offset localPosition, Size size) {
-    final double dx = (localPosition.dx / size.width - 0.5).clamp(-0.46, 0.46);
-    final double dy = (localPosition.dy / size.height - 0.5).clamp(-0.46, 0.46);
+  void _move(Offset delta, Size size) {
+    final double dx = (_normalized.dx - delta.dx / size.width).clamp(
+      -0.46,
+      0.46,
+    );
+    final double dy = (_normalized.dy - delta.dy / size.height).clamp(
+      -0.46,
+      0.46,
+    );
     setState(() => _normalized = Offset(dx, dy));
     widget.onCoordinateChanged(
       widget.provider.moveMarker(
@@ -50,11 +56,11 @@ class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
   Widget build(BuildContext context) {
     return Semantics(
       label:
-          'Mapa em visão de satélite demonstrativa. Toque ou arraste o marcador para escolher o ponto exato.',
+          'Mapa local. Mova a superfície sob o pino central para escolher o ponto.',
       child: ClipRRect(
         borderRadius: AppRadii.large,
         child: SizedBox(
-          height: 360,
+          height: widget.interactive ? 360 : 220,
           child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
               final Size size = Size(
@@ -63,18 +69,21 @@ class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
               );
               return GestureDetector(
                 key: const Key('development-satellite-map'),
-                onTapDown: widget.interactive
-                    ? (TapDownDetails details) =>
-                          _move(details.localPosition, size)
-                    : null,
                 onPanUpdate: widget.interactive
-                    ? (DragUpdateDetails details) =>
-                          _move(details.localPosition, size)
+                    ? (DragUpdateDetails details) => _move(details.delta, size)
                     : null,
                 child: Stack(
                   children: <Widget>[
-                    const Positioned.fill(
-                      child: CustomPaint(painter: _SatellitePreviewPainter()),
+                    Positioned.fill(
+                      child: Transform.translate(
+                        offset: Offset(
+                          -_normalized.dx * 60,
+                          -_normalized.dy * 60,
+                        ),
+                        child: const CustomPaint(
+                          painter: _SatellitePreviewPainter(),
+                        ),
+                      ),
                     ),
                     Positioned(
                       top: AppSpacing.sm,
@@ -89,17 +98,19 @@ class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
                           borderRadius: AppRadii.pill,
                         ),
                         child: Text(
-                          'SATÉLITE · FALLBACK DEV',
+                          'MAPA LOCAL',
                           style: AppTypography.caption.copyWith(
                             color: AppColors.surface,
                           ),
                         ),
                       ),
                     ),
-                    Positioned(
-                      left: (size.width * (0.5 + _normalized.dx)) - 24,
-                      top: (size.height * (0.5 + _normalized.dy)) - 48,
-                      child: const _DraggableMarker(),
+                    Align(
+                      alignment: Alignment.center,
+                      child: Transform.translate(
+                        offset: const Offset(0, -22),
+                        child: const _DraggableMarker(),
+                      ),
                     ),
                   ],
                 ),

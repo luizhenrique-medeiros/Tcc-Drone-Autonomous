@@ -10,7 +10,7 @@ router = APIRouter(prefix="/maps", tags=["Mapas"])
 @router.get(
     "/places/search",
     response_model=list[PlaceSuggestion],
-    summary="Pesquisar regiões aproximadas pelo Google Places",
+    summary="Pesquisar regiões aproximadas pelo MapTiler",
 )
 async def places_search(
     settings: AppSettings,

@@ -378,15 +378,25 @@ def claim_mission(
 
 
 GATEWAY_TRANSITIONS: dict[MissionStatus, set[MissionStatus]] = {
-    MissionStatus.UPLOADING: {MissionStatus.UPLOADED, MissionStatus.FAILED},
-    MissionStatus.UPLOADED: {MissionStatus.EXECUTING, MissionStatus.FAILED},
+    MissionStatus.UPLOADING: {
+        MissionStatus.UPLOADED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.UPLOADED: {
+        MissionStatus.EXECUTING,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
     MissionStatus.EXECUTING: {
         MissionStatus.DESTINATION_REACHED,
+        MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
     MissionStatus.DESTINATION_REACHED: {
         MissionStatus.DELIVERY_CONFIRMED,
+        MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
@@ -460,18 +470,35 @@ def apply_gateway_status(
     return mission, True
 
 
-def request_safety_action(session: Session, mission: Mission, admin: User, action: str) -> Mission:
-    allowed_states = {
-        MissionStatus.UPLOADING,
-        MissionStatus.UPLOADED,
-        MissionStatus.EXECUTING,
-        MissionStatus.DESTINATION_REACHED,
-        MissionStatus.DELIVERY_CONFIRMED,
-        MissionStatus.RETURNING,
-    }
+def request_safety_action(
+    session: Session,
+    mission: Mission,
+    admin: User,
+    action: str,
+    reason: str | None = None,
+    *,
+    commit: bool = True,
+) -> Mission:
+    command_type = GatewayCommandType(action)
+    allowed_states = (
+        {
+            MissionStatus.UPLOADING,
+            MissionStatus.UPLOADED,
+            MissionStatus.EXECUTING,
+            MissionStatus.DESTINATION_REACHED,
+            MissionStatus.DELIVERY_CONFIRMED,
+            MissionStatus.RETURNING,
+        }
+        if command_type is GatewayCommandType.ABORT
+        else {
+            MissionStatus.EXECUTING,
+            MissionStatus.DESTINATION_REACHED,
+            MissionStatus.DELIVERY_CONFIRMED,
+            MissionStatus.RETURNING,
+        }
+    )
     if mission.status not in allowed_states:
         raise InvalidStateError("A ação de segurança não é válida para o estado atual")
-    command_type = GatewayCommandType(action)
     existing = session.scalar(
         select(GatewayCommand).where(
             GatewayCommand.mission_id == mission.id,
@@ -487,6 +514,7 @@ def request_safety_action(session: Session, mission: Mission, admin: User, actio
         mission_id=mission.id,
         requested_by_id=admin.id,
         command=command_type,
+        reason=reason,
         status=GatewayCommandStatus.PENDING,
     )
     session.add(command)
@@ -499,11 +527,15 @@ def request_safety_action(session: Session, mission: Mission, admin: User, actio
         mission_id=mission.id,
         vehicle_id=mission.vehicle_id,
         event_type=f"{action}_REQUESTED",
-        message=f"Administrador solicitou {action}; aguarda confirmação do gateway/ArduPilot",
+        message=(
+            f"Administrador solicitou {action}; aguarda confirmação do gateway/ArduPilot"
+            + (f". Motivo: {reason}" if reason else "")
+        ),
         severity=EventSeverity.CRITICAL,
-        metadata={"command_id": str(command.id)},
+        metadata={"command_id": str(command.id), "reason": reason},
     )
-    session.commit()
+    if commit:
+        session.commit()
     return mission
 
 

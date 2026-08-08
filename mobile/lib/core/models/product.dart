@@ -8,8 +8,8 @@ class Product {
     required this.category,
     required this.kind,
     required this.price,
-    required this.rating,
-    required this.estimatedMinutes,
+    this.rating,
+    this.estimatedMinutes,
     this.available = true,
   });
 
@@ -19,34 +19,60 @@ class Product {
   final String category;
   final ProductKind kind;
   final double price;
-  final double rating;
-  final int estimatedMinutes;
+  final double? rating;
+  final int? estimatedMinutes;
   final bool available;
 
   factory Product.fromJson(Map<String, Object?> json) {
-    final String name = (json['name'] ?? json['title'] ?? 'Produto').toString();
+    final String id = json['id']?.toString().trim() ?? '';
+    final String name =
+        (json['name'] ?? json['title'])?.toString().trim() ?? '';
+    if (id.isEmpty || name.isEmpty) {
+      throw const FormatException('Produto sem id ou nome.');
+    }
+    final double price = _requiredDouble(json['price'] ?? json['unit_price']);
+    final double? rating = _toNullableDouble(json['rating']);
+    final int? estimatedMinutes = _toNullableInt(json['estimated_minutes']);
+    if (!price.isFinite || price < 0) {
+      throw const FormatException('Produto com preço inválido.');
+    }
+    if (rating != null && (!rating.isFinite || rating < 0 || rating > 5)) {
+      throw const FormatException('Produto com avaliação inválida.');
+    }
+    if (estimatedMinutes != null && estimatedMinutes < 0) {
+      throw const FormatException('Produto com prazo estimado inválido.');
+    }
     return Product(
-      id: (json['id'] ?? '').toString(),
+      id: id,
       name: name,
-      description: (json['description'] ?? 'Produto acadêmico de demonstração')
-          .toString(),
-      category: (json['category'] ?? 'Destaques').toString(),
+      description: json['description']?.toString() ?? '',
+      category: json['category']?.toString() ?? '',
       kind: _kindFrom(name, json['category']?.toString()),
-      price: _toDouble(json['price'] ?? json['unit_price']),
-      rating: _toDouble(json['rating'], fallback: 4.8),
-      estimatedMinutes: _toInt(json['estimated_minutes'], fallback: 30),
-      available: json['available'] is bool ? json['available']! as bool : true,
+      price: price,
+      rating: rating,
+      estimatedMinutes: estimatedMinutes,
+      available: json['available'] is bool ? json['available']! as bool : false,
     );
   }
 
-  static double _toDouble(Object? value, {double fallback = 0}) {
+  static double _requiredDouble(Object? value) {
     if (value is num) return value.toDouble();
-    return double.tryParse(value?.toString() ?? '') ?? fallback;
+    final double? parsed = double.tryParse(value?.toString() ?? '');
+    if (parsed == null)
+      throw const FormatException('Produto sem preço válido.');
+    return parsed;
   }
 
-  static int _toInt(Object? value, {required int fallback}) {
+  static double? _toNullableDouble(Object? value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
+  static int? _toNullableInt(Object? value) {
+    if (value == null) return null;
     if (value is num) return value.toInt();
-    return int.tryParse(value?.toString() ?? '') ?? fallback;
+    return int.tryParse(value.toString());
   }
 
   static ProductKind _kindFrom(String name, String? category) {

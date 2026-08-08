@@ -103,6 +103,7 @@ class GatewayCommand(Base):
     command: Mapped[GatewayCommandType] = mapped_column(
         Enum(GatewayCommandType, name="gateway_command_type", native_enum=False), nullable=False
     )
+    reason: Mapped[str | None] = mapped_column(Text)
     status: Mapped[GatewayCommandStatus] = mapped_column(
         Enum(GatewayCommandStatus, name="gateway_command_status", native_enum=False),
         default=GatewayCommandStatus.PENDING,

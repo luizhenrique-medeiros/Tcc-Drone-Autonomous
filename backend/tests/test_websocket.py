@@ -1,4 +1,26 @@
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+
+def test_development_diagnostics_websocket_is_reachable(client: TestClient) -> None:
+    with client.websocket_connect(
+        "/api/v1/ws/diagnostics",
+        headers={"origin": "http://localhost:5174"},
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "diagnostics.connected"}
+
+
+def test_browser_websocket_rejects_unknown_origin(client: TestClient) -> None:
+    with (
+        pytest.raises(WebSocketDisconnect) as captured,
+        client.websocket_connect(
+            "/api/v1/ws/diagnostics",
+            headers={"origin": "https://external.invalid"},
+        ),
+    ):
+        pass
+    assert captured.value.code == 4403
 
 
 def test_admin_websocket_authenticates_in_first_message(client: TestClient) -> None:
