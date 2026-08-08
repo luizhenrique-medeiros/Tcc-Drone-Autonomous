@@ -27,7 +27,12 @@ class ProductDetailScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.all(AppSpacing.screen),
             children: <Widget>[
-              ProductArtwork(kind: product.kind, height: 240),
+              ProductArtwork(
+                kind: product.kind,
+                imageUrl: product.imageUrl,
+                semanticLabel: product.name,
+                height: 240,
+              ),
               const SizedBox(height: AppSpacing.lg),
               Text(product.name, style: AppTypography.headline),
               const SizedBox(height: AppSpacing.sm),

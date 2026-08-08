@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.exceptions import CoverageError, InvalidCoordinatesError, NotFoundError
+from app.core.exceptions import InvalidCoordinatesError, NotFoundError
 from app.database.types import point_ewkt
 from app.modules.delivery_points.models import DeliveryPoint
 from app.modules.delivery_points.schemas import DeliveryPointInput, DeliveryPointValidation
@@ -29,7 +29,7 @@ def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> 
 
 
 def validate_delivery_point(
-    payload: DeliveryPointInput, settings: Settings, *, raise_outside: bool = True
+    payload: DeliveryPointInput, settings: Settings
 ) -> DeliveryPointValidation:
     if not payload.region_confirmed:
         raise InvalidCoordinatesError(
@@ -69,23 +69,16 @@ def validate_delivery_point(
             payload.final_latitude,
             payload.final_longitude,
         )
-    within_coverage = base_distance <= Decimal(str(settings.max_mission_distance_m))
-    result = DeliveryPointValidation(
-        valid=within_coverage,
-        within_coverage=within_coverage,
+    return DeliveryPointValidation(
+        valid=True,
+        within_coverage=True,
         final_latitude=payload.final_latitude,
         final_longitude=payload.final_longitude,
         distance_from_approximate_m=approximate_distance,
         distance_from_base_m=base_distance,
-        max_distance_m=Decimal(str(settings.max_mission_distance_m)),
+        max_distance_m=None,
         map_type=payload.map_type,
     )
-    if not within_coverage and raise_outside:
-        raise CoverageError(
-            "O ponto está fora da área de atendimento",
-            fields={"distance_from_base_m": str(base_distance)},
-        )
-    return result
 
 
 def create_delivery_point(

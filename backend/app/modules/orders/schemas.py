@@ -2,12 +2,39 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import OrderStatus, PaymentMethod
 from app.modules.delivery_points.schemas import DeliveryPointRead
+
+
+class OrderGroup(StrEnum):
+    ALL = "all"
+    ACTIVE = "active"
+    HISTORY = "history"
+
+
+class OrderMilestoneType(StrEnum):
+    ORDER_CREATED = "ORDER_CREATED"
+    ORDER_SUBMITTED = "ORDER_SUBMITTED"
+    ORDER_APPROVED = "ORDER_APPROVED"
+    ORDER_REJECTED = "ORDER_REJECTED"
+    ORDER_CANCELLED = "ORDER_CANCELLED"
+    MISSION_GENERATED = "MISSION_GENERATED"
+    FLIGHT_AUTHORIZED = "FLIGHT_AUTHORIZED"
+    MISSION_CLAIMED = "MISSION_CLAIMED"
+    MISSION_UPLOADING = "MISSION_UPLOADING"
+    MISSION_UPLOADED = "MISSION_UPLOADED"
+    MISSION_EXECUTING = "MISSION_EXECUTING"
+    MISSION_DESTINATION_REACHED = "MISSION_DESTINATION_REACHED"
+    MISSION_DELIVERY_CONFIRMED = "MISSION_DELIVERY_CONFIRMED"
+    MISSION_RETURNING = "MISSION_RETURNING"
+    MISSION_COMPLETED = "MISSION_COMPLETED"
+    MISSION_ABORTED = "MISSION_ABORTED"
+    MISSION_FAILED = "MISSION_FAILED"
 
 
 class OrderItemCreate(BaseModel):
@@ -30,6 +57,8 @@ class OrderItemRead(BaseModel):
     unit_price: Decimal
     quantity: int
     line_total: Decimal
+    category: str | None = None
+    image_url: str | None = None
 
 
 class OrderRead(BaseModel):
@@ -51,3 +80,12 @@ class OrderRead(BaseModel):
     updated_at: datetime
     items: list[OrderItemRead]
     delivery_point: DeliveryPointRead | None = None
+
+
+class OrderMilestoneRead(BaseModel):
+    event_type: OrderMilestoneType
+    occurred_at: datetime
+
+
+class OrderDetailRead(OrderRead):
+    milestones: list[OrderMilestoneRead]

@@ -7,6 +7,7 @@ import 'package:drone_delivery_mobile/core/models/delivery_point.dart';
 import 'package:drone_delivery_mobile/core/models/order.dart';
 import 'package:drone_delivery_mobile/core/repositories/auth_repository.dart';
 import 'package:drone_delivery_mobile/core/repositories/checkout_repository.dart';
+import 'package:drone_delivery_mobile/core/repositories/order_repository.dart';
 import 'package:drone_delivery_mobile/core/repositories/product_repository.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -117,59 +118,68 @@ void main() {
   test(
     'restaura pedido ativo e reabre acompanhamento sem aguardar eventos',
     () async {
-      final _RestoringCheckoutRepository checkout =
-          _RestoringCheckoutRepository(
-            activeOrder: const OrderSnapshot(
-              id: 'pedido-ativo',
-              status: OrderStatus.approved,
-            ),
-          );
+      final _RestoringOrderRepository orders = _RestoringOrderRepository(
+        activeOrder: const OrderSnapshot(
+          id: 'pedido-ativo',
+          status: OrderStatus.approved,
+        ),
+      );
       final AppController controller = AppController(
         authRepository: const _RestoringAuthRepository(),
         productRepository: DemoProductRepository(),
-        checkoutRepository: checkout,
+        checkoutRepository: const DemoCheckoutRepository(),
+        orderRepository: orders,
         mapProvider: const DevelopmentMapProvider(),
         locationService: const DevelopmentLocationService(),
         isDemoMode: false,
       );
       addTearDown(() async {
         controller.dispose();
-        await checkout.close();
+        await orders.close();
       });
 
       await controller.initialize().timeout(const Duration(seconds: 1));
 
-      expect(controller.order?.id, 'pedido-ativo');
-      expect(controller.order?.status, OrderStatus.approved);
-      expect(checkout.watchedOrderId, 'pedido-ativo');
+      expect(controller.orders.activeOrders.single.id, 'pedido-ativo');
+      expect(
+        controller.orders.activeOrders.single.status,
+        OrderStatus.approved,
+      );
+      expect(orders.watchedOrderId, 'pedido-ativo');
       expect(controller.approximatePlace, isNull);
       expect(controller.exactCoordinate, isNull);
       expect(controller.cartLines, isEmpty);
 
-      checkout.addUpdate(
-        const OrderSnapshot(id: 'pedido-ativo', status: OrderStatus.inTransit),
+      orders.addUpdate(
+        const OrderSnapshotEvent(
+          OrderSnapshot(id: 'pedido-ativo', status: OrderStatus.inTransit),
+        ),
       );
       await Future<void>.delayed(Duration.zero);
 
-      expect(controller.order?.status, OrderStatus.inTransit);
+      expect(
+        controller.orders.activeOrders.single.status,
+        OrderStatus.inTransit,
+      );
     },
   );
 
   test('falha ao recuperar pedido não invalida a sessão restaurada', () async {
-    final _RestoringCheckoutRepository checkout = _RestoringCheckoutRepository(
+    final _RestoringOrderRepository orders = _RestoringOrderRepository(
       error: StateError('API indisponível'),
     );
     final AppController controller = AppController(
       authRepository: const _RestoringAuthRepository(),
       productRepository: DemoProductRepository(),
-      checkoutRepository: checkout,
+      checkoutRepository: const DemoCheckoutRepository(),
+      orderRepository: orders,
       mapProvider: const DevelopmentMapProvider(),
       locationService: const DevelopmentLocationService(),
       isDemoMode: false,
     );
     addTearDown(() async {
       controller.dispose();
-      await checkout.close();
+      await orders.close();
     });
 
     await controller.initialize();
@@ -177,8 +187,8 @@ void main() {
     expect(controller.isAuthenticated, isTrue);
     expect(controller.initializationError, isNull);
     expect(controller.order, isNull);
-    expect(controller.checkoutError, contains('recuperar o pedido'));
-    expect(checkout.watchedOrderId, isNull);
+    expect(controller.orders.loadError, contains('API indisponível'));
+    expect(orders.watchedOrderId, isNull);
   });
 }
 
@@ -210,33 +220,45 @@ class _RestoringAuthRepository implements AuthRepository {
   );
 }
 
-class _RestoringCheckoutRepository implements CheckoutRepository {
-  _RestoringCheckoutRepository({this.activeOrder, this.error});
+class _RestoringOrderRepository implements OrderRepository {
+  _RestoringOrderRepository({this.activeOrder, this.error});
 
   final OrderSnapshot? activeOrder;
   final Object? error;
-  final StreamController<OrderSnapshot> _updates =
-      StreamController<OrderSnapshot>.broadcast();
+  final StreamController<OrderWatchEvent> _updates =
+      StreamController<OrderWatchEvent>.broadcast();
   String? watchedOrderId;
 
   @override
-  Future<OrderSnapshot?> findLatestActiveOrder() async {
+  Future<OrderSnapshot> getOrder(String orderId) async {
+    if (activeOrder case final OrderSnapshot order) return order;
+    throw StateError('Pedido não encontrado');
+  }
+
+  @override
+  Future<OrdersPage> listOrders({
+    required OrdersGroup group,
+    required int limit,
+    required int offset,
+  }) async {
     if (error case final Object value) throw value;
-    return activeOrder;
+    final List<OrderSnapshot> items = activeOrder == null
+        ? const <OrderSnapshot>[]
+        : <OrderSnapshot>[activeOrder!];
+    return OrdersPage(
+      items: items,
+      hasMore: false,
+      returnedCount: items.length,
+    );
   }
 
   @override
-  Future<OrderSnapshot> submit(CheckoutRequest request) {
-    throw UnimplementedError();
-  }
-
-  @override
-  Stream<OrderSnapshot> watchOrder(String orderId) {
+  Stream<OrderWatchEvent> watchOrder(String orderId) {
     watchedOrderId = orderId;
     return _updates.stream;
   }
 
-  void addUpdate(OrderSnapshot snapshot) => _updates.add(snapshot);
+  void addUpdate(OrderWatchEvent event) => _updates.add(event);
 
   Future<void> close() => _updates.close();
 }

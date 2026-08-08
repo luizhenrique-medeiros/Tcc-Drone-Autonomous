@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.core.enums import AdminDecisionType, EventSeverity, OrderStatus, UserRole
@@ -21,10 +21,33 @@ from app.modules.orders.admin_schemas import (
     AdminOrderRead,
 )
 from app.modules.orders.models import Order, OrderItem
-from app.modules.orders.schemas import OrderCreate, OrderRead
+from app.modules.orders.schemas import (
+    OrderCreate,
+    OrderDetailRead,
+    OrderGroup,
+    OrderItemRead,
+    OrderMilestoneRead,
+    OrderMilestoneType,
+    OrderRead,
+)
 from app.modules.products.models import Product
+from app.modules.system_events.models import SystemEvent
 from app.modules.system_events.service import record_event
 from app.modules.users.models import User
+
+TERMINAL_ORDER_STATUSES: frozenset[OrderStatus] = frozenset(
+    {
+        OrderStatus.COMPLETED,
+        OrderStatus.CANCELLED,
+        OrderStatus.REJECTED,
+        OrderStatus.FAILED,
+    }
+)
+
+CUSTOMER_ORDER_MILESTONE_TYPES: tuple[OrderMilestoneType, ...] = tuple(OrderMilestoneType)
+CUSTOMER_ORDER_MILESTONE_EVENT_TYPES: tuple[str, ...] = tuple(
+    milestone_type.value for milestone_type in CUSTOMER_ORDER_MILESTONE_TYPES
+)
 
 
 def _money(value: Decimal) -> Decimal:
@@ -113,6 +136,39 @@ def get_order_for_user(session: Session, order_id: UUID, user: User) -> Order:
     if not order or (user.role == UserRole.CUSTOMER and order.customer_id != user.id):
         raise NotFoundError("Pedido não encontrado")
     return order
+
+
+def list_orders_for_customer(
+    session: Session,
+    customer: User,
+    group: OrderGroup,
+    limit: int,
+    offset: int,
+) -> list[Order]:
+    query = select(Order).where(
+        Order.customer_id == customer.id,
+        Order.status != OrderStatus.DRAFT,
+    )
+    if group is OrderGroup.ACTIVE:
+        query = query.where(~Order.status.in_(TERMINAL_ORDER_STATUSES))
+    elif group is OrderGroup.HISTORY:
+        query = query.where(Order.status.in_(TERMINAL_ORDER_STATUSES))
+
+    active_priority = case(
+        (Order.status.in_(TERMINAL_ORDER_STATUSES), 1),
+        else_=0,
+    )
+    return list(
+        session.scalars(
+            query.order_by(
+                active_priority.asc(),
+                Order.created_at.desc(),
+                Order.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    )
 
 
 def submit_order(session: Session, order: Order, customer: User, *, commit: bool = True) -> Order:
@@ -216,12 +272,73 @@ def reject_order(session: Session, order: Order, admin: User, reason: str) -> Or
     return order
 
 
+def orders_to_read(session: Session, orders: list[Order]) -> list[OrderRead]:
+    if not orders:
+        return []
+    points = {
+        point.id: point
+        for point in session.scalars(
+            select(DeliveryPoint).where(
+                DeliveryPoint.id.in_({order.delivery_point_id for order in orders})
+            )
+        ).all()
+    }
+    products = {
+        product.id: product
+        for product in session.scalars(
+            select(Product).where(
+                Product.id.in_({item.product_id for order in orders for item in order.items})
+            )
+        ).all()
+    }
+    results: list[OrderRead] = []
+    for order in orders:
+        result = OrderRead.model_validate(order)
+        result.items = [
+            OrderItemRead.model_validate(item).model_copy(
+                update={
+                    "category": products[item.product_id].category,
+                    "image_url": products[item.product_id].image_url,
+                }
+            )
+            if item.product_id in products
+            else OrderItemRead.model_validate(item)
+            for item in order.items
+        ]
+        point = points.get(order.delivery_point_id)
+        if point:
+            result.delivery_point = DeliveryPointRead.model_validate(point)
+        results.append(result)
+    return results
+
+
 def order_to_read(session: Session, order: Order) -> OrderRead:
-    result = OrderRead.model_validate(order)
-    point = session.get(DeliveryPoint, order.delivery_point_id)
-    if point:
-        result.delivery_point = DeliveryPointRead.model_validate(point)
-    return result
+    return orders_to_read(session, [order])[0]
+
+
+def order_detail_to_read(session: Session, order: Order) -> OrderDetailRead:
+    result = order_to_read(session, order)
+    events = session.scalars(
+        select(SystemEvent)
+        .where(
+            SystemEvent.order_id == order.id,
+            SystemEvent.event_type.in_(CUSTOMER_ORDER_MILESTONE_EVENT_TYPES),
+        )
+        .order_by(SystemEvent.created_at.asc(), SystemEvent.id.asc())
+    ).all()
+    seen_event_types: set[str] = set()
+    milestones: list[OrderMilestoneRead] = []
+    for event in events:
+        if event.event_type in seen_event_types:
+            continue
+        seen_event_types.add(event.event_type)
+        milestones.append(
+            OrderMilestoneRead(
+                event_type=OrderMilestoneType(event.event_type),
+                occurred_at=event.created_at,
+            )
+        )
+    return OrderDetailRead(**result.model_dump(), milestones=milestones)
 
 
 def admin_order_to_read(session: Session, order: Order) -> AdminOrderRead:

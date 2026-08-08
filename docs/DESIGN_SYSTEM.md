@@ -36,7 +36,7 @@ Fundo quase branco (`#FBFAFD` observado), cartões brancos, azul para navegaçã
 - banner grande arredondado ocupa quase toda a largura e une azul, laranja e ilustração;
 - seção “Talvez você se interesse” e grade 2 × 2 com mídia dominante;
 - cartões têm borda mínima e título inferior; layout vira uma coluna em largura pequena/texto ampliado;
-- barra inferior fixa tem três destinos, azul ativo medido em `#306BCE` e cinza inativo;
+- barra inferior fixa tem quatro destinos (`Início`, `Buscar`, `Pedidos`, `Conta`), azul ativo medido em `#306BCE` e cinza inativo;
 - promoção é dado acadêmico, não regra fixa da aplicação.
 - em largura expandida, a navegação inferior vira `NavigationRail`; a grade usa de uma a quatro colunas conforme o espaço disponível.
 
@@ -120,11 +120,11 @@ Não é uma lista para gerar arquivos vazios. Um componente só existe quando é
 | ação | `PrimaryButton`, `AccentButton`, `DangerButton` | `Button`, `IconButton`, `ConfirmDialog` | loading/disabled/idempotência |
 | entrada | `AppTextField`, `AppPasswordField`, `SearchField` | `TextField`, `PasswordField`, `Select`, `Checkbox` | label/erro/foco |
 | superfície | `AppCard`, `SelectableCard`, `ProductCard` | `Card`, `StatCard`, `DataTable` | não duplicar bordas |
-| estado | `StatusChip`, `OrderStatusCard`, `EmptyState`, `ErrorState` | `StatusBadge`, `AlertBanner`, estados | texto + ícone + cor |
+| estado | `StatusPill`, `OrderCard`, `OrdersFilter`, `EmptyOrdersState`, `OrderProgressTimeline` | `StatusBadge`, `AlertBanner`, estados | texto + ícone + cor; status centralizado |
 | avaliação | `RatingStars`, `RatingSummary`, `ReviewTile` | somente quando útil | dados demo |
 | pagamento | `PaymentMethodTile`, `PriceSummaryCard` | não aplicável | sem campos bancários |
 | localização | `LocationStepIndicator`, `SatelliteMapView`, `DeliveryPointSummaryCard` | `MapPanel`, `OrderSummaryCard` | regras ficam na feature |
-| operação | `MissionStatusTimeline`, `TelemetrySummaryCard` | `MissionSummaryCard`, `VehicleHealthCard`, `PreflightChecklist`, `FlightAuthorizationPanel` | admin mais denso |
+| operação | `OrderItemTile`, `OrderPriceSummary`, `OrderDeliverySummary`, `OrderDateTimeline` | `MissionSummaryCard`, `VehicleHealthCard`, `AutomaticPreflightChecks`, `FlightAuthorizationPanel` | cliente detalhado; admin mais denso |
 | diagnóstico | linhas responsivas na `RuntimeDiagnosticsScreen` | ferramentas equivalentes somente quando necessárias | somente debug; nunca exibir chave ou token |
 
 Flutter centraliza padrões em `AppColors`, `AppTypography`, `AppSpacing`, `AppRadii`, `AppShadows`, `AppIconSizes`, `AppDurations`, `AppBreakpoints` e `AppTheme`. React usa CSS custom properties e componentes em `src/design-system`; features não criam cópias globais.
@@ -153,7 +153,7 @@ PrimaryButton(label: 'Entrar', isLoading: state.isSubmitting, onPressed: submit)
 
 - Referências: quatro PNGs listados acima, preservados apenas em documentação.
 - Marca: o app reutiliza o PNG original e recorta em tempo de renderização somente o retângulo da marca, preservando os pixels e sem usar o restante da screenshot como interface. Uma tentativa generativa foi rejeitada por alterar o desenho e não integra o repositório.
-- Produtos: fixtures acadêmicas com texto alternativo/`semanticLabel`; não implicam disponibilidade real.
+- Produtos: `ProductArtwork` exibe `image_url` HTTP(S) real quando disponível e conserva a ilustração local como fallback de carregamento/erro/URL inválida; ambos usam texto alternativo/`semanticLabel` e não implicam disponibilidade real.
 - Ícones: uma família coerente por plataforma; misturas precisam de revisão visual.
 - Chaves e imagens privadas nunca entram no bundle ou no repositório.
 
@@ -170,10 +170,11 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 - mapa possui resumo textual de coordenadas e controles por teclado quando suportado;
 - mapa real usa MapLibre com o estilo híbrido MapTiler e pino fixo no centro; o mapa recebe o gesto e o pino visual usa `IgnorePointer`;
 - atribuição MapTiler/OpenStreetMap e logo oficial MapTiler permanecem visíveis/linkados, sem competir com o pino ou controles;
-- telas de autenticação limitam o formulário a 460; produto/pagamento a 760; localização a 960; a Home limita o canvas a 1440;
+- telas de autenticação limitam o formulário a 460; produto/pagamento a 760; localização e lista de pedidos a 960; detalhes de pedido a 1120; a Home limita o canvas a 1440;
 - o mapa interativo mede 430 em larguras menores e 520 a partir do breakpoint expanded, sem impor largura fixa;
 - tabelas viram cartões/scroll controlado em tablet; grade mobile vira uma coluna se necessário;
 - loading, vazio, erro e retry não dependem de cor; animações respeitam preferência reduzida.
+- checks automáticos exibem texto, ícone e severidade `PASS`, `WARNING` ou `BLOCKING`; somente `BLOCKING` desabilita a autorização, e as três confirmações humanas permanecem visualmente separadas.
 
 ## Checklist visual
 

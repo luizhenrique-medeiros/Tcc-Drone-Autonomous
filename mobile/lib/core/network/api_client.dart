@@ -4,10 +4,15 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class ApiException implements Exception {
-  const ApiException(this.message, {this.statusCode});
+  const ApiException(
+    this.message, {
+    this.statusCode,
+    this.isConnectivityFailure = false,
+  });
 
   final String message;
   final int? statusCode;
+  final bool isConnectivityFailure;
 
   @override
   String toString() => message;
@@ -82,9 +87,15 @@ class ApiClient {
     } on ApiException {
       rethrow;
     } on http.ClientException catch (error) {
-      throw ApiException('API indisponível: ${error.message}');
+      throw ApiException(
+        'API indisponível: ${error.message}',
+        isConnectivityFailure: true,
+      );
     } on TimeoutException {
-      throw const ApiException('A comunicação com a API expirou.');
+      throw const ApiException(
+        'A comunicação com a API expirou.',
+        isConnectivityFailure: true,
+      );
     } on FormatException catch (error) {
       throw ApiException('URL ou resposta inválida: ${error.message}');
     }

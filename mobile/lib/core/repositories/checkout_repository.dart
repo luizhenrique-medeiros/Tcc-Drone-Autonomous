@@ -1,12 +1,10 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/delivery_point.dart';
 import '../models/order.dart';
 import '../network/api_client.dart';
+import 'order_repository.dart';
 
 class CheckoutRequest {
   const CheckoutRequest({
@@ -21,53 +19,66 @@ class CheckoutRequest {
 }
 
 abstract interface class CheckoutRepository {
-  Future<OrderSnapshot?> findLatestActiveOrder();
   Future<OrderSnapshot> submit(CheckoutRequest request);
-  Stream<OrderSnapshot> watchOrder(String orderId);
 }
 
 class DemoCheckoutRepository implements CheckoutRepository {
   const DemoCheckoutRepository({
     this.statusInterval = const Duration(seconds: 3),
+    this.orderStore,
   });
 
   final Duration statusInterval;
-
-  @override
-  Future<OrderSnapshot?> findLatestActiveOrder() async => null;
+  final DemoOrderStore? orderStore;
 
   @override
   Future<OrderSnapshot> submit(CheckoutRequest request) async {
     await Future<void>.delayed(const Duration(milliseconds: 450));
-    return OrderSnapshot(
+    final DateTime now = DateTime.now().toUtc();
+    final double subtotal = request.lines.fold<double>(
+      0,
+      (double total, CartLine line) => total + line.total,
+    );
+    final double deliveryFee = request.lines.isEmpty ? 0 : 7.50;
+    final double discount = _money(subtotal * 0.20);
+    final OrderSnapshot order = OrderSnapshot(
       id: 'DEMO-${DateTime.now().millisecondsSinceEpoch}',
       status: OrderStatus.pendingAdminApproval,
-      lastEventAt: DateTime.now().toUtc(),
+      paymentMethod: request.paymentMethod,
+      subtotal: _money(subtotal),
+      deliveryFee: deliveryFee,
+      discount: discount,
+      total: _money(subtotal + deliveryFee - discount),
+      items: request.lines
+          .map<OrderLineSnapshot>(
+            (CartLine line) => OrderLineSnapshot(
+              id: 'demo-item-${line.productId}',
+              productId: line.productId,
+              productName: line.name,
+              unitPrice: line.unitPrice,
+              quantity: line.quantity,
+              lineTotal: line.total,
+            ),
+          )
+          .toList(growable: false),
+      deliveryPoint: OrderDeliveryPointSnapshot(
+        coordinate: request.deliveryPoint.finalCoordinate,
+        label: request.deliveryPoint.approximatePlace.label,
+        referenceAddress:
+            request.deliveryPoint.approximatePlace.referenceAddress,
+        instructions: request.deliveryPoint.instructions,
+      ),
+      submittedAt: now,
+      createdAt: now,
+      updatedAt: now,
+      lastEventAt: now,
+      milestones: <OrderMilestone>[
+        OrderMilestone(eventType: 'ORDER_CREATED', occurredAt: now),
+        OrderMilestone(eventType: 'ORDER_SUBMITTED', occurredAt: now),
+      ],
     );
-  }
-
-  @override
-  Stream<OrderSnapshot> watchOrder(String orderId) async* {
-    const List<OrderStatus> progression = <OrderStatus>[
-      OrderStatus.approved,
-      OrderStatus.missionPreparing,
-      OrderStatus.missionReady,
-      OrderStatus.waitingFlightAuthorization,
-      OrderStatus.missionUploading,
-      OrderStatus.inTransit,
-      OrderStatus.atDestination,
-      OrderStatus.delivered,
-      OrderStatus.returning,
-      OrderStatus.completed,
-    ];
-    for (final OrderStatus status in progression) {
-      await Future<void>.delayed(statusInterval);
-      yield OrderSnapshot(
-        id: orderId,
-        status: status,
-        lastEventAt: DateTime.now().toUtc(),
-      );
-    }
+    orderStore?.save(order);
+    return order;
   }
 }
 
@@ -77,37 +88,6 @@ class ApiCheckoutRepository implements CheckoutRepository {
   final ApiClient _client;
   String? _attemptKey;
   String? _attemptFingerprint;
-
-  @override
-  Future<OrderSnapshot?> findLatestActiveOrder() async {
-    const int pageSize = 100;
-    int offset = 0;
-    while (true) {
-      final Object? response = await _client.get(
-        '/api/v1/orders?limit=$pageSize&offset=$offset',
-      );
-      if (response is! List) {
-        throw const ApiException('Lista de pedidos inválida recebida da API.');
-      }
-
-      for (final Object? item in response) {
-        final OrderSnapshot snapshot = OrderSnapshot.fromJson(
-          expectJsonMap(item),
-        );
-        if (snapshot.id.trim().isEmpty) {
-          throw const ApiException(
-            'A API retornou um pedido sem identificador.',
-          );
-        }
-        if (snapshot.status != OrderStatus.draft &&
-            !snapshot.status.isTerminal) {
-          return snapshot;
-        }
-      }
-      if (response.length < pageSize) return null;
-      offset += pageSize;
-    }
-  }
 
   @override
   Future<OrderSnapshot> submit(CheckoutRequest request) async {
@@ -197,88 +177,6 @@ class ApiCheckoutRepository implements CheckoutRepository {
     return OrderSnapshot.fromJson(submitted);
   }
 
-  @override
-  Stream<OrderSnapshot> watchOrder(String orderId) async* {
-    int consecutiveFailures = 0;
-    while (true) {
-      final String? token = _client.accessToken;
-      if (token != null) {
-        try {
-          await for (final OrderSnapshot snapshot in _watchSocket(
-            orderId,
-            token,
-          )) {
-            consecutiveFailures = 0;
-            yield snapshot;
-            if (snapshot.status.isTerminal) return;
-          }
-        } on Object {
-          consecutiveFailures++;
-        }
-      }
-
-      final int delaySeconds = consecutiveFailures == 0
-          ? 3
-          : min(30, 1 << min(consecutiveFailures, 5));
-      await Future<void>.delayed(Duration(seconds: delaySeconds));
-      try {
-        final OrderSnapshot snapshot = OrderSnapshot.fromJson(
-          expectJsonMap(await _client.get('/api/v1/orders/$orderId')),
-        );
-        consecutiveFailures = 0;
-        yield snapshot;
-        if (snapshot.status.isTerminal) return;
-      } on ApiException catch (error) {
-        if (error.statusCode == 401 ||
-            error.statusCode == 403 ||
-            error.statusCode == 404) {
-          rethrow;
-        }
-        consecutiveFailures++;
-      }
-    }
-  }
-
-  Stream<OrderSnapshot> _watchSocket(String orderId, String token) async* {
-    final Uri apiUri = Uri.parse(_client.baseUrl);
-    final Uri socketUri = apiUri
-        .resolve('/api/v1/ws/orders/$orderId')
-        .replace(scheme: apiUri.scheme == 'https' ? 'wss' : 'ws');
-    final WebSocketChannel socket = WebSocketChannel.connect(socketUri);
-    await socket.ready.timeout(const Duration(seconds: 10));
-    socket.sink.add(
-      jsonEncode(<String, Object?>{'type': 'AUTH', 'token': token}),
-    );
-    final Timer heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
-      socket.sink.add('ping');
-    });
-    try {
-      await for (final Object? rawMessage in socket.stream.timeout(
-        const Duration(seconds: 35),
-      )) {
-        if (rawMessage is! String) continue;
-        final Object? decoded = jsonDecode(rawMessage);
-        if (decoded is! Map) continue;
-        final Map<String, Object?> message = decoded.map<String, Object?>(
-          (Object? key, Object? value) =>
-              MapEntry<String, Object?>(key.toString(), value),
-        );
-        final String type = message['type']?.toString() ?? '';
-        if (type == 'pong') continue;
-        if (type == 'order.snapshot' || type == 'order.status') {
-          yield OrderSnapshot.fromJson(expectJsonMap(message['data']));
-        } else if (type == 'mission.status') {
-          yield OrderSnapshot.fromJson(
-            expectJsonMap(await _client.get('/api/v1/orders/$orderId')),
-          );
-        }
-      }
-    } finally {
-      heartbeat.cancel();
-      await socket.sink.close();
-    }
-  }
-
   static String _newAttemptKey() {
     final Random random = Random.secure();
     final String entropy = List<int>.generate(
@@ -288,3 +186,5 @@ class ApiCheckoutRepository implements CheckoutRepository {
     return 'mobile-checkout-$entropy';
   }
 }
+
+double _money(double value) => (value * 100).roundToDouble() / 100;

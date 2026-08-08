@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.core.enums import GatewayCommandStatus, GatewayCommandType, MissionStatus
+from app.core.enums import (
+    AuthorizationStatus,
+    GatewayCommandStatus,
+    GatewayCommandType,
+    MissionStatus,
+)
 
 
 class MissionWaypointRead(BaseModel):
@@ -54,6 +59,31 @@ class MissionRead(BaseModel):
     waypoints: list[MissionWaypointRead]
 
 
+class MissionAuthorizationRead(BaseModel):
+    id: UUID
+    administrator_id: UUID
+    administrator_name: str
+    operator_name: str
+    status: AuthorizationStatus
+    mission_version: int
+    issued_at: datetime
+    expires_at: datetime
+    used_at: datetime | None
+
+    @field_validator("issued_at", "expires_at", "used_at")
+    @classmethod
+    def normalize_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+
+class AdminMissionRead(MissionRead):
+    authorization: MissionAuthorizationRead | None = None
+
+
 class MissionReview(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
@@ -63,14 +93,14 @@ class SafetyActionRequest(BaseModel):
 
 
 class PreflightChecklist(BaseModel):
-    mission_planner_reviewed: bool
-    controlled_area_secured: bool
+    area_and_conditions_clear: bool
+    aircraft_and_payload_inspected: bool
     operator_ready: bool
-    payload_secured: bool
-    weather_checked: bool
 
 
 class FlightAuthorizationCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     vehicle_id: UUID
     operator_name: str = Field(min_length=2, max_length=120)
     controlled_area_confirmed: bool
@@ -89,7 +119,7 @@ class FlightAuthorizationRead(BaseModel):
 
 
 class MissionAuthorizationResult(BaseModel):
-    mission: MissionRead
+    mission: AdminMissionRead
     authorization: FlightAuthorizationRead
 
 

@@ -14,6 +14,8 @@ heartbeat → listar AUTHORIZED → claim atômico → preflight local
 
 `claim` consome uma autorização vigente da mesma versão. Se outro gateway já assumiu, retorna conflito. Repetir a mesma chave pelo mesmo gateway devolve o resultado conhecido.
 
+O aceite mundial do ponto no checkout não amplia o raio operacional: antes de upload ou início, o gateway rejeita a missão cuja rota ou waypoints excedam `MAX_MISSION_DISTANCE_M`.
+
 Solicitações administrativas de `RTL`/`ABORT` viram comandos persistidos. O gateway consulta `/gateway/commands/pending`, acusa recebimento e publica `COMPLETED` ou `FAILED` por `event_id`; a transição física da missão continua sendo reportada separadamente. Um comando para missão que o processo não reconhece como ativa falha e exige intervenção, em vez de agir sobre veículo incerto.
 
 ## DTO de saúde

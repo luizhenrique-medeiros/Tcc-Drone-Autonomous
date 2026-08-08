@@ -11,7 +11,7 @@ import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_icon_sizes.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
-import '../../tracking/presentation/order_tracking_screen.dart';
+import '../../orders/presentation/order_details_screen.dart';
 
 class PaymentScreen extends StatefulWidget {
   const PaymentScreen({super.key});
@@ -32,7 +32,13 @@ class _PaymentScreenState extends State<PaymentScreen> {
       return;
     }
     await Navigator.of(context).pushAndRemoveUntil<void>(
-      MaterialPageRoute<void>(builder: (_) => const OrderTrackingScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) => OrderDetailsScreen(
+          orderId: controller.order!.id,
+          controller: controller.orders,
+          mapProvider: controller.mapProvider,
+        ),
+      ),
       (Route<Object?> route) => route.isFirst,
     );
   }

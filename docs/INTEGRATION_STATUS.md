@@ -15,7 +15,7 @@ Atualizado em 7 de agosto de 2026. **Implementado** significa código inspeciona
 | estilo MapTiler | `hybrid-v4/style.json` em MapLibre, sem `iframe`/Static Maps | HTTP 200 direto e no browser; estilo GL v8, tiles, sprites e fontes carregados | renderização Web comprovada; Android runtime ainda pendente |
 | busca MapTiler | backend usa `/geocoding/{texto}.json`, `autocomplete=true`, `language=pt`, limite 5 | consulta “Atibaia” pela UI retornou cinco sugestões reais | aprovado localmente no Web; quotas e chave substituta ainda pendentes |
 | reverse geocoding MapTiler | backend envia `longitude,latitude` e adapta GeoJSON | arraste real do mapa atualizou coordenadas e endereço pela UI | aprovado localmente no Web; Android runtime ainda pendente |
-| busca mundial | `MAPS_SEARCH_COUNTRY=` vazio omite `country`; valor opcional usa ISO de duas letras | configuração/código inspecionados | cobertura do negócio continua independente do filtro de busca |
+| busca e checkout mundiais | `MAPS_SEARCH_COUNTRY=` vazio omite `country`; coordenada mundial válida passa pelo checkout | configuração/código inspecionados | limite operacional de missão permanece independente da busca e no gateway |
 | seleção de ponto | mapa híbrido, navegação livre, pino central e `onCameraIdle` | câmera inicial em Atibaia/zoom 18, arraste, confirmação de segurança e persistência pela UI | fluxo Web completo aprovado; não substitui validação técnica do local |
 | diagnóstico de runtime | rota/tela somente em debug; endpoint WS em `development`/`test` | teste automatizado anterior | não deve expor chave nem JWT; probes precisam refletir falha real |
 | WebSocket cliente/admin | sim | testes automatizados | fluxo autenticado completo no navegador precisa ser revalidado |

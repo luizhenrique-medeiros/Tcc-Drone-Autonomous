@@ -24,7 +24,7 @@ def test_requires_second_step_and_satellite_confirmation(
     assert response.status_code == 400
 
 
-def test_validates_coverage_and_persists_final_point(
+def test_validates_and_persists_final_point(
     client: TestClient,
     customer_headers: dict[str, str],
     valid_point_payload: dict[str, object],
@@ -36,6 +36,7 @@ def test_validates_coverage_and_persists_final_point(
     )
     assert validation.status_code == 200, validation.text
     assert validation.json()["within_coverage"] is True
+    assert validation.json()["max_distance_m"] is None
     assert float(validation.json()["distance_from_base_m"]) > 0
 
     created = client.post(
@@ -51,13 +52,48 @@ def test_validates_coverage_and_persists_final_point(
     assert [point["id"] for point in listed.json()] == [body["id"]]
 
 
-def test_rejects_point_outside_coverage(
+def test_accepts_distant_point_and_submits_order(
     client: TestClient,
     customer_headers: dict[str, str],
     valid_point_payload: dict[str, object],
 ) -> None:
     payload = deepcopy(valid_point_payload)
-    payload["final_latitude"] = -22.9
-    response = client.post("/api/v1/delivery-points", json=payload, headers=customer_headers)
-    assert response.status_code == 422
-    assert response.json()["code"] == "OUTSIDE_COVERAGE"
+    payload.update(
+        {
+            "searched_address": "Bom Jesus dos Perdões, SP",
+            "address_reference": "Ponto remoto de validação",
+            "approximate_latitude": -22.5972,
+            "approximate_longitude": -46.2770,
+            "final_latitude": -22.5970,
+            "final_longitude": -46.2768,
+        }
+    )
+
+    validation = client.post(
+        "/api/v1/delivery-points/validate", json=payload, headers=customer_headers
+    )
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"] is True
+    assert validation.json()["within_coverage"] is True
+    assert validation.json()["max_distance_m"] is None
+    assert float(validation.json()["distance_from_base_m"]) > 500
+
+    point = client.post("/api/v1/delivery-points", json=payload, headers=customer_headers)
+    assert point.status_code == 201, point.text
+
+    products = client.get("/api/v1/products", headers=customer_headers)
+    assert products.status_code == 200, products.text
+    order = client.post(
+        "/api/v1/orders",
+        headers=customer_headers,
+        json={
+            "delivery_point_id": point.json()["id"],
+            "payment_method": "PIX",
+            "items": [{"product_id": products.json()[0]["id"], "quantity": 1}],
+        },
+    )
+    assert order.status_code == 201, order.text
+
+    submitted = client.post(f"/api/v1/orders/{order.json()['id']}/submit", headers=customer_headers)
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "PENDING_ADMIN_APPROVAL"

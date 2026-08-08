@@ -36,6 +36,11 @@ export const DEMO_HEALTH: VehicleHealth = {
   preflight_ok: true,
   preflight_messages: [],
   measured_at: '2026-08-06T12:35:26.000Z',
+  authorization_limits: {
+    min_battery_percent: 40,
+    battery_warning_percent: 50,
+    min_gps_satellites: 10,
+  },
 };
 
 const commonPoint = {

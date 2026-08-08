@@ -20,11 +20,17 @@ Botões ficam disabled/loading durante envio e usam idempotency key para impedir
 
 Uma ação posterior prepara missão, exibe versão/hash/waypoints e oferece download QGC WPL. O operador abre no Mission Planner e registra início/conclusão da revisão. Mudar a rota gera versão nova e invalida autorização anterior.
 
-## Saúde, checklist e segunda decisão
+## Saúde automática, confirmações físicas e segunda decisão
 
-Antes de autorizar, o painel mostra conexão, origem da evidência, idade do heartbeat, modo, armamento, GPS/satélites, EKF, bateria, origem/destino/distância/altitude, versão e resultados preflight. Campo desconhecido é `--`, nunca zero/`false`. Snapshot vencido, origem desconhecida, campo obrigatório nulo ou desconexão bloqueiam prontidão. O checklist inclui área controlada e operador.
+Antes de autorizar, `AutomaticPreflightChecks` mostra conexão, origem da evidência, idade do heartbeat, modo, armamento, GPS/satélites, EKF, bateria, home, geofence, RTL, origem/destino/distância/altitude, versão e resultados preflight. Campo desconhecido é `--`, nunca zero/`false`. Cada linha é `PASS`, `WARNING` ou `BLOCKING`; snapshot vencido, origem desconhecida, campo obrigatório nulo, desconexão ou condição técnica insegura são bloqueantes. Um aviso permanece visível, mas não simula falha nem bloqueia quando o backend não o define como crítico. Os mínimos de GPS e bateria e a faixa de aviso de bateria chegam no próprio contrato de saúde; o React não mantém cópias desses limites configuráveis.
 
-`Autorizar voo` abre confirmação reforçada com frase/checkbox, envia endpoint próprio e mostra validade curta. Não aparece como continuação automática do botão Aprovar.
+O operador confirma somente três grupos que dependem de inspeção humana:
+
+1. área, condições, pessoas, decolagem, destino e retorno livres/controlados;
+2. drone, carga, fixação e mecanismo inspecionados fisicamente;
+3. operador responsável pronto para iniciar e intervir.
+
+`Autorizar missão` atualiza missão e saúde antes de abrir um único modal final com pedido, destino, distância, bateria, GPS/EKF, veículo/modo, versão/hash e avisos. Se a leitura anterior estava bloqueante, `Revalidar para autorizar` permite buscar um snapshot novo, mas não abre o modal enquanto o bloqueio persistir. Os botões finais são `Cancelar` e `Autorizar missão`; não existe campo ou validação por frase digitada. O endpoint próprio persiste os três nomes canônicos do checklist, missão/versão/hash, administrador, operador, snapshot, validade curta, uso único, idempotência e auditoria de expiração/revogação/consumo. O registro mais recente volta no detalhe da missão após reload com nome real, status e datas; expirada ou revogada nunca é apresentada como aguardando consumo. A ação não aparece como continuação automática do botão Aprovar pedido.
 
 ## Acompanhamento e incidentes
 

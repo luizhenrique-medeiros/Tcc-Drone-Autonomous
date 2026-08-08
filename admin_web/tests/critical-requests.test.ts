@@ -27,4 +27,64 @@ describe('requisições administrativas críticas', () => {
     expect(rtlHeaders['Idempotency-Key'].length).toBeGreaterThanOrEqual(8);
     expect(rtlHeaders['Idempotency-Key']).not.toBe(abortHeaders['Idempotency-Key']);
   });
+
+  it('envia exatamente as três confirmações humanas auditáveis', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: 'Falha esperada no teste' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      realApi.authorizeFlight('mission-1', {
+        vehicle_id: 'vehicle-1',
+        operator_name: 'Operador Responsável',
+        controlled_area_confirmed: true,
+        checklist: {
+          area_and_conditions_clear: true,
+          aircraft_and_payload_inspected: true,
+          operator_ready: true,
+        },
+      }),
+    ).rejects.toThrow();
+
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      vehicle_id: 'vehicle-1',
+      operator_name: 'Operador Responsável',
+      controlled_area_confirmed: true,
+      checklist: {
+        area_and_conditions_clear: true,
+        aircraft_and_payload_inspected: true,
+        operator_ready: true,
+      },
+    });
+  });
+
+  it('reutiliza a chave da tentativa de autorização após resposta ambígua', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ detail: 'Resposta temporariamente indisponível' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const input = {
+      vehicle_id: 'vehicle-retry',
+      operator_name: 'Operador Responsável',
+      controlled_area_confirmed: true as const,
+      checklist: {
+        area_and_conditions_clear: true,
+        aircraft_and_payload_inspected: true,
+        operator_ready: true,
+      },
+    };
+
+    await expect(realApi.authorizeFlight('mission-retry', input)).rejects.toThrow();
+    await expect(realApi.authorizeFlight('mission-retry', input)).rejects.toThrow();
+
+    const firstHeaders = fetchMock.mock.calls[0][1]?.headers as Record<string, string>;
+    const secondHeaders = fetchMock.mock.calls[1][1]?.headers as Record<string, string>;
+    expect(firstHeaders['Idempotency-Key']).toBe(secondHeaders['Idempotency-Key']);
+  });
 });

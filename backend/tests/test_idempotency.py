@@ -51,7 +51,8 @@ def test_order_and_submit_are_replayed_without_duplicate_side_effects(
     assert first.status_code == replay.status_code == 201
     assert first.json() == replay.json()
     assert replay.headers["idempotency-replayed"] == "true"
-    assert len(client.get("/api/v1/orders", headers=customer_headers).json()) == 1
+    # DRAFT é interno ao checkout e só entra em Meus pedidos após submit.
+    assert client.get("/api/v1/orders", headers=customer_headers).json() == []
 
     changed = deepcopy(payload)
     changed["items"][0]["quantity"] = 2
@@ -68,6 +69,8 @@ def test_order_and_submit_are_replayed_without_duplicate_side_effects(
     assert submitted.json() == submit_replay.json()
     assert submit_replay.json()["status"] == "PENDING_ADMIN_APPROVAL"
     assert submit_replay.headers["idempotency-replayed"] == "true"
+    listed = client.get("/api/v1/orders", headers=customer_headers).json()
+    assert [order["id"] for order in listed] == [first.json()["id"]]
 
 
 def test_cors_allows_idempotency_header(client: TestClient) -> None:

@@ -81,7 +81,19 @@ interface RawWaypoint {
   label: string;
 }
 
-interface RawMission {
+interface RawMissionAuthorization {
+  id: string;
+  administrator_id: string;
+  administrator_name: string;
+  operator_name: string;
+  status: 'ACTIVE' | 'CONSUMED' | 'EXPIRED' | 'REVOKED';
+  mission_version: number;
+  issued_at: string;
+  expires_at: string;
+  used_at?: string | null;
+}
+
+export interface RawMission {
   id: string;
   order_id: string;
   vehicle_id?: string | null;
@@ -101,6 +113,7 @@ interface RawMission {
   created_at: string;
   updated_at: string;
   waypoints: RawWaypoint[];
+  authorization?: RawMissionAuthorization | null;
 }
 
 interface RawAuthorizationResult {
@@ -145,6 +158,11 @@ export interface BackendVehicleHealth {
   source?: string | null;
   received_at?: string | null;
   is_stale?: boolean | null;
+  authorization_limits?: {
+    min_battery_percent: number;
+    battery_warning_percent: number;
+    min_gps_satellites: number;
+  } | null;
 }
 
 interface RawEvent {
@@ -225,10 +243,21 @@ const adaptWaypoint = (raw: RawWaypoint): Waypoint => ({
   description: raw.label,
 });
 
-const adaptMission = (
-  raw: RawMission,
-  authorization?: MissionAuthorization,
-): Mission => ({
+const adaptMissionAuthorization = (
+  raw: RawMissionAuthorization,
+): MissionAuthorization => ({
+  id: raw.id,
+  administrator_id: raw.administrator_id,
+  admin_name: raw.administrator_name,
+  operator_name: raw.operator_name,
+  status: raw.status,
+  mission_version: raw.mission_version,
+  authorized_at: raw.issued_at,
+  expires_at: raw.expires_at,
+  consumed_at: raw.used_at ?? undefined,
+});
+
+export const adaptMission = (raw: RawMission): Mission => ({
   id: raw.id,
   order_id: raw.order_id,
   status: raw.status,
@@ -253,7 +282,9 @@ const adaptMission = (
     ? `Admin #${raw.reviewed_by_id.slice(0, 8).toUpperCase()}`
     : undefined,
   vehicle_id: raw.vehicle_id ?? undefined,
-  authorization,
+  authorization: raw.authorization
+    ? adaptMissionAuthorization(raw.authorization)
+    : undefined,
   created_at: raw.created_at,
   updated_at: raw.updated_at,
 });
@@ -365,6 +396,7 @@ export const adaptVehicleHealth = (
       ? ['O gateway reportou falha nas verificações pré-voo.']
       : []),
   measured_at: raw.captured_at,
+  authorization_limits: raw.authorization_limits ?? null,
 });
 
 export const adaptTelemetryPoint = (
@@ -434,14 +466,19 @@ export const createRequestId = () =>
 const post = <T>(path: string, body: object = {}) =>
   apiRequest<T>(path, { method: 'POST', body: JSON.stringify(body) });
 
-const postCritical = <T>(path: string, body: object = {}) => {
-  const requestId = createRequestId();
+const postCritical = <T>(
+  path: string,
+  body: object = {},
+  requestId: string = createRequestId(),
+) => {
   return apiRequest<T>(path, {
     method: 'POST',
     body: JSON.stringify(body),
     headers: { 'Idempotency-Key': requestId },
   });
 };
+
+const flightAuthorizationRequestIds = new Map<string, string>();
 
 export const realApi: AdminApi = {
   login: async (input: LoginInput) => {
@@ -482,31 +519,21 @@ export const realApi: AdminApi = {
       }),
     ),
   authorizeFlight: async (id: string, input: FlightAuthorizationInput) => {
+    const requestId =
+      flightAuthorizationRequestIds.get(id) ?? createRequestId();
+    flightAuthorizationRequestIds.set(id, requestId);
     const response = await postCritical<RawAuthorizationResult>(
       `/admin/missions/${id}/authorize-flight`,
       {
         vehicle_id: input.vehicle_id,
         operator_name: input.operator_name,
         controlled_area_confirmed: input.controlled_area_confirmed,
-        checklist: {
-          mission_planner_reviewed: input.checklist.mission_reviewed,
-          controlled_area_secured:
-            input.checklist.controlled_area_confirmed &&
-            input.checklist.people_clear &&
-            input.checklist.rtl_area_clear,
-          operator_ready: input.checklist.operator_ready,
-          payload_secured: input.checklist.payload_secured,
-          weather_checked: input.checklist.weather_checked,
-        },
+        checklist: input.checklist,
       },
+      requestId,
     );
-    return adaptMission(response.mission, {
-      id: response.authorization.id,
-      admin_name: 'Administrador autenticado',
-      operator_name: input.operator_name,
-      authorized_at: response.authorization.issued_at,
-      expires_at: response.authorization.expires_at,
-    });
+    flightAuthorizationRequestIds.delete(id);
+    return adaptMission(response.mission);
   },
   abortMission: async (id: string, reason: string) =>
     adaptMission(

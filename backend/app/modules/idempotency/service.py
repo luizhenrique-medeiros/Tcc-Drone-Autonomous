@@ -72,23 +72,35 @@ def execute_idempotently(
     action: Callable[[], dict[str, object]],
 ) -> IdempotencyResult:
     fingerprint = request_fingerprint(request_payload)
+    reserved: IdempotencyRecord | None = None
     if key:
         existing = _find_record(session, user_id, operation, key)
         if existing:
             return _validate_replay(existing, fingerprint)
+        reserved = IdempotencyRecord(
+            user_id=user_id,
+            operation=operation,
+            idempotency_key=key,
+            request_sha256=fingerprint,
+            response_status=response_status,
+            response_body={},
+        )
+        session.add(reserved)
+        try:
+            # Reserve the unique key before executing side effects. On PostgreSQL,
+            # a concurrent request with the same key waits for this transaction
+            # and then replays the committed response instead of re-running the
+            # action against an already changed domain state.
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            if record := _find_record(session, user_id, operation, key):
+                return _validate_replay(record, fingerprint)
+            raise
     try:
         body = action()
-        if key:
-            session.add(
-                IdempotencyRecord(
-                    user_id=user_id,
-                    operation=operation,
-                    idempotency_key=key,
-                    request_sha256=fingerprint,
-                    response_status=response_status,
-                    response_body=body,
-                )
-            )
+        if reserved:
+            reserved.response_body = body
         session.commit()
         return IdempotencyResult(body=body, status_code=response_status, replayed=False)
     except IntegrityError:

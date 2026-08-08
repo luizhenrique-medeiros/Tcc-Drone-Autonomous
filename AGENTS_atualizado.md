@@ -371,12 +371,13 @@ drone-delivery/
 
 ### 6.4 Delivery Points
 - Latitude, longitude, rótulo, instruções e confirmação do usuário.
-- Validação de faixa e cobertura configurada.
+- Validação de faixa mundial e confirmações do usuário; a distância da base é informativa durante o checkout.
 - Endereço textual é auxiliar; coordenadas são a referência principal.
 
 ### 6.5 Orders
 - Carrinho convertido em pedido, itens, totais e forma de pagamento simulada.
 - Controla estados de negócio do pedido.
+- Expõe ao cliente somente seus pedidos, com andamento, histórico paginado, detalhe e milestones sanitizados de `SystemEvent`.
 - Não gera comandos MAVLink.
 
 ### 6.6 Missions
@@ -386,6 +387,7 @@ drone-delivery/
 
 ### 6.7 Approvals
 - Registra decisão administrativa do pedido, motivo de rejeição e autorização de voo.
+- A autorização usa checks técnicos automáticos, três confirmações humanas e um modal final; não usa frase digitada.
 - Nunca combina aprovação do pedido e autorização do voo em uma única ação.
 
 ### 6.8 Vehicles
@@ -450,7 +452,7 @@ FAILED
 - Pedido confirmado não pode ter itens ou ponto de entrega alterados silenciosamente.
 - Cada pedido possui no máximo uma missão ativa.
 - Missão não pode ficar `READY_FOR_AUTHORIZATION` sem origem, destino, altitude, exportação, revisão e validações concluídas.
-- Apenas missão `AUTHORIZED`, com autorização vigente e checklist válido, pode ser assumida pelo gateway.
+- Apenas missão `AUTHORIZED`, com autorização vigente, checks técnicos sem bloqueio e três confirmações humanas válidas, pode ser assumida pelo gateway.
 - Aprovar um pedido não inicia, não envia e não autoriza a missão.
 - Rejeição de pedido exige motivo; autorização de voo exige confirmação de área controlada.
 - Claim de missão deve impedir que dois gateways executem a mesma missão.
@@ -565,6 +567,7 @@ MAVLINK_CONNECTION=udp:127.0.0.1:14550
 REAL_HARDWARE_CONFIRMATION_REQUIRED=true
 
 DEFAULT_TAKEOFF_ALTITUDE_M=10
+# Limite operacional do gateway; não restringe salvar ou confirmar pedidos.
 MAX_MISSION_DISTANCE_M=500
 MIN_BATTERY_PERCENT=40
 MIN_GPS_SATELLITES=10

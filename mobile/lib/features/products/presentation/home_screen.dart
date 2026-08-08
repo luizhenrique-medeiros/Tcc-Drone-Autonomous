@@ -21,6 +21,7 @@ import '../../../design_system/tokens/app_typography.dart';
 import '../../auth/presentation/login_screen.dart';
 import '../../cart/presentation/cart_screen.dart';
 import '../../diagnostics/presentation/runtime_diagnostics_screen.dart';
+import '../../orders/presentation/orders_screen.dart';
 import 'product_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -52,6 +53,7 @@ class _HomeScreenState extends State<HomeScreen> {
         query: _query,
         onChanged: (String value) => setState(() => _query = value),
       ),
+      OrdersScreen(onBrowseProducts: () => setState(() => _selectedIndex = 0)),
       _ProfileTab(controller: controller),
     ];
     return LayoutBuilder(
@@ -63,9 +65,12 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         return Scaffold(
           appBar: AppBar(
-            title: _selectedIndex == 0
-                ? const BrandMark(compact: true)
-                : Text(_selectedIndex == 1 ? 'Buscar produtos' : 'Minha conta'),
+            title: switch (_selectedIndex) {
+              0 => const BrandMark(compact: true),
+              1 => const Text('Buscar produtos'),
+              2 => const Text('Meus pedidos'),
+              _ => const Text('Minha conta'),
+            },
             actions: <Widget>[
               _CartAction(count: controller.cartCount),
               const SizedBox(width: AppSpacing.xs),
@@ -89,6 +94,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         NavigationRailDestination(
                           icon: Icon(Icons.search),
                           label: Text('Buscar'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.receipt_long_outlined),
+                          selectedIcon: Icon(Icons.receipt_long),
+                          label: Text('Pedidos'),
                         ),
                         NavigationRailDestination(
                           icon: Icon(Icons.settings_outlined),
@@ -118,6 +128,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     NavigationDestination(
                       icon: Icon(Icons.search),
                       label: 'Buscar',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.receipt_long_outlined),
+                      selectedIcon: Icon(Icons.receipt_long),
+                      label: 'Pedidos',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.settings_outlined),

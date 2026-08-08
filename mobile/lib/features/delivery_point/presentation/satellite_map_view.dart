@@ -21,7 +21,7 @@ class SatelliteMapView extends StatelessWidget {
   const SatelliteMapView({
     required this.center,
     required this.provider,
-    required this.onCoordinateChanged,
+    this.onCoordinateChanged,
     this.interactive = true,
     this.onMapReady,
     this.onMapError,
@@ -30,7 +30,7 @@ class SatelliteMapView extends StatelessWidget {
 
   final GeoCoordinate center;
   final MapProvider provider;
-  final ValueChanged<GeoCoordinate> onCoordinateChanged;
+  final ValueChanged<GeoCoordinate>? onCoordinateChanged;
   final bool interactive;
   final VoidCallback? onMapReady;
   final ValueChanged<String>? onMapError;
@@ -40,7 +40,7 @@ class SatelliteMapView extends StatelessWidget {
     if (provider is MapTilerMapProvider) {
       return _MapTilerSatelliteMap(
         center: center,
-        onCoordinateChanged: onCoordinateChanged,
+        onCoordinateChanged: onCoordinateChanged ?? (_) {},
         interactive: interactive,
         onMapReady: onMapReady,
         onMapError: onMapError,
@@ -49,7 +49,7 @@ class SatelliteMapView extends StatelessWidget {
     return DevelopmentSatelliteMap(
       center: center,
       provider: provider,
-      onCoordinateChanged: onCoordinateChanged,
+      onCoordinateChanged: onCoordinateChanged ?? (_) {},
       interactive: interactive,
     );
   }
@@ -187,8 +187,9 @@ class _MapTilerSatelliteMapState extends State<_MapTilerSatelliteMap> {
               : 430
         : 240;
     return Semantics(
-      label:
-          'Mapa híbrido MapTiler. Mova o mapa sob o pino central para escolher o ponto exato.',
+      label: widget.interactive
+          ? 'Mapa híbrido MapTiler. Mova o mapa sob o pino central para escolher o ponto exato.'
+          : 'Mapa híbrido MapTiler mostrando o ponto exato da entrega.',
       child: ClipRRect(
         borderRadius: AppRadii.large,
         child: SizedBox(

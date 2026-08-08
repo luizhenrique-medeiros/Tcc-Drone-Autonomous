@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 
 import '../core/location/location_service.dart';
@@ -9,13 +7,16 @@ import '../core/models/order.dart';
 import '../core/models/product.dart';
 import '../core/repositories/auth_repository.dart';
 import '../core/repositories/checkout_repository.dart';
+import '../core/repositories/order_repository.dart';
 import '../core/repositories/product_repository.dart';
+import '../features/orders/application/orders_controller.dart';
 
 class AppController extends ChangeNotifier {
   AppController({
     required AuthRepository authRepository,
     required ProductRepository productRepository,
     required CheckoutRepository checkoutRepository,
+    OrderRepository? orderRepository,
     required this.mapProvider,
     required this.locationService,
     required this.isDemoMode,
@@ -23,11 +24,17 @@ class AppController extends ChangeNotifier {
     this.disposeResources,
   }) : _authRepository = authRepository,
        _productRepository = productRepository,
-       _checkoutRepository = checkoutRepository;
+       _checkoutRepository = checkoutRepository,
+       _trackSubmittedOrders = orderRepository != null,
+       orders = OrdersController(
+         repository: orderRepository ?? DemoOrderRepository(),
+       );
 
   final AuthRepository _authRepository;
   final ProductRepository _productRepository;
   final CheckoutRepository _checkoutRepository;
+  final bool _trackSubmittedOrders;
+  final OrdersController orders;
   final MapProvider mapProvider;
   final LocationService locationService;
   final bool isDemoMode;
@@ -49,7 +56,6 @@ class AppController extends ChangeNotifier {
   bool isSubmittingOrder = false;
   String? checkoutError;
   bool mapViewReady = false;
-  StreamSubscription<OrderSnapshot>? _trackingSubscription;
   Future<void>? _initialization;
 
   bool get isAuthenticated => session != null;
@@ -84,13 +90,18 @@ class AppController extends ChangeNotifier {
   Future<void> _initialize() async {
     try {
       if (isDemoMode) {
-        await loadProducts();
+        await Future.wait<void>(<Future<void>>[
+          loadProducts(),
+          orders.loadInitial(),
+        ]);
         return;
       }
       session = await _authRepository.restoreSession();
       if (session != null) {
-        await loadProducts();
-        await _restoreActiveOrder();
+        await Future.wait<void>(<Future<void>>[
+          loadProducts(),
+          orders.loadInitial(),
+        ]);
       }
     } on Object {
       session = null;
@@ -115,43 +126,6 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  Future<void> _restoreActiveOrder() async {
-    try {
-      final OrderSnapshot? activeOrder = await _checkoutRepository
-          .findLatestActiveOrder();
-      if (activeOrder == null ||
-          activeOrder.status == OrderStatus.draft ||
-          activeOrder.status.isTerminal) {
-        return;
-      }
-      order = activeOrder;
-      checkoutError = null;
-      await _startTracking(activeOrder);
-    } on Object catch (error) {
-      checkoutError =
-          'Não foi possível recuperar o pedido em andamento: $error';
-    }
-  }
-
-  Future<void> _startTracking(OrderSnapshot initialOrder) async {
-    await _trackingSubscription?.cancel();
-    _trackingSubscription = null;
-    if (initialOrder.status.isTerminal) return;
-
-    _trackingSubscription = _checkoutRepository
-        .watchOrder(initialOrder.id)
-        .listen(
-          (OrderSnapshot snapshot) {
-            order = snapshot;
-            notifyListeners();
-          },
-          onError: (Object error) {
-            checkoutError = 'Não foi possível atualizar o pedido: $error';
-            notifyListeners();
-          },
-        );
-  }
-
   Future<String?> login({
     required String email,
     required String password,
@@ -159,7 +133,10 @@ class AppController extends ChangeNotifier {
     try {
       session = await _authRepository.login(email: email, password: password);
       initializationError = null;
-      await loadProducts();
+      await Future.wait<void>(<Future<void>>[
+        loadProducts(),
+        orders.loadInitial(force: true),
+      ]);
       notifyListeners();
       return null;
     } on Object catch (error) {
@@ -181,7 +158,10 @@ class AppController extends ChangeNotifier {
         phone: phone,
       );
       initializationError = null;
-      await loadProducts();
+      await Future.wait<void>(<Future<void>>[
+        loadProducts(),
+        orders.loadInitial(force: true),
+      ]);
       notifyListeners();
       return null;
     } on Object catch (error) {
@@ -205,8 +185,7 @@ class AppController extends ChangeNotifier {
       paymentMethod = SimulatedPaymentMethod.pix;
       order = null;
       checkoutError = null;
-      await _trackingSubscription?.cancel();
-      _trackingSubscription = null;
+      await orders.reset();
       notifyListeners();
     }
   }
@@ -303,7 +282,7 @@ class AppController extends ChangeNotifier {
           paymentMethod: paymentMethod,
         ),
       );
-      await _startTracking(order!);
+      orders.upsertSubmitted(order!, watch: _trackSubmittedOrders);
       return null;
     } on Object catch (error) {
       checkoutError = error.toString();
@@ -316,7 +295,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
-    unawaited(_trackingSubscription?.cancel());
+    orders.dispose();
     disposeResources?.call();
     super.dispose();
   }

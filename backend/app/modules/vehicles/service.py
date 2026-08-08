@@ -11,7 +11,11 @@ from app.core.config import Settings
 from app.core.enums import VehicleStatus
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.vehicles.models import Vehicle, VehicleHealthSnapshot
-from app.modules.vehicles.schemas import VehicleHealthInput, VehicleHealthRead
+from app.modules.vehicles.schemas import (
+    VehicleAuthorizationLimits,
+    VehicleHealthInput,
+    VehicleHealthRead,
+)
 
 
 def _critical_hash(payload: VehicleHealthInput) -> str:
@@ -110,6 +114,11 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         captured_at=snapshot.captured_at,
         received_at=snapshot.received_at,
         is_stale=health_is_stale(snapshot, settings),
+        authorization_limits=VehicleAuthorizationLimits(
+            min_battery_percent=settings.min_battery_percent,
+            battery_warning_percent=min(100.0, settings.min_battery_percent + 10.0),
+            min_gps_satellites=settings.min_gps_satellites,
+        ),
     )
 
 

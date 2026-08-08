@@ -23,7 +23,7 @@ router = APIRouter(prefix="/delivery-points", tags=["Pontos de entrega"])
 @router.post(
     "/validate",
     response_model=DeliveryPointValidation,
-    summary="Validar segunda etapa e cobertura do ponto",
+    summary="Validar segunda etapa do ponto de entrega",
 )
 def validate_point(
     payload: DeliveryPointInput, settings: AppSettings, _customer: CustomerUser

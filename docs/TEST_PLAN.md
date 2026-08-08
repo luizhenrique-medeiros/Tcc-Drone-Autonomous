@@ -13,17 +13,17 @@ Teste em camada inferior não comprova camada superior.
 
 ## Backend
 
-Cobrir cadastro/login/RBAC, propriedade, pontos válidos/inválidos, PostGIS, dinheiro, submit/cancel, approve/reject/motivo, missão/versionamento/exportação/revisão, autorização separada/TTL/uso único, snapshot vencido/incompleto, idempotência, telemetria antiga/provenance, WebSocket e erros.
+Cobrir cadastro/login/RBAC, propriedade, pontos válidos/inválidos inclusive coordenada mundial distante que chega a `PENDING_ADMIN_APPROVAL`, PostGIS, dinheiro, submit/cancel, exclusão de `DRAFT` da listagem, listagem própria paginada, grupos active/history, ordenação, detalhe estrangeiro `404`, itens/valores/ponto/imagem opcional, milestones sanitizados, approve/reject/motivo, missão/versionamento/exportação/revisão, autorização separada/TTL/uso único/idempotência, persistência do registro de autorização após reload/claim, snapshot vencido/incompleto, telemetria antiga/provenance, WebSocket próprio/estrangeiro e erros.
 
 Em PostgreSQL isolado, executar `upgrade`, `alembic check`, `downgrade` e novo `upgrade`. Nunca testar downgrade destrutivo no banco do usuário sem backup.
 
 ## Mobile
 
-Cobrir formulários, restauração/expiração da sessão, catálogo/carrinho, responsividade, busca/sem resultado, abertura direta sem endereço/GPS, MapLibre/pino central/coordenadas, confirmação de área, pagamento sem dado bancário, submit e estados de acompanhamento. MapTiler real requer testes separados com chave restrita e aparelho/navegador.
+Cobrir formulários, restauração/expiração da sessão, catálogo/carrinho, responsividade, busca/sem resultado, abertura direta sem endereço/GPS, MapLibre/pino central/coordenadas mundiais, confirmação de área, pagamento sem dado bancário, submit, lista/histórico/filtros/paginação, card/título/ID curto/status, detalhe completo, timeline simplificada, estado vazio/erro/offline, atualização WebSocket, reconexão, polling e refresh manual. MapTiler real requer testes separados com chave restrita e aparelho/navegador.
 
 ## Admin
 
-Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, checklist, confirmação reforçada, idempotência, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, RTL e abortamento.
+Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, checks automáticos `PASS/WARNING/BLOCKING`, exatamente três confirmações humanas, ausência da frase, modal final, warning não bloqueante, blocker impeditivo, idempotência/duplo clique, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, RTL e abortamento.
 
 ## MapTiler e MapLibre
 
@@ -38,7 +38,7 @@ HTTP 200 do estilo ou da Geocoding API não prova renderização em browser/Andr
 
 ## Gateway
 
-Cobrir configuração segura, fake, heartbeat, normalização, preflight, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, abortamento e RTL.
+Cobrir configuração segura, fake, heartbeat, normalização, preflight, rejeição de missão acima de `MAX_MISSION_DISTANCE_M`, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, abortamento e RTL.
 
 Os testes Pymavlink usam conexão controlada em memória. Eles não abrem serial/UDP, não executam SITL e não se conectam a hardware.
 
@@ -50,17 +50,17 @@ Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenár
 
 Registrar data, local controlado, operador, hardware/firmware, checklist, missão/hash, logs Mission Planner/TLOG/dataflash e resultado real. Progressão: comunicação → sensores → upload desarmado → motores sem hélices → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno.
 
-## Evidência acumulada — atualizada em 2026-08-07
+## Evidência acumulada — atualizada em 2026-08-08
 
 | Evidência | Estado comprovado | Limite |
 |---|---|---|
-| backend | Ruff/format e 28 testes | aviso de depreciação Starlette/httpx |
+| backend | Ruff/format e 33 testes | aviso de depreciação Starlette/httpx; concorrência real de `Idempotency-Key` no PostgreSQL não foi ensaiada em paralelo |
 | gateway | Ruff/format e 31 testes | doubles; sem socket/SITL/hardware |
-| admin | ESLint, 33 testes, build Vite e smoke visual autenticado com MapTiler real | Android e chave Web substituta/restrita continuam fora desta evidência |
-| Flutter | format/analyze, 32 testes, build Web, smoke Chrome completo e APK debug configurado | APK não instalado; geolocalização concedida/timeout não exercitados |
+| admin | ESLint, 57 testes e build Vite | smoke visual do novo modal não executado: navegador/controlador visual indisponíveis nesta sessão |
+| Flutter | format/analyze, 52 testes, build Web e APK debug | smoke visual de Meus Pedidos não executado; APK não instalado; geolocalização concedida/timeout não exercitados |
 | migrations/PostGIS | head, sem drift, ciclo upgrade/downgrade aprovado em banco temporário | avisos informativos de reflexão `geography` |
-| Docker | imagens construídas; API/admin/DB healthy; gateway ativo | ambiente local, não produção |
-| integração gateway/backend | heartbeat e polling `simulation` observados | nenhum pedido foi aprovado, autorizado ou despachado |
+| Docker | imagens atualizadas; API/admin/DB healthy; gateway ativo; HTTP 200 nas portas 5173, 5174 e 8000 | ambiente local, não produção |
+| integração gateway/backend | cadastro, checkout, aprovação, missão, revisão, autorização com três confirmações, execução simulada e pedido/missão `COMPLETED`; 13 eventos e 5 telemetrias | simulação não comprova entrega física |
 | MapTiler HTTP direto | estilo 200 (GL v8/40 layers), pesquisa 200 (3 features neste ensaio) e reverse 200 (1 feature) | a chave usada foi exposta e deve ser rotacionada |
 | MapLibre Web | estilo/tiles/fontes/sprites 200, câmera inicial/zoom, arraste, busca/reverse, logo/atribuição e checkout confirmados no Chrome | chave temporária exposta; restrição de origem ainda não provada |
 | MapLibre Android e GPS | APK debug compilado; no Web, estado de permissão bloqueada tratado sem impedir o mapa manual | exigem emulador/aparelho e matriz concedida/negada/timeout |
@@ -68,7 +68,7 @@ Registrar data, local controlado, operador, hardware/firmware, checklist, missã
 | auditoria npm de produção | zero vulnerabilidades conhecidas | fotografia de 2026-08-07; repetir antes de publicar |
 | SITL/Mission Planner/Pixhawk/voo | não validado | exige evidência separada |
 
-Total comprovado: **124 testes automatizados aprovados**. Artefato Android atual: `mobile/build/app/outputs/flutter-apk/app-debug.apk`, 190.538.195 bytes, SHA-256 `AF1328CB60E74CFF0D3A5CDE5A8527618F79FB2D55A9E1778061BE221285BE25`, assinatura Android Debug v2 verificada.
+Total comprovado: **173 testes automatizados aprovados**. Artefato Android atual: `mobile/build/app/outputs/flutter-apk/app-debug.apk`, 214.406.475 bytes, SHA-256 `ACB33B014CF3407B13B86295E7F6E3BF7AE0006F3CED47520A15D25F9B81287C`. A instalação em emulador/aparelho e a assinatura não foram revalidadas nesta rodada.
 
 ## Comandos
 

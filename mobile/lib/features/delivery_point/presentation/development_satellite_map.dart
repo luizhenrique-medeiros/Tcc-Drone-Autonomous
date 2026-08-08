@@ -55,8 +55,9 @@ class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
   @override
   Widget build(BuildContext context) {
     return Semantics(
-      label:
-          'Mapa local. Mova a superfície sob o pino central para escolher o ponto.',
+      label: widget.interactive
+          ? 'Mapa local. Mova a superfície sob o pino central para escolher o ponto.'
+          : 'Mapa local mostrando o ponto exato da entrega.',
       child: ClipRRect(
         borderRadius: AppRadii.large,
         child: SizedBox(
