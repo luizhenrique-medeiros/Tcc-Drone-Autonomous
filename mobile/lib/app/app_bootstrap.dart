@@ -5,6 +5,7 @@ import '../core/maps/map_provider.dart';
 import '../core/network/api_client.dart';
 import '../core/repositories/auth_repository.dart';
 import '../core/repositories/checkout_repository.dart';
+import '../core/repositories/order_repository.dart';
 import '../core/repositories/product_repository.dart';
 import '../core/security/session_token_store.dart';
 import 'app_controller.dart';
@@ -12,13 +13,15 @@ import 'app_controller.dart';
 abstract final class AppBootstrap {
   static AppController createController() {
     if (AppConfig.demoMode) {
+      final DemoOrderStore orderStore = DemoOrderStore();
       final MapProvider mapProvider = MapProviderFactory.create(
         mapTilerConfigured: false,
       );
       return AppController(
         authRepository: DemoAuthRepository(),
         productRepository: DemoProductRepository(),
-        checkoutRepository: const DemoCheckoutRepository(),
+        checkoutRepository: DemoCheckoutRepository(orderStore: orderStore),
+        orderRepository: DemoOrderRepository(orderStore),
         mapProvider: mapProvider,
         locationService: const DevelopmentLocationService(),
         isDemoMode: true,
@@ -34,6 +37,7 @@ abstract final class AppBootstrap {
       authRepository: ApiAuthRepository(client, SecureSessionTokenStore()),
       productRepository: ApiProductRepository(client),
       checkoutRepository: ApiCheckoutRepository(client),
+      orderRepository: ApiOrderRepository(client),
       mapProvider: mapProvider,
       locationService: PlatformLocationService(
         const GeolocatorDeviceLocationBridge(),

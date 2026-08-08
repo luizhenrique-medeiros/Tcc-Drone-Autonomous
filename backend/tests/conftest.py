@@ -13,7 +13,6 @@ os.environ["JWT_SECRET"] = "test-secret-that-is-not-used-outside-tests"
 os.environ["GATEWAY_API_KEY"] = "test-gateway-key"
 os.environ["ADMIN_INITIAL_EMAIL"] = "admin@example.local"
 os.environ["ADMIN_INITIAL_PASSWORD"] = "Admin-pass-123"
-os.environ["MAX_MISSION_DISTANCE_M"] = "500"
 
 from app.database.base import Base
 from app.database.session import engine, import_models

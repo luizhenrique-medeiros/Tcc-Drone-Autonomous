@@ -9,7 +9,7 @@ PostgreSQL + PostGIS, tabelas/colunas `snake_case`, UUID para entidades principa
 | Tabela | Dados centrais | Regras |
 |---|---|---|
 | `users` | role, name, email, phone, password_hash, active | email único; hash nunca sai da API |
-| `products` | name, description, price, category, available | catálogo acadêmico |
+| `products` | name, description, price, category, image_url, available | catálogo acadêmico; imagem opcional |
 | `delivery_points` | aproximação, final, `location`, fonte, confirmações | `geography(Point,4326)` criado do final |
 | `orders` | customer, point, status, forma simulada, totais | uma decisão vigente por submissão |
 | `order_items` | product_id, snapshot name/price, quantity | quantidade positiva |
@@ -22,6 +22,10 @@ PostgreSQL + PostGIS, tabelas/colunas `snake_case`, UUID para entidades principa
 | `telemetry_logs` | mission/vehicle, source, received_at, point, altitude, speed, battery, GPS, mode, armed | retenção/amostragem configurável; campos físicos anuláveis |
 | `system_events` | actor/order/mission/vehicle, type, severity, message, metadata | event_id único para deduplicação |
 
+`Meus pedidos` não cria `order_history`. O status atual permanece em `orders`; as datas intermediárias vêm de uma whitelist de `system_events` vinculados ao pedido e são expostas ao cliente por um DTO sanitizado. Ausência de evento significa ausência de timestamp, nunca uma data inferida de `updated_at`.
+
+`order_items` mantém os snapshots comerciais de nome e preço. Categoria e imagem são consultadas do produto relacionado e podem ser nulas ou mudar no catálogo; a interface sempre oferece fallback visual. O painel administrativo consulta a autorização mais recente da missão na tabela existente `flight_authorizations`, incluindo o administrador real e o estado de consumo, sem duplicar esse registro em `missions`.
+
 ## Geografia
 
 As coordenadas finais são a autoridade. O ponto é persistido conceitualmente como:
@@ -30,7 +34,7 @@ As coordenadas finais são a autoridade. O ponto é persistido conceitualmente c
 ST_SetSRID(ST_MakePoint(final_longitude, final_latitude), 4326)::geography
 ```
 
-Longitude vem primeiro no construtor PostGIS. Constraints validam latitude/longitude, e índice GiST só é criado porque consultas de cobertura/distância usam `location`. Aproximação e endereço continuam disponíveis para auditoria, nunca para a rota final.
+Longitude vem primeiro no construtor PostGIS. Constraints validam latitude/longitude, e o índice GiST sustenta consultas geográficas operacionais quando necessárias; ele não impõe cobertura no checkout. Aproximação e endereço continuam disponíveis para auditoria, nunca para a rota final.
 
 ## Relacionamentos e exclusão
 
@@ -41,11 +45,13 @@ Longitude vem primeiro no construtor PostGIS. Constraints validam latitude/longi
 
 ## Concorrência e integridade
 
-- índice parcial/validação transacional impede duas missões ativas por pedido;
+- restrição única em `missions.order_id` mantém uma única missão por pedido;
 - claim bloqueia a linha ou usa atualização condicional por estado/versão;
-- `event_id` e idempotency key evitam duplicidade;
+- `event_id` deduplica eventos, e a chave idempotente é reservada antes dos efeitos na mesma transação;
 - autorização muda de `ACTIVE` para `CONSUMED` atomicamente;
 - amostra só atualiza snapshot se `occurred_at` for posterior.
+
+O JSON auditável de `flight_authorizations.checklist` persiste exatamente `area_and_conditions_clear`, `aircraft_and_payload_inspected` e `operator_ready`. Expiração ou revogação atualiza o registro e cria `FLIGHT_AUTHORIZATION_EXPIRED` ou `FLIGHT_AUTHORIZATION_REVOKED` em `system_events`; nenhuma tabela nova foi necessária.
 
 ## Migrações e seed
 

@@ -90,7 +90,7 @@ GET https://api.maptiler.com/geocoding/{texto}.json
 - pesquisa: texto codificado, `autocomplete=true` e até cinco resultados;
 - detalhe/geocode: endereço ou `feature_id`, `autocomplete=false` e limite um;
 - reverse geocoding: `{longitude},{latitude}.json`, sempre nessa ordem externa;
-- `MAPS_SEARCH_COUNTRY=` vazio omite o filtro `country`; um código ISO de duas letras restringe resultados, mas não substitui a cobertura do negócio.
+- `MAPS_SEARCH_COUNTRY=` vazio omite o filtro `country`; um código ISO de duas letras restringe somente resultados da busca e não limita o checkout mundial.
 
 O Flutter aplica debounce de 400 ms, consulta a partir de três caracteres e descarta respostas antigas. O backend valida GeoJSON, coordenadas, campos ausentes e respostas vazias. `403`, `429`, timeout, rede ou JSON inválido viram erros explícitos; nenhum deles autoriza fabricar endereço ou coordenada.
 
@@ -105,7 +105,7 @@ Geocode fornece somente uma aproximação inicial. Reverse geocoding fornece um 
 - alvo acompanhado durante o movimento e consolidado em `onCameraIdle`, somente depois de interação manual;
 - rota e pontos desenhados no admin, com enquadramento por bounds ou zoom de ponto único;
 - confirmação de área segura e segunda etapa obrigatórias;
-- cobertura e distância recalculadas pelo servidor.
+- faixa geográfica e confirmações recalculadas pelo servidor; distância preservada para auditoria e limite operacional aplicado pelo gateway.
 
 A localização do dispositivo é opcional e aproximada. Permissão negada, serviço desativado, timeout ou navegador sem suporte mantêm busca e navegação direta disponíveis.
 

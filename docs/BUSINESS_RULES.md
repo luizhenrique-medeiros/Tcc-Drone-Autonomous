@@ -20,13 +20,16 @@
 - A etapa final exige mapa satélite, movimento/posicionamento manual, coordenadas finais e confirmação explícita.
 - Latitude fica entre -90 e 90; longitude entre -180 e 180.
 - O cliente confirma que avaliou área aberta; isso não substitui avaliação do administrador/operador.
-- O backend calcula distância da base e rejeita acima do limite configurado.
+- O backend calcula e registra a distância da base para auditoria, mas não limita a seleção ou a submissão do pedido por cobertura. O limite operacional de missão continua no gateway.
 - Após submissão, coordenadas não são alteradas silenciosamente. Um local inadequado causa rejeição ou solicitação de nova seleção.
 
 ## Pedido
 
 - Pedido sem item ou ponto confirmado não pode ser submetido.
 - Submissão move `DRAFT` para `PENDING_ADMIN_APPROVAL`.
+- O cliente lista e detalha somente pedidos cujo `customer_id` vem da sessão autenticada; a API nunca aceita um `user_id` escolhido pelo cliente.
+- `DRAFT` é interno ao checkout e não aparece em `Meus pedidos`; após a submissão, `COMPLETED`, `CANCELLED`, `REJECTED` e `FAILED` formam o histórico e os demais estados formam o andamento. A interface mantém ativos em destaque e ordena cada grupo do mais recente para o mais antigo.
+- O histórico usa `limit/offset`; detalhes expõem somente milestones sanitizados de `SystemEvent`, sem metadados operacionais, e nunca inventam timestamps ausentes.
 - Apenas `ADMIN` decide. Rejeição exige motivo; decisão é imutável e auditada.
 - Aprovação move para `APPROVED`; não gera upload, execução ou autorização implícita.
 - Cancelamento pelo cliente só é permitido antes da aprovação/execução conforme transição definida.
@@ -43,8 +46,12 @@
 ## Autorização de voo
 
 - É endpoint, botão, tabela e evento distintos da aprovação do pedido.
-- Requer administrador autenticado, missão revisada, checklist completo, área controlada e snapshot recente/saudável.
+- Requer administrador autenticado, missão revisada, área controlada, três confirmações humanas e snapshot recente/saudável.
+- Conexão, heartbeat, GPS, satélites, EKF, bateria, home, geofence, RTL, armamento, preflight e preparo da missão são checks automáticos. `BLOCKING` impede autorizar; `WARNING` informa sem substituir a validação do servidor.
+- As confirmações humanas cobrem área/condições/pessoas/retorno, inspeção física do drone/carga e prontidão do operador. Não existe frase digitada.
 - A autorização referencia missão e versão, expira em poucos minutos, é de uso único e não é reutilizada após falha/conclusão.
+- Repetir a mesma tentativa com a mesma chave de idempotência devolve a autorização original; uma nova tentativa após a transição é recusada.
+- Expiração, mudança de versão/hash ou falha técnica atual revoga e audita a autorização; variação de telemetria que continua dentro dos limites seguros não revoga por simples diferença de amostra.
 - O gateway consome a autorização ao reivindicar/enviar; repetição recebe o resultado anterior ou conflito, nunca nova execução.
 
 ## Execução, entrega e retorno

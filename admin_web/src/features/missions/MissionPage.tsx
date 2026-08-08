@@ -1,11 +1,9 @@
 import {
   AlertOctagon,
   ArrowLeft,
-  BatteryCharging,
   CheckCircle2,
   Download,
   FileCheck2,
-  Gauge,
   MapPin,
   Navigation,
   Radio,
@@ -42,13 +40,15 @@ import {
   formatCoordinate,
   formatDateTime,
   formatDistance,
-  formatNullableText,
-  formatOptionalNumber,
-  formatPercent,
   shortId,
 } from '../../utils/format';
+import { AutomaticPreflightChecks } from './AutomaticPreflightChecks';
+import {
+  authorizationTitle,
+  authorizationUsageMessage,
+} from './authorization-presentation';
 import { FlightAuthorizationDialog } from './FlightAuthorizationDialog';
-import { getVehicleReadiness } from './vehicle-readiness';
+import { getMissionReadiness } from './vehicle-readiness';
 
 interface MissionPageData {
   mission: Mission;
@@ -123,7 +123,7 @@ export function MissionPage() {
   if (!data) return null;
 
   const { mission, order, vehicle, health, healthError } = data;
-  const readiness = getVehicleReadiness(health);
+  const readiness = getMissionReadiness(mission, health);
   const activeStage = getStage(mission.status);
   const canStartReview = ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'].includes(
     mission.status,
@@ -135,6 +135,35 @@ export function MissionPage() {
   );
 
   const updateMission = (next: Mission) => setData({ ...data, mission: next });
+
+  const openAuthorization = async () => {
+    setIsActing(true);
+    setActionError('');
+    setSuccess('');
+    try {
+      const refreshed = await loader();
+      setData(refreshed);
+      const refreshedReadiness = getMissionReadiness(
+        refreshed.mission,
+        refreshed.health,
+      );
+      if (
+        refreshed.mission.status !== 'READY_FOR_AUTHORIZATION' ||
+        !refreshedReadiness.ready
+      ) {
+        setActionError(
+          refreshedReadiness.blockers.join(' ') ||
+            'A missão não está mais pronta para autorização.',
+        );
+        return;
+      }
+      setAuthorizationOpen(true);
+    } catch (refreshError) {
+      setActionError(getErrorMessage(refreshError));
+    } finally {
+      setIsActing(false);
+    }
+  };
 
   const runMissionAction = async (
     action: () => Promise<Mission>,
@@ -297,7 +326,7 @@ export function MissionPage() {
               <ReviewStep
                 done={activeStage > 2}
                 number="3"
-                title="Autorizar o voo"
+                title="Autorizar missão"
                 detail="Somente após saúde e checklist válidos."
               />
             </div>
@@ -340,15 +369,19 @@ export function MissionPage() {
                 <>
                   <Feedback tone={readiness.ready ? 'success' : 'error'}>
                     {readiness.ready
-                      ? 'Saúde atual atende aos limites mínimos. Ainda é necessário preencher todo o checklist.'
+                      ? readiness.warnings.length > 0
+                        ? 'Sem bloqueios técnicos. Revise os avisos e faça as três confirmações humanas.'
+                        : 'Verificações automáticas aprovadas. Ainda são necessárias três confirmações humanas.'
                       : `Autorização bloqueada: ${readiness.blockers.join(' ')}`}
                   </Feedback>
                   <Button
-                    variant="warning"
-                    disabled={!readiness.ready}
-                    onClick={() => { setActionError(''); setAuthorizationOpen(true); }}
+                    loading={isActing}
+                    onClick={() => void openAuthorization()}
                   >
-                    <ShieldCheck size={18} /> Iniciar autorização de voo
+                    <ShieldCheck size={18} />{' '}
+                    {readiness.ready
+                      ? 'Autorizar missão'
+                      : 'Revalidar para autorizar'}
                   </Button>
                 </>
               ) : null}
@@ -356,11 +389,24 @@ export function MissionPage() {
                 <div className="authorization-record">
                   <ShieldCheck size={25} />
                   <div>
-                    <strong>Autorização de uso único emitida</strong>
-                    <span>Por {mission.authorization.admin_name}</span>
+                    <strong>{authorizationTitle(mission.authorization)}</strong>
+                    <span>
+                      Por {mission.authorization.admin_name}
+                      {mission.authorization.administrator_id
+                        ? ` · Admin #${shortId(mission.authorization.administrator_id)}`
+                        : ''}
+                    </span>
                     <span>Operador: {mission.authorization.operator_name}</span>
+                    <span>
+                      Emitida: {formatDateTime(mission.authorization.authorized_at)}
+                    </span>
                     <span>Expira: {formatDateTime(mission.authorization.expires_at)}</span>
-                    {mission.authorization.consumed_at ? <small>Consumida em {formatDateTime(mission.authorization.consumed_at)}</small> : <small>Aguardando consumo pelo gateway</small>}
+                    {mission.authorization.mission_version ? (
+                      <small>Versão autorizada: {mission.authorization.mission_version}</small>
+                    ) : null}
+                    <small>
+                      {authorizationUsageMessage(mission.authorization)}
+                    </small>
                   </div>
                 </div>
               ) : null}
@@ -377,7 +423,7 @@ export function MissionPage() {
           </Card>
 
           <Card
-            title="Saúde antes do voo"
+            title="Verificações automáticas"
             action={
               <div className="cluster">
                 {health ? <OperationalSourceBadge {...health} /> : null}
@@ -385,50 +431,7 @@ export function MissionPage() {
               </div>
             }
           >
-            {!vehicle || !health ? (
-              <StateView
-                state="error"
-                compact
-                title="Sem leitura de saúde"
-                description={`${healthError || 'Nenhum snapshot foi retornado.'} A autorização permanece bloqueada.`}
-              />
-            ) : (
-              <div className="vehicle-checks">
-                <VehicleCheck
-                  icon={<Radio />}
-                  label="Conexão / heartbeat"
-                  value={health.connected === true && health.heartbeat_ok === true ? 'Ativo' : health.connected === false || health.heartbeat_ok === false ? 'Ausente' : '--'}
-                  ok={health.connected === true && health.heartbeat_ok === true}
-                />
-                <VehicleCheck
-                  icon={<Satellite />}
-                  label="GPS / satélites"
-                  value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} sat.`}
-                  ok={Boolean(health.gps_fix) && health.satellites !== null && health.satellites >= 10}
-                />
-                <VehicleCheck
-                  icon={<Gauge />}
-                  label="EKF / armamento"
-                  value={`${health.ekf_ok === true ? 'EKF OK' : health.ekf_ok === false ? 'EKF inválido' : 'EKF --'} · ${health.armed === true ? 'ARMADO' : health.armed === false ? 'Desarmado' : 'Armamento --'}`}
-                  ok={health.ekf_ok === true && health.armed === false}
-                />
-                <VehicleCheck
-                  icon={<BatteryCharging />}
-                  label="Bateria"
-                  value={`${formatPercent(health.battery_percent)}${health.battery_voltage !== null ? ` · ${formatOptionalNumber(health.battery_voltage, { maximumFractionDigits: 2 })} V` : ''}`}
-                  ok={health.battery_percent !== null && health.battery_percent >= 40}
-                />
-                <VehicleCheck
-                  icon={<Navigation />}
-                  label="Origem / RTL / geofence"
-                  value={health.origin_known === true && health.rtl_configured === true && health.geofence_enabled === true ? 'Configurados' : 'Incompleto ou desconhecido'}
-                  ok={health.origin_known === true && health.rtl_configured === true && health.geofence_enabled === true}
-                />
-                <p className="last-update">
-                  Medida: {formatDateTime(health.measured_at)} · recebida: {formatDateTime(health.received_at)} · {health.is_stale ? 'DADO VENCIDO' : 'fresca segundo a API'}
-                </p>
-              </div>
-            )}
+            <AutomaticPreflightChecks mission={mission} health={health} />
           </Card>
 
           <Card title="Integridade do artefato">
@@ -486,16 +489,6 @@ function ReviewStep({ done, number, title, detail }: { done: boolean; number: st
     <div className={`review-step ${done ? 'review-step--done' : ''}`}>
       <span>{done ? <CheckCircle2 size={18} /> : number}</span>
       <div><strong>{title}</strong><small>{detail}</small></div>
-    </div>
-  );
-}
-
-function VehicleCheck({ icon, label, value, ok }: { icon: React.ReactNode; label: string; value: string; ok: boolean }) {
-  return (
-    <div className="vehicle-check">
-      <span>{icon}</span>
-      <div><small>{label}</small><strong>{value}</strong></div>
-      <span className={`vehicle-check__result ${ok ? 'vehicle-check__result--ok' : ''}`}>{ok ? 'OK' : 'Bloqueio'}</span>
     </div>
   );
 }

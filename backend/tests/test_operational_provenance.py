@@ -1,12 +1,15 @@
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
+from app.core.enums import OperationalSource
 from app.modules.telemetry.models import TelemetryLog
 from app.modules.telemetry.service import telemetry_is_stale
+from app.modules.vehicles.models import VehicleHealthSnapshot
 from app.modules.vehicles.schemas import VehicleHealthInput
-from app.modules.vehicles.service import _critical_hash
+from app.modules.vehicles.service import _critical_hash, health_to_read
 
 
 def test_health_preserves_unreceived_mavlink_values_as_null(
@@ -99,3 +102,42 @@ def test_telemetry_freshness_is_recomputed_when_read() -> None:
     settings = Settings(_env_file=None, heartbeat_timeout_seconds=10)
 
     assert telemetry_is_stale(telemetry, settings) is True
+
+
+def test_health_contract_exposes_configured_authorization_limits() -> None:
+    now = datetime.now(UTC)
+    snapshot = VehicleHealthSnapshot(
+        id=uuid4(),
+        vehicle_id=uuid4(),
+        connected=True,
+        heartbeat=True,
+        source=OperationalSource.SITL,
+        gps_fix_type=3,
+        satellites=20,
+        ekf_ok=True,
+        battery_percent=90,
+        battery_voltage=15.8,
+        flight_mode="GUIDED",
+        armed=False,
+        preflight_ok=True,
+        rtl_configured=True,
+        geofence_enabled=True,
+        origin_latitude=-23.1175,
+        origin_longitude=-46.5502,
+        critical_state_hash="a" * 64,
+        captured_at=now,
+        received_at=now,
+    )
+    settings = Settings(
+        _env_file=None,
+        min_battery_percent=73,
+        min_gps_satellites=19,
+    )
+
+    health = health_to_read(snapshot, settings)
+
+    assert health.authorization_limits.model_dump() == {
+        "min_battery_percent": 73.0,
+        "battery_warning_percent": 83.0,
+        "min_gps_satellites": 19,
+    }

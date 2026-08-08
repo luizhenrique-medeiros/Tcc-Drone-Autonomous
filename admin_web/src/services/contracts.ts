@@ -134,8 +134,11 @@ export interface Waypoint extends Coordinates {
 
 export interface MissionAuthorization {
   id: string;
+  administrator_id?: string;
   admin_name: string;
   operator_name: string;
+  status?: 'ACTIVE' | 'CONSUMED' | 'EXPIRED' | 'REVOKED';
+  mission_version?: number;
   authorized_at: string;
   expires_at: string;
   consumed_at?: string;
@@ -170,6 +173,12 @@ export interface Vehicle {
   last_seen_at: string;
 }
 
+export interface VehicleAuthorizationLimits {
+  min_battery_percent: number;
+  battery_warning_percent: number;
+  min_gps_satellites: number;
+}
+
 export interface VehicleHealth extends OperationalMetadata {
   vehicle_id: string;
   connected: boolean | null;
@@ -187,6 +196,7 @@ export interface VehicleHealth extends OperationalMetadata {
   preflight_ok: boolean | null;
   preflight_messages: string[];
   measured_at: string | null;
+  authorization_limits: VehicleAuthorizationLimits | null;
 }
 
 export type EventSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
@@ -217,22 +227,17 @@ export interface TelemetryPoint extends OperationalMetadata {
   recorded_at: string | null;
 }
 
-export interface PreflightChecklist {
-  mission_reviewed: boolean;
-  route_matches_destination: boolean;
-  controlled_area_confirmed: boolean;
-  weather_checked: boolean;
-  payload_secured: boolean;
-  people_clear: boolean;
+export interface HumanFlightConfirmations {
+  area_and_conditions_clear: boolean;
+  aircraft_and_payload_inspected: boolean;
   operator_ready: boolean;
-  rtl_area_clear: boolean;
 }
 
 export interface FlightAuthorizationInput {
   vehicle_id: string;
   operator_name: string;
   controlled_area_confirmed: true;
-  checklist: PreflightChecklist;
+  checklist: HumanFlightConfirmations;
 }
 
 export interface AdminApi {

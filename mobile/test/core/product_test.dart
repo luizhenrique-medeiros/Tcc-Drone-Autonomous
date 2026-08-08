@@ -16,6 +16,16 @@ void main() {
 
     expect(product.rating, isNull);
     expect(product.estimatedMinutes, isNull);
+    expect(product.imageUrl, isNull);
+  });
+
+  test('preserva URL real da imagem quando informada', () {
+    final Product product = Product.fromJson(<String, Object?>{
+      ...validProduct(),
+      'image_url': ' https://cdn.example.test/produto.webp ',
+    });
+
+    expect(product.imageUrl, 'https://cdn.example.test/produto.webp');
   });
 
   test('rejeita preço, avaliação e prazo fora da faixa', () {

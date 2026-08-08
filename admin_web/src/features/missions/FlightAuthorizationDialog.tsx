@@ -1,82 +1,51 @@
-import { ShieldCheck, TriangleAlert } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { ShieldCheck } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
-import {
-  Button,
-  Feedback,
-  Modal,
-} from '../../design-system/components';
+import { Button, Feedback, Modal } from '../../design-system/components';
 import type {
   FlightAuthorizationInput,
+  HumanFlightConfirmations,
   Mission,
-  PreflightChecklist,
   Vehicle,
   VehicleHealth,
 } from '../../services';
 import {
+  formatCoordinate,
   formatDistance,
   formatNullableText,
   formatOptionalNumber,
   formatPercent,
   shortId,
 } from '../../utils/format';
-import { getVehicleReadiness } from './vehicle-readiness';
+import { AutomaticPreflightChecks } from './AutomaticPreflightChecks';
+import { getMissionReadiness } from './vehicle-readiness';
 
-const initialChecklist: PreflightChecklist = {
-  mission_reviewed: false,
-  route_matches_destination: false,
-  controlled_area_confirmed: false,
-  weather_checked: false,
-  payload_secured: false,
-  people_clear: false,
+const initialConfirmations: HumanFlightConfirmations = {
+  area_and_conditions_clear: false,
+  aircraft_and_payload_inspected: false,
   operator_ready: false,
-  rtl_area_clear: false,
 };
 
-const checklistLabels: Array<{
-  key: keyof PreflightChecklist;
+const confirmationLabels: Array<{
+  key: keyof HumanFlightConfirmations;
   title: string;
   description: string;
 }> = [
   {
-    key: 'mission_reviewed',
-    title: 'Missão revisada no Mission Planner',
-    description: 'Arquivo, versão e sequência de waypoints conferidos.',
+    key: 'area_and_conditions_clear',
+    title: 'Área e condições de voo livres e controladas',
+    description:
+      'Pessoas, decolagem, destino, clima e área de retorno/RTL estão livres ou sob controle.',
   },
   {
-    key: 'route_matches_destination',
-    title: 'Rota corresponde ao ponto final do cliente',
-    description: 'Latitude e longitude finais foram comparadas.',
-  },
-  {
-    key: 'controlled_area_confirmed',
-    title: 'Área de operação controlada',
-    description: 'Acesso de terceiros está restrito durante toda a missão.',
-  },
-  {
-    key: 'weather_checked',
-    title: 'Condições meteorológicas verificadas',
-    description: 'Vento, chuva e visibilidade estão dentro do procedimento local.',
-  },
-  {
-    key: 'payload_secured',
-    title: 'Carga fixada e mecanismo conferido',
-    description: 'Peso e fixação foram validados pelo operador.',
-  },
-  {
-    key: 'people_clear',
-    title: 'Áreas de decolagem e destino livres',
-    description: 'Nenhuma pessoa permanece no perímetro de segurança.',
+    key: 'aircraft_and_payload_inspected',
+    title: 'Drone, carga e mecanismo inspecionados',
+    description: 'Aeronave, fixação, peso e mecanismo de entrega foram conferidos.',
   },
   {
     key: 'operator_ready',
-    title: 'Operador responsável presente',
-    description: 'Operador acompanha Mission Planner e está pronto para intervir.',
-  },
-  {
-    key: 'rtl_area_clear',
-    title: 'Área de retorno e RTL livre',
-    description: 'Origem, altitude RTL e área de pouso foram confirmadas.',
+    title: 'Operador pronto para iniciar',
+    description: 'O operador acompanha o voo e está preparado para intervir.',
   },
 ];
 
@@ -101,43 +70,69 @@ export function FlightAuthorizationDialog({
   onClose,
   onSubmit,
 }: FlightAuthorizationDialogProps) {
-  const [checklist, setChecklist] = useState(initialChecklist);
+  const [confirmations, setConfirmations] = useState(initialConfirmations);
   const [operatorName, setOperatorName] = useState('');
-  const [confirmation, setConfirmation] = useState('');
-  const requiredPhrase = `AUTORIZAR VOO ${shortId(mission.id)}`;
-  const readiness = getVehicleReadiness(health);
+  const submissionLock = useRef(false);
+  const readiness = getMissionReadiness(mission, health);
   const allChecked = useMemo(
-    () => Object.values(checklist).every(Boolean),
-    [checklist],
+    () => Object.values(confirmations).every(Boolean),
+    [confirmations],
   );
   const canSubmit =
     readiness.ready &&
     vehicle !== null &&
     allChecked &&
     operatorName.trim().length >= 3 &&
-    confirmation.trim() === requiredPhrase;
+    !isSubmitting;
 
   useEffect(() => {
     if (!open) return;
-    setChecklist(initialChecklist);
+    setConfirmations(initialConfirmations);
     setOperatorName('');
-    setConfirmation('');
+    submissionLock.current = false;
   }, [open]);
 
   const submit = async () => {
-    if (!canSubmit || !vehicle) return;
-    await onSubmit({
-      vehicle_id: vehicle.id,
-      operator_name: operatorName.trim(),
-      controlled_area_confirmed: true,
-      checklist,
-    });
+    if (!canSubmit || !vehicle || submissionLock.current) return;
+    submissionLock.current = true;
+    try {
+      await onSubmit({
+        vehicle_id: vehicle.id,
+        operator_name: operatorName.trim(),
+        controlled_area_confirmed: true,
+        checklist: confirmations,
+      });
+    } finally {
+      submissionLock.current = false;
+    }
   };
+
+  const gpsEkfSummary = health
+    ? `${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} sat. · ${
+        health.ekf_ok === true
+          ? 'EKF OK'
+          : health.ekf_ok === false
+            ? 'EKF inválido'
+            : 'EKF --'
+      }`
+    : '--';
+  const modeAndArming = health
+    ? `${formatNullableText(health.flight_mode)} · ${
+        health.armed === false
+          ? 'Desarmado'
+          : health.armed === true
+            ? 'ARMADO'
+            : 'Armamento --'
+      }`
+    : '--';
+  const hashSummary = mission.file_hash
+    ? `${mission.file_hash.slice(0, 12)}…`
+    : '--';
 
   return (
     <Modal
       open={open}
-      title="Autorizar envio e execução do voo"
+      title="Autorizar esta missão?"
       onClose={onClose}
       closeDisabled={isSubmitting}
       footer={
@@ -146,56 +141,84 @@ export function FlightAuthorizationDialog({
             Cancelar
           </Button>
           <Button
-            variant="warning"
             onClick={() => void submit()}
             loading={isSubmitting}
             disabled={!canSubmit}
           >
-            <ShieldCheck size={18} /> Autorizar voo uma única vez
+            <ShieldCheck size={18} /> Autorizar missão
           </Button>
         </>
       }
     >
       <div className="authorization-form stack">
         <Feedback tone="warning">
-          <strong>Segunda autorização — ação crítica e auditada.</strong>
+          <strong>Autorização crítica, auditada e de uso único.</strong>
           <p>
-            Esta etapa pode liberar o gateway para enviar e executar a versão {mission.version}
-            da missão. A autorização expira e não pode ser reutilizada.
+            Ela fica vinculada à versão {mission.version}, ao veículo e ao operador abaixo.
+            O backend repetirá as validações antes de emitir a autorização.
           </p>
         </Feedback>
 
         <dl className="data-list authorization-summary">
-          <div><dt>Missão</dt><dd>#{shortId(mission.id)} · v{mission.version}</dd></div>
-          <div><dt>Distância</dt><dd>{formatDistance(mission.estimated_distance_m)}</dd></div>
-          <div><dt>Altitude</dt><dd>{mission.altitude_m} m</dd></div>
-          <div><dt>Veículo</dt><dd>{vehicle?.name ?? 'Nenhum disponível'}</dd></div>
-          <div><dt>Origem técnica</dt><dd>{health ? <OperationalSourceBadge {...health} /> : '--'}</dd></div>
-          <div><dt>Bateria</dt><dd>{health ? formatPercent(health.battery_percent) : '--'}</dd></div>
-          <div><dt>GPS / EKF</dt><dd>{health ? `${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} sat. · ${health.ekf_ok === true ? 'EKF OK' : health.ekf_ok === false ? 'EKF inválido' : 'EKF --'}` : '--'}</dd></div>
+          <div>
+            <dt>Pedido</dt>
+            <dd>#{shortId(mission.order_id)}</dd>
+          </div>
+          <div>
+            <dt>Destino</dt>
+            <dd>
+              {mission.destination.label ?? 'Ponto final'} ·{' '}
+              <span className="mono">
+                {formatCoordinate(mission.destination.latitude)},{' '}
+                {formatCoordinate(mission.destination.longitude)}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Distância</dt>
+            <dd>{formatDistance(mission.estimated_distance_m)}</dd>
+          </div>
+          <div>
+            <dt>Veículo / status</dt>
+            <dd>{vehicle ? `${vehicle.name} · ${vehicle.status}` : 'Nenhum disponível'}</dd>
+          </div>
+          <div>
+            <dt>Modo / armamento</dt>
+            <dd>{modeAndArming}</dd>
+          </div>
+          <div>
+            <dt>Bateria</dt>
+            <dd>{health ? formatPercent(health.battery_percent) : '--'}</dd>
+          </div>
+          <div>
+            <dt>GPS / EKF</dt>
+            <dd>{gpsEkfSummary}</dd>
+          </div>
+          <div>
+            <dt>Versão / hash</dt>
+            <dd>
+              v{mission.version} · <span className="mono">{hashSummary}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Origem técnica</dt>
+            <dd>{health ? <OperationalSourceBadge {...health} /> : '--'}</dd>
+          </div>
         </dl>
 
-        {!readiness.ready ? (
-          <Feedback tone="error">
-            <TriangleAlert size={18} />
-            <div>
-              <strong>Veículo não atende aos requisitos mínimos.</strong>
-              <p>{readiness.blockers.join(' ')}</p>
-            </div>
-          </Feedback>
-        ) : null}
+        <AutomaticPreflightChecks mission={mission} health={health} compact />
 
         <fieldset className="checklist-fieldset">
-          <legend>Checklist pré-voo obrigatório</legend>
+          <legend>Confirmações do operador</legend>
           <div className="stack checklist-list">
-            {checklistLabels.map((item) => (
+            {confirmationLabels.map((item) => (
               <div className="check-row" key={item.key}>
                 <input
                   id={`check-${item.key}`}
                   type="checkbox"
-                  checked={checklist[item.key]}
+                  checked={confirmations[item.key]}
                   onChange={(event) =>
-                    setChecklist((current) => ({
+                    setConfirmations((current) => ({
                       ...current,
                       [item.key]: event.target.checked,
                     }))
@@ -211,7 +234,7 @@ export function FlightAuthorizationDialog({
         </fieldset>
 
         <div className="field">
-          <label htmlFor="operator-name">Operador responsável presente</label>
+          <label htmlFor="operator-name">Nome do operador responsável</label>
           <input
             className="input"
             id="operator-name"
@@ -219,19 +242,6 @@ export function FlightAuthorizationDialog({
             onChange={(event) => setOperatorName(event.target.value)}
             placeholder="Nome completo do operador"
             autoComplete="name"
-          />
-        </div>
-        <div className="field confirmation-field">
-          <label htmlFor="authorization-phrase">
-            Para confirmar, digite <span className="mono">{requiredPhrase}</span>
-          </label>
-          <input
-            className="input mono"
-            id="authorization-phrase"
-            value={confirmation}
-            onChange={(event) => setConfirmation(event.target.value.toUpperCase())}
-            autoComplete="off"
-            spellCheck={false}
           />
         </div>
         {error ? <Feedback tone="error">{error}</Feedback> : null}

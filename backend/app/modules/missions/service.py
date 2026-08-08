@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,12 +22,66 @@ from app.database.types import point_ewkt
 from app.modules.approvals.models import FlightAuthorization
 from app.modules.delivery_points.models import DeliveryPoint
 from app.modules.missions.models import GatewayCommand, Mission, MissionWaypoint
-from app.modules.missions.schemas import FlightAuthorizationCreate, GatewayCommandAck
+from app.modules.missions.schemas import (
+    AdminMissionRead,
+    FlightAuthorizationCreate,
+    GatewayCommandAck,
+    MissionAuthorizationRead,
+)
 from app.modules.orders.models import Order
 from app.modules.system_events.service import record_event
 from app.modules.users.models import User
-from app.modules.vehicles.models import VehicleHealthSnapshot
+from app.modules.vehicles.models import Vehicle, VehicleHealthSnapshot
 from app.modules.vehicles.service import health_failures, latest_health
+
+
+def _authorization_to_read(
+    authorization: FlightAuthorization, administrator_name: str
+) -> MissionAuthorizationRead:
+    return MissionAuthorizationRead(
+        id=authorization.id,
+        administrator_id=authorization.administrator_id,
+        administrator_name=administrator_name,
+        operator_name=authorization.operator_name,
+        status=authorization.status,
+        mission_version=authorization.mission_version,
+        issued_at=authorization.issued_at,
+        expires_at=authorization.expires_at,
+        used_at=authorization.used_at,
+    )
+
+
+def admin_missions_to_read(session: Session, missions: list[Mission]) -> list[AdminMissionRead]:
+    if not missions:
+        return []
+    mission_ids = [mission.id for mission in missions]
+    latest_by_mission: dict[UUID, MissionAuthorizationRead] = {}
+    authorization_rows = session.execute(
+        select(FlightAuthorization, User.name)
+        .join(User, User.id == FlightAuthorization.administrator_id)
+        .where(FlightAuthorization.mission_id.in_(mission_ids))
+        .order_by(
+            FlightAuthorization.mission_id,
+            FlightAuthorization.issued_at.desc(),
+            FlightAuthorization.id.desc(),
+        )
+    )
+    for authorization, administrator_name in authorization_rows:
+        if authorization.mission_id not in latest_by_mission:
+            latest_by_mission[authorization.mission_id] = _authorization_to_read(
+                authorization, administrator_name
+            )
+
+    return [
+        AdminMissionRead.model_validate(mission).model_copy(
+            update={"authorization": latest_by_mission.get(mission.id)}
+        )
+        for mission in missions
+    ]
+
+
+def admin_mission_to_read(session: Session, mission: Mission) -> AdminMissionRead:
+    return admin_missions_to_read(session, [mission])[0]
 
 
 def _waypoint(
@@ -223,7 +278,18 @@ def authorize_flight(
     admin: User,
     payload: FlightAuthorizationCreate,
     settings: Settings,
+    *,
+    commit: bool = True,
 ) -> FlightAuthorization:
+    locked_mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not locked_mission:
+        raise NotFoundError("Missão não encontrada")
+    mission = locked_mission
     if mission.status != MissionStatus.READY_FOR_AUTHORIZATION:
         raise InvalidStateError("A missão ainda não está pronta para autorização")
     if not payload.controlled_area_confirmed:
@@ -282,9 +348,43 @@ def authorize_flight(
             "operator_name": payload.operator_name,
         },
     )
-    session.commit()
-    session.refresh(authorization)
+    session.flush()
+    if commit:
+        session.commit()
+        session.refresh(authorization)
     return authorization
+
+
+def _invalidate_authorization(
+    session: Session,
+    mission: Mission,
+    authorization: FlightAuthorization,
+    *,
+    status: AuthorizationStatus,
+    reason: str,
+    message: str,
+) -> None:
+    authorization.status = status
+    mission.status = MissionStatus.READY_FOR_AUTHORIZATION
+    record_event(
+        session,
+        actor_type="SYSTEM",
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=mission.vehicle_id,
+        event_type=(
+            "FLIGHT_AUTHORIZATION_EXPIRED"
+            if status == AuthorizationStatus.EXPIRED
+            else "FLIGHT_AUTHORIZATION_REVOKED"
+        ),
+        severity=EventSeverity.WARNING,
+        message=message,
+        metadata={
+            "authorization_id": str(authorization.id),
+            "reason": reason,
+        },
+    )
+    session.commit()
 
 
 def active_authorization(session: Session, mission: Mission) -> FlightAuthorization:
@@ -303,16 +403,34 @@ def active_authorization(session: Session, mission: Mission) -> FlightAuthorizat
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at <= datetime.now(UTC):
-        authorization.status = AuthorizationStatus.EXPIRED
-        session.commit()
+        _invalidate_authorization(
+            session,
+            mission,
+            authorization,
+            status=AuthorizationStatus.EXPIRED,
+            reason="TTL_EXPIRED",
+            message="Autorização de voo expirada antes do uso",
+        )
         raise ConflictError("A autorização de voo expirou")
     if authorization.mission_version != mission.version:
-        authorization.status = AuthorizationStatus.REVOKED
-        session.commit()
+        _invalidate_authorization(
+            session,
+            mission,
+            authorization,
+            status=AuthorizationStatus.REVOKED,
+            reason="MISSION_VERSION_CHANGED",
+            message="Autorização revogada porque a versão da missão mudou",
+        )
         raise ConflictError("A missão mudou após a autorização")
     if authorization.mission_sha256 != mission.mission_sha256:
-        authorization.status = AuthorizationStatus.REVOKED
-        session.commit()
+        _invalidate_authorization(
+            session,
+            mission,
+            authorization,
+            status=AuthorizationStatus.REVOKED,
+            reason="MISSION_FILE_CHANGED",
+            message="Autorização revogada porque o artefato da missão mudou",
+        )
         raise ConflictError("O arquivo da missão mudou após a autorização")
     return authorization
 
@@ -320,6 +438,15 @@ def active_authorization(session: Session, mission: Mission) -> FlightAuthorizat
 def claim_mission(
     session: Session, mission: Mission, gateway_id: str, settings: Settings
 ) -> FlightAuthorization:
+    locked_mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not locked_mission:
+        raise NotFoundError("Missão não encontrada")
+    mission = locked_mission
     if mission.status == MissionStatus.UPLOADING and mission.claimed_by_gateway == gateway_id:
         authorization = session.scalar(
             select(FlightAuthorization)
@@ -332,23 +459,34 @@ def claim_mission(
         return authorization
     if mission.status != MissionStatus.AUTHORIZED:
         raise InvalidStateError("A missão não está autorizada para claim")
+    vehicle = session.get(Vehicle, mission.vehicle_id)
+    if not vehicle or vehicle.gateway_id != gateway_id:
+        raise ConflictError("O gateway não está vinculado ao veículo autorizado")
     authorization = active_authorization(session, mission)
     snapshot_at_authorization = session.get(
         VehicleHealthSnapshot, authorization.vehicle_health_snapshot_id
     )
     current_snapshot = latest_health(session, mission.vehicle_id)
-    if not snapshot_at_authorization or (
-        current_snapshot.critical_state_hash != snapshot_at_authorization.critical_state_hash
-    ):
-        authorization.status = AuthorizationStatus.REVOKED
-        mission.status = MissionStatus.READY_FOR_AUTHORIZATION
-        session.commit()
-        raise ConflictError("O estado crítico do veículo mudou; autorize novamente")
+    if not snapshot_at_authorization:
+        _invalidate_authorization(
+            session,
+            mission,
+            authorization,
+            status=AuthorizationStatus.REVOKED,
+            reason="AUTHORIZATION_SNAPSHOT_MISSING",
+            message="Autorização revogada porque o snapshot original não está disponível",
+        )
+        raise ConflictError("O snapshot usado na autorização não está disponível")
     failures = health_failures(current_snapshot, settings)
     if failures:
-        authorization.status = AuthorizationStatus.REVOKED
-        mission.status = MissionStatus.READY_FOR_AUTHORIZATION
-        session.commit()
+        _invalidate_authorization(
+            session,
+            mission,
+            authorization,
+            status=AuthorizationStatus.REVOKED,
+            reason="HEALTH_CHECK_FAILED",
+            message="Autorização revogada por falha de saúde antes do claim",
+        )
         raise ConflictError(
             "O veículo falhou nas verificações antes do claim",
             fields={"preflight": ",".join(failures)},

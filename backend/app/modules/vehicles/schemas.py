@@ -52,6 +52,12 @@ class VehicleHealthInput(BaseModel):
         return self
 
 
+class VehicleAuthorizationLimits(BaseModel):
+    min_battery_percent: float
+    battery_warning_percent: float
+    min_gps_satellites: int
+
+
 class VehicleHealthRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,6 +82,7 @@ class VehicleHealthRead(BaseModel):
     captured_at: datetime
     received_at: datetime
     is_stale: bool
+    authorization_limits: VehicleAuthorizationLimits
 
 
 class VehicleHeartbeatResult(BaseModel):

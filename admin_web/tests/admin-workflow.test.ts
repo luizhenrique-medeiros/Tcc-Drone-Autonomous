@@ -1,17 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEMO_ORDERS, DEMO_VEHICLE } from '../src/demo/data';
 import { demoApi, resetDemoState } from '../src/services/demo-api';
-import type { PreflightChecklist } from '../src/services';
+import type { HumanFlightConfirmations } from '../src/services';
 
-const completeChecklist: PreflightChecklist = {
-  mission_reviewed: true,
-  route_matches_destination: true,
-  controlled_area_confirmed: true,
-  weather_checked: true,
-  payload_secured: true,
-  people_clear: true,
+const completeChecklist: HumanFlightConfirmations = {
+  area_and_conditions_clear: true,
+  aircraft_and_payload_inspected: true,
   operator_ready: true,
-  rtl_area_clear: true,
 };
 
 describe('decisões administrativas em duas etapas', () => {

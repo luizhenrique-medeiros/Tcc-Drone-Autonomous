@@ -4,7 +4,7 @@
 
 ## Contexto
 
-Pedidos e auditoria precisam de consistência, enquanto cobertura/distância dependem de coordenadas geográficas reais.
+Pedidos e auditoria precisam de consistência, enquanto distância operacional e auditoria dependem de coordenadas geográficas reais.
 
 ## Decisão
 

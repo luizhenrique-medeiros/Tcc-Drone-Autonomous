@@ -29,7 +29,11 @@ class ProductCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          ProductArtwork(kind: product.kind),
+          ProductArtwork(
+            kind: product.kind,
+            imageUrl: product.imageUrl,
+            semanticLabel: product.name,
+          ),
           const SizedBox(height: AppSpacing.sm),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),

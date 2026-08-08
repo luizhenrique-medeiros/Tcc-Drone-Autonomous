@@ -8,6 +8,7 @@ class Product {
     required this.category,
     required this.kind,
     required this.price,
+    this.imageUrl,
     this.rating,
     this.estimatedMinutes,
     this.available = true,
@@ -19,6 +20,7 @@ class Product {
   final String category;
   final ProductKind kind;
   final double price;
+  final String? imageUrl;
   final double? rating;
   final int? estimatedMinutes;
   final bool available;
@@ -47,8 +49,9 @@ class Product {
       name: name,
       description: json['description']?.toString() ?? '',
       category: json['category']?.toString() ?? '',
-      kind: _kindFrom(name, json['category']?.toString()),
+      kind: inferKind(name, json['category']?.toString()),
       price: price,
+      imageUrl: _toNullableText(json['image_url']),
       rating: rating,
       estimatedMinutes: estimatedMinutes,
       available: json['available'] is bool ? json['available']! as bool : false,
@@ -75,7 +78,12 @@ class Product {
     return int.tryParse(value.toString());
   }
 
-  static ProductKind _kindFrom(String name, String? category) {
+  static String? _toNullableText(Object? value) {
+    final String text = value?.toString().trim() ?? '';
+    return text.isEmpty ? null : text;
+  }
+
+  static ProductKind inferKind(String name, [String? category]) {
     final String value = '$name ${category ?? ''}'.toLowerCase();
     if (value.contains('sushi')) return ProductKind.sushi;
     if (value.contains('burger') || value.contains('lanche')) {

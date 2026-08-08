@@ -36,7 +36,10 @@ import {
   formatOptionalNumber,
   formatPercent,
 } from '../../utils/format';
-import { getVehicleReadiness } from '../missions/vehicle-readiness';
+import {
+  getVehicleReadiness,
+  isGpsFixValid,
+} from '../missions/vehicle-readiness';
 
 interface VehicleReading {
   vehicle: Vehicle;
@@ -140,7 +143,7 @@ export function VehiclesPage() {
                   <div className="diagnostics-grid">
                     <Diagnostic icon={<Radio />} label="Conexão" value={health.connected === true ? 'Conectado' : health.connected === false ? 'Desconectado' : '--'} detail={health.heartbeat_ok === true ? 'Heartbeat dentro do prazo' : health.heartbeat_ok === false ? 'Heartbeat ausente' : 'Heartbeat --'} ok={health.connected === true && health.heartbeat_ok === true} />
                     <Diagnostic icon={<Gauge />} label="Modo / armamento" value={formatNullableText(health.flight_mode)} detail={health.armed === true ? 'VEÍCULO ARMADO' : health.armed === false ? 'Veículo desarmado' : 'Armamento --'} ok={health.armed === false && Boolean(health.flight_mode)} />
-                    <Diagnostic icon={<Satellite />} label="GPS" value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} satélites`} detail="Mínimo operacional: 10 satélites" ok={health.satellites !== null && health.satellites >= 10 && Boolean(health.gps_fix)} />
+                    <Diagnostic icon={<Satellite />} label="GPS" value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} satélites`} detail="Mínimo operacional: fix 3D e 10 satélites" ok={health.satellites !== null && health.satellites >= 10 && isGpsFixValid(health.gps_fix)} />
                     <Diagnostic icon={<Activity />} label="EKF" value={health.ekf_ok === true ? 'Estimativa válida' : health.ekf_ok === false ? 'Estimativa inválida' : '--'} detail="Não contornar falhas de EKF" ok={health.ekf_ok === true} />
                     <Diagnostic icon={<BatteryCharging />} label="Bateria" value={`${formatPercent(health.battery_percent)}${health.battery_voltage !== null ? ` · ${formatOptionalNumber(health.battery_voltage, { maximumFractionDigits: 2 })} V` : ''}`} detail="Mínimo configurado: 40%" ok={health.battery_percent !== null && health.battery_percent >= 40} />
                     <Diagnostic icon={<MapPinned />} label="Origem" value={health.origin_known === true ? 'Origem conhecida' : health.origin_known === false ? 'Origem desconhecida' : '--'} detail="Necessária para retorno seguro" ok={health.origin_known === true} />

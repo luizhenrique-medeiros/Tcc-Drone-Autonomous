@@ -76,7 +76,12 @@ class _CartLineCard extends StatelessWidget {
       children: <Widget>[
         SizedBox(
           width: 72,
-          child: ProductArtwork(kind: product.kind, height: 72),
+          child: ProductArtwork(
+            kind: product.kind,
+            imageUrl: product.imageUrl,
+            semanticLabel: product.name,
+            height: 72,
+          ),
         ),
         const SizedBox(width: AppSpacing.md),
         Expanded(

@@ -2,6 +2,16 @@
 
 Este checklist é preenchido por operador responsável para uma missão e versão específicas. Um checkbox no painel não substitui inspeção física.
 
+## Representação no painel
+
+Este documento continua sendo o procedimento operacional completo para SITL, bancada e voo controlado. A interface não reproduz cada linha como checkbox. Ela apresenta automaticamente os sinais disponíveis do veículo e da missão como `PASS`, `WARNING` ou `BLOCKING` e agrupa somente o que depende de decisão humana em três confirmações:
+
+- área, clima, pessoas, decolagem, destino e retorno livres/controlados;
+- drone, estrutura, energia, carga e mecanismo inspecionados fisicamente;
+- operador responsável presente, pronto para iniciar e intervir.
+
+Não há frase digitada. Qualquer `BLOCKING` técnico mantém a autorização desabilitada; a saúde é atualizada ao abrir o modal e o backend e o gateway repetem as verificações críticas independentemente do estado visual do navegador. Variações normais dentro dos limites seguros permanecem válidas; expiração, mudança da missão ou falha técnica atual exigem nova autorização e geram evento auditável.
+
 ## 1. Pessoas, área e autorização
 
 - [ ] operador responsável identificado e briefing concluído;

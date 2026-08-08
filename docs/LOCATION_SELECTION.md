@@ -16,7 +16,7 @@ O cliente pode começar de três formas:
 
 A pesquisa possui debounce de 400 ms, exige pelo menos três caracteres e ignora respostas antigas quando a consulta muda. O aplicativo chama o FastAPI autenticado; o backend consulta a Geocoding API do MapTiler com `autocomplete=true` e adapta o GeoJSON ao contrato interno.
 
-Com `MAPS_SEARCH_COUNTRY=` vazio, a busca não fica restrita a um país. Um código ISO de duas letras aplica o filtro externo, mas nunca substitui a validação local de cobertura.
+Com `MAPS_SEARCH_COUNTRY=` vazio, a busca não fica restrita a um país. Um código ISO de duas letras aplica somente o filtro externo de busca e não restringe a aceitação mundial do checkout.
 
 Selecionar uma sugestão resolve sua coordenada e apenas move o centro inicial. Se o usuário optar pela posição do dispositivo, a interface deixa claro que ela é aproximada.
 
@@ -37,7 +37,7 @@ Nesses casos, o app explica o problema e permite pesquisar ou abrir diretamente 
 1. O MapLibre abre o estilo GL `hybrid-v4`, combinando imagem e rótulos.
 2. O pino fica **fixo no centro da viewport**; ele não é um marcador arrastável independente.
 3. O usuário move o mapa sob o pino com pan e zoom livres, além de rotação/inclinação quando suportadas.
-4. Não há bounds geográficos de UI: é possível navegar por qualquer continente. A cobertura continua sendo validada pelo backend.
+4. Não há bounds geográficos de UI: é possível navegar por qualquer continente, e o backend aceita no checkout qualquer coordenada mundial válida.
 5. `onCameraMove` acompanha o alvo e `onCameraIdle` grava em memória a coordenada somente depois de movimento manual.
 6. A interface exige pelo menos um ajuste manual, instruções e confirmação explícita de área aberta/adequada.
 7. A confirmação persiste latitude e longitude finais; endereço e reverse geocoding são apenas referência.
@@ -65,12 +65,12 @@ O endereço nunca substitui as coordenadas. A precisão reportada pelo dispositi
 
 - latitude entre -90 e 90 e longitude entre -180 e 180;
 - segunda etapa e confirmação de área segura obrigatórias;
-- cobertura e distância da base calculadas no servidor;
+- distância da base calculada no servidor para auditoria;
 - ponto PostGIS criado do par final;
 - propriedade do cliente;
 - erro de domínio claro sem transformar uma aproximação em destino.
 
-Busca mundial não remove a regra de cobertura: ela permite localizar qualquer região, mas um ponto fora do alcance configurado pode ser rejeitado na validação/submissão.
+Busca mundial e checkout mundial usam o mesmo critério geográfico: qualquer ponto dentro das faixas de latitude/longitude pode ser validado, persistido e submetido. O raio máximo permanece uma validação operacional de missão no gateway, não uma restrição de pedido.
 
 ## Visualização administrativa
 
@@ -90,7 +90,7 @@ O administrador pode rejeitar ou solicitar nova seleção. Ele não altera silen
 | nenhum resultado | permitir editar a consulta, sem coordenada fabricada |
 | reverse geocoding falha | preservar/exibir a coordenada e usar rótulo de indisponibilidade |
 | estilo ou tiles falham | distinguir loading/erro/fallback e não declarar o mapa carregado |
-| fora de cobertura | manter o rascunho e permitir reposicionar |
+| coordenada fora da faixa mundial | informar erro de validação e manter o rascunho para correção |
 | sessão expirada | reautenticar sem registrar token na UI/log |
 | falha ao salvar | retry/idempotência sem duplicar o ponto |
 
@@ -116,5 +116,5 @@ Cobrir:
 - mudança somente após movimento e `onCameraIdle`;
 - bloqueio sem segunda etapa/confirmação;
 - viewport compacta sem overflow;
-- limites, distância, propriedade e PostGIS no backend;
+- faixa mundial, distância para auditoria, propriedade e PostGIS no backend;
 - admin somente leitura da coordenada final, com rota e fallback honesto.

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi.testclient import TestClient
+
+from app.core.enums import AuthorizationStatus, MissionStatus
+from app.database.session import SessionLocal
+from app.modules.approvals.models import FlightAuthorization
+from app.modules.missions.models import Mission
 
 
 def _create_submitted_order(
@@ -120,29 +127,194 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     assert heartbeat.json()["vehicle"]["operational_source"] == "SITL"
     vehicle_id = heartbeat.json()["vehicle"]["id"]
 
+    blank_operator = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/authorize-flight",
+        headers={**admin_headers, "Idempotency-Key": "flight-authorization-blank"},
+        json={
+            "vehicle_id": vehicle_id,
+            "operator_name": "   ",
+            "controlled_area_confirmed": True,
+            "checklist": {
+                "area_and_conditions_clear": True,
+                "aircraft_and_payload_inspected": True,
+                "operator_ready": True,
+            },
+        },
+    )
+    assert blank_operator.status_code == 422
+
     authorization = client.post(
         f"/api/v1/admin/missions/{mission['id']}/authorize-flight",
-        headers=admin_headers,
+        headers={**admin_headers, "Idempotency-Key": "flight-authorization-001"},
         json={
             "vehicle_id": vehicle_id,
             "operator_name": "Operador de teste",
             "controlled_area_confirmed": True,
             "checklist": {
-                "mission_planner_reviewed": True,
-                "controlled_area_secured": True,
+                "area_and_conditions_clear": True,
+                "aircraft_and_payload_inspected": True,
                 "operator_ready": True,
-                "payload_secured": True,
-                "weather_checked": True,
             },
         },
     )
     assert authorization.status_code == 200, authorization.text
     assert authorization.json()["mission"]["status"] == "AUTHORIZED"
     assert authorization.json()["authorization"]["status"] == "ACTIVE"
+    admin_identity = client.get("/api/v1/auth/me", headers=admin_headers)
+    assert admin_identity.status_code == 200
+    embedded_authorization = authorization.json()["mission"]["authorization"]
+    assert embedded_authorization == {
+        "id": authorization.json()["authorization"]["id"],
+        "administrator_id": admin_identity.json()["id"],
+        "administrator_name": admin_identity.json()["name"],
+        "operator_name": "Operador de teste",
+        "status": "ACTIVE",
+        "mission_version": mission["version"],
+        "issued_at": authorization.json()["authorization"]["issued_at"],
+        "expires_at": authorization.json()["authorization"]["expires_at"],
+        "used_at": None,
+    }
+
+    mission_after_reload = client.get(
+        f"/api/v1/admin/missions/{mission['id']}", headers=admin_headers
+    )
+    assert mission_after_reload.status_code == 200
+    assert mission_after_reload.json()["authorization"] == embedded_authorization
+    mission_in_list = client.get("/api/v1/admin/missions", headers=admin_headers)
+    assert mission_in_list.status_code == 200
+    listed_mission = next(item for item in mission_in_list.json() if item["id"] == mission["id"])
+    assert listed_mission["authorization"] == embedded_authorization
+
+    authorization_replay = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/authorize-flight",
+        headers={**admin_headers, "Idempotency-Key": "flight-authorization-001"},
+        json={
+            "vehicle_id": vehicle_id,
+            "operator_name": "Operador de teste",
+            "controlled_area_confirmed": True,
+            "checklist": {
+                "area_and_conditions_clear": True,
+                "aircraft_and_payload_inspected": True,
+                "operator_ready": True,
+            },
+        },
+    )
+    assert authorization_replay.status_code == 200
+    assert authorization_replay.headers["idempotency-replayed"] == "true"
+    assert (
+        authorization_replay.json()["authorization"]["id"]
+        == authorization.json()["authorization"]["id"]
+    )
+
+    duplicate_authorization = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/authorize-flight",
+        headers={**admin_headers, "Idempotency-Key": "flight-authorization-002"},
+        json={
+            "vehicle_id": vehicle_id,
+            "operator_name": "Operador de teste",
+            "controlled_area_confirmed": True,
+            "checklist": {
+                "area_and_conditions_clear": True,
+                "aircraft_and_payload_inspected": True,
+                "operator_ready": True,
+            },
+        },
+    )
+    assert duplicate_authorization.status_code == 409
+
+    with SessionLocal() as session:
+        stored_mission = session.get(Mission, UUID(mission["id"]))
+        assert stored_mission is not None
+        stored_mission.version += 1
+        session.commit()
+
+    invalidated_claim = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/claim",
+        headers=gateway_headers,
+        json={"gateway_id": "gateway-sitl-1"},
+    )
+    assert invalidated_claim.status_code == 409
+    assert invalidated_claim.json()["detail"] == "A missão mudou após a autorização"
+
+    with SessionLocal() as session:
+        stored_mission = session.get(Mission, UUID(mission["id"]))
+        stored_authorization = session.get(
+            FlightAuthorization,
+            UUID(authorization.json()["authorization"]["id"]),
+        )
+        assert stored_mission is not None
+        assert stored_mission.status == MissionStatus.READY_FOR_AUTHORIZATION
+    assert stored_authorization is not None
+    assert stored_authorization.status == AuthorizationStatus.REVOKED
+
+    invalidated_detail = client.get(
+        f"/api/v1/admin/missions/{mission['id']}", headers=admin_headers
+    )
+    assert invalidated_detail.status_code == 200
+    assert invalidated_detail.json()["authorization"]["status"] == "REVOKED"
+
+    revocation_events = client.get(
+        f"/api/v1/admin/events?mission_id={mission['id']}", headers=admin_headers
+    )
+    assert revocation_events.status_code == 200
+    revoked = next(
+        event
+        for event in revocation_events.json()
+        if event["event_type"] == "FLIGHT_AUTHORIZATION_REVOKED"
+    )
+    assert revoked["metadata"]["reason"] == "MISSION_VERSION_CHANGED"
+
+    reauthorization = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/authorize-flight",
+        headers={**admin_headers, "Idempotency-Key": "flight-authorization-003"},
+        json={
+            "vehicle_id": vehicle_id,
+            "operator_name": "Operador de teste",
+            "controlled_area_confirmed": True,
+            "checklist": {
+                "area_and_conditions_clear": True,
+                "aircraft_and_payload_inspected": True,
+                "operator_ready": True,
+            },
+        },
+    )
+    assert reauthorization.status_code == 200, reauthorization.text
+    assert (
+        reauthorization.json()["authorization"]["id"] != authorization.json()["authorization"]["id"]
+    )
+    reauthorized_detail = client.get(
+        f"/api/v1/admin/missions/{mission['id']}", headers=admin_headers
+    )
+    assert reauthorized_detail.status_code == 200
+    assert (
+        reauthorized_detail.json()["authorization"]["id"]
+        == (reauthorization.json()["authorization"]["id"])
+    )
+    assert reauthorized_detail.json()["authorization"]["status"] == "ACTIVE"
+
+    wrong_gateway_claim = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/claim",
+        headers=gateway_headers,
+        json={"gateway_id": "gateway-nao-vinculado"},
+    )
+    assert wrong_gateway_claim.status_code == 409
+    assert wrong_gateway_claim.json()["detail"] == (
+        "O gateway não está vinculado ao veículo autorizado"
+    )
 
     available = client.get("/api/v1/gateway/missions/authorized", headers=gateway_headers)
     assert available.status_code == 200
     assert [item["id"] for item in available.json()] == [mission["id"]]
+
+    # Mudanças normais de telemetria não revogam uma autorização enquanto
+    # todas as condições técnicas continuam dentro dos limites seguros.
+    changed_healthy_heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={**heartbeat_payload, "battery_percent": 87.5, "satellites": 15},
+    )
+    assert changed_healthy_heartbeat.status_code == 200
+    assert changed_healthy_heartbeat.json()["authorization_eligible"] is True
 
     claim = client.post(
         f"/api/v1/gateway/missions/{mission['id']}/claim",
@@ -152,6 +324,10 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     assert claim.status_code == 200, claim.text
     assert claim.json()["mission"]["status"] == "UPLOADING"
     assert claim.json()["mission_file"].startswith("QGC WPL 110")
+    consumed_detail = client.get(f"/api/v1/admin/missions/{mission['id']}", headers=admin_headers)
+    assert consumed_detail.status_code == 200
+    assert consumed_detail.json()["authorization"]["status"] == "CONSUMED"
+    assert consumed_detail.json()["authorization"]["used_at"] is not None
     second_claim = client.post(
         f"/api/v1/gateway/missions/{mission['id']}/claim",
         headers=gateway_headers,

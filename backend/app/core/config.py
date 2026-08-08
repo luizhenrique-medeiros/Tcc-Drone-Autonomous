@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     maps_default_longitude: float = Field(default=-46.5502, ge=-180, le=180)
 
     default_takeoff_altitude_m: float = Field(default=10, gt=0, le=120)
-    max_mission_distance_m: float = Field(default=500, gt=0, le=10000)
     delivery_fee: float = Field(default=7.5, ge=0)
     min_battery_percent: float = Field(default=40, ge=0, le=100)
     min_gps_satellites: int = Field(default=10, ge=0, le=100)

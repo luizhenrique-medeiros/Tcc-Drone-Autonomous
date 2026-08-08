@@ -51,5 +51,6 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.text('Pedidos'), findsOneWidget);
   });
 }

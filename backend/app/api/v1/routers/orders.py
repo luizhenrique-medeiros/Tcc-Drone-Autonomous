@@ -4,18 +4,19 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 
 from app.api.dependencies import AppSettings, CustomerUser, DatabaseSession
 from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
-from app.modules.orders.models import Order
-from app.modules.orders.schemas import OrderCreate, OrderRead
+from app.modules.orders.schemas import OrderCreate, OrderDetailRead, OrderGroup, OrderRead
 from app.modules.orders.service import (
     cancel_order,
     create_order,
     get_order_for_user,
+    list_orders_for_customer,
+    order_detail_to_read,
     order_to_read,
+    orders_to_read,
     submit_order,
 )
 
@@ -68,22 +69,17 @@ def create(
 def list_orders(
     session: DatabaseSession,
     customer: CustomerUser,
+    group: OrderGroup = Query(default=OrderGroup.ALL),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> list[OrderRead]:
-    orders = session.scalars(
-        select(Order)
-        .where(Order.customer_id == customer.id)
-        .order_by(Order.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-    ).all()
-    return [order_to_read(session, order) for order in orders]
+    orders = list_orders_for_customer(session, customer, group, limit, offset)
+    return orders_to_read(session, orders)
 
 
-@router.get("/{order_id}", response_model=OrderRead, summary="Detalhar pedido do cliente")
-def get_order(order_id: UUID, session: DatabaseSession, customer: CustomerUser) -> OrderRead:
-    return order_to_read(session, get_order_for_user(session, order_id, customer))
+@router.get("/{order_id}", response_model=OrderDetailRead, summary="Detalhar pedido do cliente")
+def get_order(order_id: UUID, session: DatabaseSession, customer: CustomerUser) -> OrderDetailRead:
+    return order_detail_to_read(session, get_order_for_user(session, order_id, customer))
 
 
 @router.post("/{order_id}/submit", response_model=OrderRead, summary="Enviar para aprovação")

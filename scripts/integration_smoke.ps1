@@ -154,11 +154,9 @@ $authorization = Invoke-Api POST "/admin/missions/$($mission.id)/authorize-fligh
     operator_name = 'Operador Smoke'
     controlled_area_confirmed = $true
     checklist = @{
-        mission_planner_reviewed = $true
-        controlled_area_secured = $true
+        area_and_conditions_clear = $true
+        aircraft_and_payload_inspected = $true
         operator_ready = $true
-        payload_secured = $true
-        weather_checked = $true
     }
 }
 Assert-Value 'missão autorizada' $authorization.mission.status 'AUTHORIZED'

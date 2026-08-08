@@ -44,8 +44,3 @@ class InvalidStateError(ConflictError):
 
 class InvalidCoordinatesError(DomainError):
     code = "INVALID_COORDINATES"
-
-
-class CoverageError(DomainError):
-    status_code = 422
-    code = "OUTSIDE_COVERAGE"

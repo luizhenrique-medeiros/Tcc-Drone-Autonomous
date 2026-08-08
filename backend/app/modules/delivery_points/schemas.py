@@ -41,7 +41,7 @@ class DeliveryPointValidation(BaseModel):
     final_longitude: float
     distance_from_approximate_m: Decimal | None
     distance_from_base_m: Decimal
-    max_distance_m: Decimal
+    max_distance_m: Decimal | None
     map_type: str
 
 

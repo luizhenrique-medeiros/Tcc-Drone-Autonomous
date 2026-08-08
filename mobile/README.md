@@ -148,6 +148,7 @@ lib/
 
 ## Limites de validação
 
+- o checkout integrado aceita qualquer coordenada mundial válida após a confirmação manual; o raio de missão é uma proteção separada do gateway;
 - o build Web e o APK debug podem ser validados sem chave, usando fallback honesto;
 - Maps/Places/GPS reais exigem credenciais, billing, rede e aparelho e não são comprovados pelo build;
 - APK release exige keystore privado externo;

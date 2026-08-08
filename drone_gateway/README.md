@@ -9,6 +9,7 @@ Processo separado que consulta missões autorizadas no backend e é o único com
 - `real` exige `REAL_HARDWARE_ACKNOWLEDGED=true` e `ALLOW_MISSION_START=true`;
 - `sitl` também só inicia a missão com `ALLOW_MISSION_START=true`; o padrão permite validar conexão/upload sem iniciar automaticamente;
 - upload, início, RTL e abortamento são etapas explícitas;
+- o raio `MAX_MISSION_DISTANCE_M` é validado antes de upload/início e não é alterado pelo checkout mundial;
 - geofence/RTL/preflight ausentes bloqueiam execução;
 - `abort` não dispara flight termination: o adaptador real exige intervenção do operador ou solicitação RTL apropriada.
 

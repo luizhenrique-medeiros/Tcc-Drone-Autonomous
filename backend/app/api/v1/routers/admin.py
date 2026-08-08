@@ -14,6 +14,7 @@ from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
 from app.modules.missions.models import Mission
 from app.modules.missions.schemas import (
+    AdminMissionRead,
     FlightAuthorizationCreate,
     FlightAuthorizationRead,
     MissionAuthorizationResult,
@@ -22,6 +23,8 @@ from app.modules.missions.schemas import (
     SafetyActionRequest,
 )
 from app.modules.missions.service import (
+    admin_mission_to_read,
+    admin_missions_to_read,
     authorize_flight,
     export_mission,
     mark_reviewed,
@@ -124,7 +127,7 @@ async def admin_reject_order(
 
 @router.post(
     "/orders/{order_id}/prepare-mission",
-    response_model=MissionRead,
+    response_model=AdminMissionRead,
     status_code=status.HTTP_201_CREATED,
     summary="Gerar missão Mission Planner",
 )
@@ -133,34 +136,36 @@ async def admin_prepare_mission(
     session: DatabaseSession,
     settings: AppSettings,
     admin: AdminUser,
-) -> Mission:
+) -> AdminMissionRead:
     mission = prepare_mission(
         session, get_order_for_user(session, order_id, admin), admin, settings
     )
     await _broadcast_mission(mission)
-    return mission
+    return admin_mission_to_read(session, mission)
 
 
-@router.get("/missions", response_model=list[MissionRead], summary="Listar missões")
+@router.get("/missions", response_model=list[AdminMissionRead], summary="Listar missões")
 def list_missions(
     session: DatabaseSession,
     _admin: AdminUser,
     mission_status: MissionStatus | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-) -> list[Mission]:
+) -> list[AdminMissionRead]:
     query = select(Mission).order_by(Mission.created_at.desc()).offset(offset).limit(limit)
     if mission_status:
         query = query.where(Mission.status == mission_status)
-    return list(session.scalars(query))
+    return admin_missions_to_read(session, list(session.scalars(query)))
 
 
-@router.get("/missions/{mission_id}", response_model=MissionRead, summary="Detalhar missão")
-def admin_mission_detail(mission_id: UUID, session: DatabaseSession, _admin: AdminUser) -> Mission:
+@router.get("/missions/{mission_id}", response_model=AdminMissionRead, summary="Detalhar missão")
+def admin_mission_detail(
+    mission_id: UUID, session: DatabaseSession, _admin: AdminUser
+) -> AdminMissionRead:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    return mission
+    return admin_mission_to_read(session, mission)
 
 
 @router.get(
@@ -186,23 +191,23 @@ def admin_export_mission(mission_id: UUID, session: DatabaseSession, admin: Admi
 
 @router.post(
     "/missions/{mission_id}/mark-under-review",
-    response_model=MissionRead,
+    response_model=AdminMissionRead,
     summary="Registrar abertura no Mission Planner",
 )
 async def admin_mark_under_review(
     mission_id: UUID, session: DatabaseSession, admin: AdminUser
-) -> Mission:
+) -> AdminMissionRead:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
     result = mark_under_review(session, mission, admin)
     await _broadcast_mission(result)
-    return result
+    return admin_mission_to_read(session, result)
 
 
 @router.post(
     "/missions/{mission_id}/mark-reviewed",
-    response_model=MissionRead,
+    response_model=AdminMissionRead,
     summary="Concluir revisão humana da rota",
 )
 async def admin_mark_reviewed(
@@ -210,13 +215,13 @@ async def admin_mark_reviewed(
     session: DatabaseSession,
     admin: AdminUser,
     payload: MissionReview | None = None,
-) -> Mission:
+) -> AdminMissionRead:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
     result = mark_reviewed(session, mission, admin, payload.notes if payload else None)
     await _broadcast_mission(result)
-    return result
+    return admin_mission_to_read(session, result)
 
 
 @router.post(
@@ -230,20 +235,55 @@ async def admin_authorize_flight(
     session: DatabaseSession,
     settings: AppSettings,
     admin: AdminUser,
-) -> MissionAuthorizationResult:
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=200),
+    ] = None,
+) -> JSONResponse:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    authorization = authorize_flight(session, mission, admin, payload, settings)
-    session.refresh(mission)
-    await _broadcast_mission(mission)
-    return MissionAuthorizationResult(
-        mission=MissionRead.model_validate(mission),
-        authorization=FlightAuthorizationRead.model_validate(authorization),
+
+    def action() -> dict[str, object]:
+        authorization = authorize_flight(
+            session,
+            mission,
+            admin,
+            payload,
+            settings,
+            commit=False,
+        )
+        return MissionAuthorizationResult(
+            mission=admin_mission_to_read(session, mission),
+            authorization=FlightAuthorizationRead.model_validate(authorization),
+        ).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.authorize:{mission_id}",
+        key=idempotency_key,
+        request_payload={
+            "mission_id": str(mission_id),
+            **payload.model_dump(mode="json"),
+        },
+        response_status=status.HTTP_200_OK,
+        action=action,
+    )
+    message = {
+        "type": "mission.status",
+        "data": MissionRead.model_validate(mission).model_dump(mode="json"),
+    }
+    await manager.broadcast_order(mission.order_id, message)
+    await manager.broadcast_admin(message)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
     )
 
 
-@router.post("/missions/{mission_id}/abort", response_model=MissionRead, status_code=202)
+@router.post("/missions/{mission_id}/abort", response_model=AdminMissionRead, status_code=202)
 async def admin_abort(
     mission_id: UUID,
     session: DatabaseSession,
@@ -261,7 +301,7 @@ async def admin_abort(
 
     def action() -> dict[str, object]:
         result = request_safety_action(session, mission, admin, "ABORT", reason, commit=False)
-        return MissionRead.model_validate(result).model_dump(mode="json")
+        return admin_mission_to_read(session, result).model_dump(mode="json")
 
     result = execute_idempotently(
         session,
@@ -272,7 +312,10 @@ async def admin_abort(
         response_status=status.HTTP_202_ACCEPTED,
         action=action,
     )
-    message = {"type": "mission.status", "data": result.body}
+    message = {
+        "type": "mission.status",
+        "data": MissionRead.model_validate(mission).model_dump(mode="json"),
+    }
     await manager.broadcast_order(mission.order_id, message)
     await manager.broadcast_admin(message)
     return JSONResponse(
@@ -282,7 +325,7 @@ async def admin_abort(
     )
 
 
-@router.post("/missions/{mission_id}/request-rtl", response_model=MissionRead, status_code=202)
+@router.post("/missions/{mission_id}/request-rtl", response_model=AdminMissionRead, status_code=202)
 async def admin_request_rtl(
     mission_id: UUID,
     session: DatabaseSession,
@@ -300,7 +343,7 @@ async def admin_request_rtl(
 
     def action() -> dict[str, object]:
         result = request_safety_action(session, mission, admin, "RTL", reason, commit=False)
-        return MissionRead.model_validate(result).model_dump(mode="json")
+        return admin_mission_to_read(session, result).model_dump(mode="json")
 
     result = execute_idempotently(
         session,
@@ -311,7 +354,10 @@ async def admin_request_rtl(
         response_status=status.HTTP_202_ACCEPTED,
         action=action,
     )
-    message = {"type": "mission.status", "data": result.body}
+    message = {
+        "type": "mission.status",
+        "data": MissionRead.model_validate(mission).model_dump(mode="json"),
+    }
     await manager.broadcast_order(mission.order_id, message)
     await manager.broadcast_admin(message)
     return JSONResponse(
