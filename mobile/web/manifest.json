@@ -1,0 +1,35 @@
+{
+    "name": "DEVcore Entregas",
+    "short_name": "DEVcore",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#F8FAFD",
+    "theme_color": "#2869D8",
+    "description": "Cliente Android e Web para pedidos e seleção do ponto exato.",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}

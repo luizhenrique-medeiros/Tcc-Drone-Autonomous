@@ -2,8 +2,9 @@ import '../models/delivery_point.dart';
 import '../network/api_client.dart';
 import 'map_provider.dart';
 
-class ApiGoogleMapsBridge implements GoogleMapsBridge {
-  ApiGoogleMapsBridge(this._client);
+/// Adapter for the normalized map endpoints exposed by the backend.
+class ApiMapBridge implements OnlineMapBridge {
+  ApiMapBridge(this._client);
 
   final ApiClient _client;
 
@@ -36,15 +37,26 @@ class ApiGoogleMapsBridge implements GoogleMapsBridge {
     final Map<String, Object?> json = expectJsonMap(
       await _client.get('/api/v1/maps/geocode?$geocodeQuery'),
     );
+    final Object? rawLatitude = json['latitude'];
+    final Object? rawLongitude = json['longitude'];
+    if (rawLatitude is! num || rawLongitude is! num) {
+      throw const ApiException(
+        'O serviço de mapas retornou coordenadas inválidas.',
+      );
+    }
+    final double latitude = rawLatitude.toDouble();
+    final double longitude = rawLongitude.toDouble();
+    if (!GeoCoordinate.valuesAreValid(latitude, longitude)) {
+      throw const ApiException(
+        'O serviço de mapas retornou coordenadas fora da faixa válida.',
+      );
+    }
     return PlaceSuggestion(
       label: suggestion.label,
       referenceAddress:
           (json['formatted_address'] ?? suggestion.referenceAddress).toString(),
       providerId: (json['place_id'] ?? suggestion.providerId)?.toString(),
-      coordinate: GeoCoordinate(
-        latitude: (json['latitude'] as num).toDouble(),
-        longitude: (json['longitude'] as num).toDouble(),
-      ),
+      coordinate: GeoCoordinate(latitude: latitude, longitude: longitude),
     );
   }
 

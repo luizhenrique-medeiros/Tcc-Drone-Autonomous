@@ -31,6 +31,10 @@ Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como
 | `POST /orders/{id}/submit` | proprietário | `PENDING_ADMIN_APPROVAL` |
 | `POST /orders/{id}/cancel` | proprietário | cancelamento permitido |
 
+As três rotas `/maps/*` são o proxy autenticado para a Geocoding API do MapTiler. Pesquisa exige pelo menos três caracteres e aplica autocomplete; geocode recebe exatamente um de `address` ou `place_id`; reverse geocode recebe latitude/longitude, mas o adaptador externo envia `longitude,latitude`. A resposta externa GeoJSON é convertida aos DTOs internos e nunca expõe `MAPTILER_SERVER_API_KEY`.
+
+Configuração ausente retorna `503/MAPS_NOT_CONFIGURED`; recusa, quota, timeout, rede ou resposta externa inválida retornam `502/MAPS_PROVIDER_ERROR`; consulta inválida retorna `422/MAPS_QUERY_INVALID`. Resultado vazio de geocode/reverse geocode retorna `404`, sem fabricar endereço.
+
 Exemplo mínimo de ponto:
 
 ```json
@@ -47,8 +51,8 @@ Exemplo mínimo de ponto:
   "exact_point_selected": true,
   "user_confirmed": true,
   "user_confirmed_safe_area": true,
-  "map_provider": "google_maps",
-  "map_type": "satellite",
+  "map_provider": "maptiler",
+  "map_type": "hybrid",
   "accuracy_meters": 5
 }
 ```
@@ -85,12 +89,12 @@ A autorização recebe veículo, operador, confirmação de área controlada e t
 
 | Método e rota | Semântica |
 |---|---|
-| `POST /gateway/heartbeat` | identidade e snapshot normalizado |
+| `POST /gateway/heartbeat` | identidade, origem e snapshot normalizado; servidor define `received_at`/frescor |
 | `GET /gateway/missions/authorized` | missões vigentes elegíveis |
 | `POST /gateway/missions/{id}/claim` | consome autorização uma vez |
 | `POST /gateway/missions/{id}/upload-status` | início/resultado do upload, deduplicado por `event_id` |
 | `POST /gateway/missions/{id}/status` | transição física validada |
-| `POST /gateway/missions/{id}/telemetry` | amostra normalizada |
+| `POST /gateway/missions/{id}/telemetry` | amostra normalizada com origem; desconhecidos permanecem nulos |
 | `POST /gateway/missions/{id}/events` | evento com UUID deduplicável |
 | `GET /gateway/commands/pending` | comandos RTL/ABORT destinados ao gateway |
 | `POST /gateway/commands/{id}/ack` | ACK/resultado idempotente do comando |

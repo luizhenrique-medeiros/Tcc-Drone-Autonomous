@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
+
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/delivery_point.dart';
 import '../models/order.dart';
@@ -19,6 +21,7 @@ class CheckoutRequest {
 }
 
 abstract interface class CheckoutRepository {
+  Future<OrderSnapshot?> findLatestActiveOrder();
   Future<OrderSnapshot> submit(CheckoutRequest request);
   Stream<OrderSnapshot> watchOrder(String orderId);
 }
@@ -29,6 +32,9 @@ class DemoCheckoutRepository implements CheckoutRepository {
   });
 
   final Duration statusInterval;
+
+  @override
+  Future<OrderSnapshot?> findLatestActiveOrder() async => null;
 
   @override
   Future<OrderSnapshot> submit(CheckoutRequest request) async {
@@ -73,13 +79,52 @@ class ApiCheckoutRepository implements CheckoutRepository {
   String? _attemptFingerprint;
 
   @override
+  Future<OrderSnapshot?> findLatestActiveOrder() async {
+    const int pageSize = 100;
+    int offset = 0;
+    while (true) {
+      final Object? response = await _client.get(
+        '/api/v1/orders?limit=$pageSize&offset=$offset',
+      );
+      if (response is! List) {
+        throw const ApiException('Lista de pedidos inválida recebida da API.');
+      }
+
+      for (final Object? item in response) {
+        final OrderSnapshot snapshot = OrderSnapshot.fromJson(
+          expectJsonMap(item),
+        );
+        if (snapshot.id.trim().isEmpty) {
+          throw const ApiException(
+            'A API retornou um pedido sem identificador.',
+          );
+        }
+        if (snapshot.status != OrderStatus.draft &&
+            !snapshot.status.isTerminal) {
+          return snapshot;
+        }
+      }
+      if (response.length < pageSize) return null;
+      offset += pageSize;
+    }
+  }
+
+  @override
   Future<OrderSnapshot> submit(CheckoutRequest request) async {
     final DeliveryPointDraft point = request.deliveryPoint;
     final GeoCoordinate approximateCoordinate =
         point.approximatePlace.coordinate!;
+    final bool hasAddress =
+        point.approximatePlace.referenceAddress.trim().isNotEmpty &&
+        point.approximatePlace.referenceAddress !=
+            'Local sem endereço identificado';
     final Map<String, Object?> pointPayload = <String, Object?>{
-      'searched_address': point.approximatePlace.referenceAddress,
-      'address_reference': point.approximatePlace.referenceAddress,
+      'searched_address': hasAddress
+          ? point.approximatePlace.referenceAddress
+          : null,
+      'address_reference': hasAddress
+          ? point.approximatePlace.referenceAddress
+          : null,
       'selection_source': 'MANUAL_MAP_SELECTION',
       'approximate_latitude': approximateCoordinate.latitude,
       'approximate_longitude': approximateCoordinate.longitude,
@@ -88,7 +133,7 @@ class ApiCheckoutRepository implements CheckoutRepository {
       'label': point.approximatePlace.label,
       'instructions': point.instructions,
       'map_provider': point.mapProvider,
-      'map_type': 'satellite',
+      'map_type': 'hybrid',
       'region_confirmed': true,
       'exact_point_selected': true,
       'user_confirmed': true,
@@ -199,13 +244,18 @@ class ApiCheckoutRepository implements CheckoutRepository {
     final Uri socketUri = apiUri
         .resolve('/api/v1/ws/orders/$orderId')
         .replace(scheme: apiUri.scheme == 'https' ? 'wss' : 'ws');
-    final WebSocket socket = await WebSocket.connect(
-      socketUri.toString(),
-    ).timeout(const Duration(seconds: 10));
-    socket.pingInterval = const Duration(seconds: 15);
-    socket.add(jsonEncode(<String, Object?>{'type': 'AUTH', 'token': token}));
+    final WebSocketChannel socket = WebSocketChannel.connect(socketUri);
+    await socket.ready.timeout(const Duration(seconds: 10));
+    socket.sink.add(
+      jsonEncode(<String, Object?>{'type': 'AUTH', 'token': token}),
+    );
+    final Timer heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
+      socket.sink.add('ping');
+    });
     try {
-      await for (final Object? rawMessage in socket) {
+      await for (final Object? rawMessage in socket.stream.timeout(
+        const Duration(seconds: 35),
+      )) {
         if (rawMessage is! String) continue;
         final Object? decoded = jsonDecode(rawMessage);
         if (decoded is! Map) continue;
@@ -214,6 +264,7 @@ class ApiCheckoutRepository implements CheckoutRepository {
               MapEntry<String, Object?>(key.toString(), value),
         );
         final String type = message['type']?.toString() ?? '';
+        if (type == 'pong') continue;
         if (type == 'order.snapshot' || type == 'order.status') {
           yield OrderSnapshot.fromJson(expectJsonMap(message['data']));
         } else if (type == 'mission.status') {
@@ -223,7 +274,8 @@ class ApiCheckoutRepository implements CheckoutRepository {
         }
       }
     } finally {
-      await socket.close();
+      heartbeat.cancel();
+      await socket.sink.close();
     }
   }
 

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:http/http.dart' as http;
 
 class ApiException implements Exception {
   const ApiException(this.message, {this.statusCode});
@@ -12,12 +13,16 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+/// Cliente HTTP compartilhado por Android e Web.
+///
+/// `package:http` escolhe a implementação da plataforma sem importar
+/// `dart:io` nos bundles do navegador.
 class ApiClient {
-  ApiClient({required this.baseUrl, HttpClient? httpClient})
-    : _httpClient = httpClient ?? HttpClient();
+  ApiClient({required this.baseUrl, http.Client? httpClient})
+    : _httpClient = httpClient ?? http.Client();
 
   final String baseUrl;
-  final HttpClient _httpClient;
+  final http.Client _httpClient;
   String? _accessToken;
 
   set accessToken(String? value) => _accessToken = value;
@@ -30,9 +35,7 @@ class ApiClient {
     String path, {
     Map<String, Object?>? body,
     Map<String, String>? headers,
-  }) {
-    return _request('POST', path, body: body, headers: headers);
-  }
+  }) => _request('POST', path, body: body, headers: headers);
 
   Future<Object?> _request(
     String method,
@@ -42,25 +45,26 @@ class ApiClient {
   }) async {
     try {
       final Uri uri = Uri.parse(baseUrl).resolve(path);
-      final HttpClientRequest request = await _httpClient
-          .openUrl(method, uri)
-          .timeout(const Duration(seconds: 12));
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      request.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
-      headers?.forEach(request.headers.set);
-      if (_accessToken case final String token) {
-        request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      }
-      if (body != null) request.write(jsonEncode(body));
+      final http.Request request = http.Request(method, uri)
+        ..headers.addAll(<String, String>{
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          ...?headers,
+          if (_accessToken case final String token)
+            'Authorization': 'Bearer $token',
+        });
+      if (body != null) request.body = jsonEncode(body);
 
-      final HttpClientResponse response = await request.close().timeout(
-        const Duration(seconds: 20),
-      );
-      final String responseText = await utf8.decoder.bind(response).join();
+      final http.StreamedResponse streamed = await _httpClient
+          .send(request)
+          .timeout(const Duration(seconds: 20));
+      final http.Response response = await http.Response.fromStream(
+        streamed,
+      ).timeout(const Duration(seconds: 20));
       Object? decoded;
-      if (responseText.isNotEmpty) {
+      if (response.body.isNotEmpty) {
         try {
-          decoded = jsonDecode(responseText);
+          decoded = jsonDecode(response.body);
         } on FormatException catch (error) {
           throw ApiException(
             'A API retornou JSON inválido: $error',
@@ -77,12 +81,12 @@ class ApiClient {
       return decoded;
     } on ApiException {
       rethrow;
-    } on SocketException catch (error) {
+    } on http.ClientException catch (error) {
       throw ApiException('API indisponível: ${error.message}');
-    } on HttpException catch (error) {
-      throw ApiException('Falha HTTP: ${error.message}');
     } on TimeoutException {
       throw const ApiException('A comunicação com a API expirou.');
+    } on FormatException catch (error) {
+      throw ApiException('URL ou resposta inválida: ${error.message}');
     }
   }
 
@@ -98,7 +102,7 @@ class ApiClient {
     return 'Não foi possível concluir a comunicação com a API.';
   }
 
-  void close() => _httpClient.close(force: true);
+  void close() => _httpClient.close();
 }
 
 Map<String, Object?> expectJsonMap(Object? value) {

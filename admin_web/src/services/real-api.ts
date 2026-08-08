@@ -10,6 +10,8 @@ import type {
   Mission,
   MissionAuthorization,
   MissionStatus,
+  OperationalMetadata,
+  OperationalSource,
   Order,
   OrderStatus,
   SystemEvent,
@@ -122,23 +124,27 @@ interface RawVehicle {
   last_communication_at?: string | null;
 }
 
-interface RawVehicleHealth {
+export interface BackendVehicleHealth {
   vehicle_id: string;
-  connected: boolean;
-  heartbeat: boolean;
-  gps_fix_type: number;
-  satellites: number;
-  ekf_ok: boolean;
-  battery_percent: number;
+  connected: boolean | null;
+  heartbeat: boolean | null;
+  gps_fix_type: number | null;
+  satellites: number | null;
+  ekf_ok: boolean | null;
+  battery_percent: number | null;
   battery_voltage?: number | null;
-  flight_mode: string;
-  armed: boolean;
-  preflight_ok: boolean;
-  rtl_configured: boolean;
-  geofence_enabled: boolean;
+  flight_mode: string | null;
+  armed: boolean | null;
+  preflight_ok: boolean | null;
+  rtl_configured: boolean | null;
+  geofence_enabled: boolean | null;
   origin_latitude?: string | number | null;
   origin_longitude?: string | number | null;
-  captured_at: string;
+  preflight_messages?: string[] | null;
+  captured_at: string | null;
+  source?: string | null;
+  received_at?: string | null;
+  is_stale?: boolean | null;
 }
 
 interface RawEvent {
@@ -153,22 +159,53 @@ interface RawEvent {
   created_at: string;
 }
 
-interface RawTelemetry {
+export interface BackendTelemetry {
   id: string;
   mission_id: string;
-  latitude: string | number;
-  longitude: string | number;
-  relative_altitude_m: number;
-  ground_speed_m_s: number;
-  battery_percent: number;
-  satellites: number;
-  flight_mode: string;
-  armed: boolean;
-  recorded_at: string;
+  latitude: string | number | null;
+  longitude: string | number | null;
+  relative_altitude_m: number | null;
+  ground_speed_m_s: number | null;
+  battery_percent: number | null;
+  satellites: number | null;
+  flight_mode: string | null;
+  armed: boolean | null;
+  recorded_at: string | null;
+  source?: string | null;
+  received_at?: string | null;
+  is_stale?: boolean | null;
 }
 
 const numberFromApi = (value: string | number | null | undefined) =>
   value === null || value === undefined ? undefined : Number(value);
+
+const nullableNumberFromApi = (
+  value: string | number | null | undefined,
+): number | null => {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const operationalSources = new Set<OperationalSource>([
+  'UNKNOWN',
+  'SIMULATION',
+  'SITL',
+  'HARDWARE_REAL',
+]);
+
+const adaptOperationalMetadata = (raw: {
+  source?: string | null;
+  received_at?: string | null;
+  is_stale?: boolean | null;
+}): OperationalMetadata => ({
+  source: operationalSources.has(raw.source as OperationalSource)
+    ? (raw.source as OperationalSource)
+    : 'UNKNOWN',
+  received_at: raw.received_at ?? null,
+  // Contratos antigos ou incompletos nunca podem ser considerados frescos.
+  is_stale: raw.is_stale !== false,
+});
 
 const commandLabels: Record<number, string> = {
   16: 'WAYPOINT',
@@ -287,10 +324,21 @@ const adaptVehicle = (raw: RawVehicle): Vehicle => ({
   last_seen_at: raw.last_communication_at ?? '',
 });
 
-const gpsFixLabel = (fixType: number) =>
-  fixType >= 4 ? '3D + DGPS' : fixType >= 3 ? '3D FIX' : fixType === 2 ? '2D FIX' : 'SEM FIX';
+const gpsFixLabel = (fixType: number | null) => {
+  if (fixType === null) return null;
+  return fixType >= 4
+    ? '3D + DGPS'
+    : fixType >= 3
+      ? '3D FIX'
+      : fixType === 2
+        ? '2D FIX'
+        : 'SEM FIX';
+};
 
-const adaptHealth = (raw: RawVehicleHealth): VehicleHealth => ({
+export const adaptVehicleHealth = (
+  raw: BackendVehicleHealth,
+): VehicleHealth => ({
+  ...adaptOperationalMetadata(raw),
   vehicle_id: raw.vehicle_id,
   connected: raw.connected,
   heartbeat_ok: raw.heartbeat,
@@ -300,17 +348,40 @@ const adaptHealth = (raw: RawVehicleHealth): VehicleHealth => ({
   satellites: raw.satellites,
   ekf_ok: raw.ekf_ok,
   battery_percent: raw.battery_percent,
-  battery_voltage: raw.battery_voltage ?? undefined,
+  battery_voltage: raw.battery_voltage ?? null,
   origin_known:
     raw.origin_latitude !== null &&
     raw.origin_latitude !== undefined &&
     raw.origin_longitude !== null &&
-    raw.origin_longitude !== undefined,
+    raw.origin_longitude !== undefined
+      ? true
+      : null,
   geofence_enabled: raw.geofence_enabled,
   rtl_configured: raw.rtl_configured,
   preflight_ok: raw.preflight_ok,
-  preflight_messages: raw.preflight_ok ? [] : ['O gateway reportou falha nas verificações pré-voo.'],
+  preflight_messages:
+    raw.preflight_messages ??
+    (raw.preflight_ok === false
+      ? ['O gateway reportou falha nas verificações pré-voo.']
+      : []),
   measured_at: raw.captured_at,
+});
+
+export const adaptTelemetryPoint = (
+  point: BackendTelemetry,
+): TelemetryPoint => ({
+  ...adaptOperationalMetadata(point),
+  id: point.id,
+  mission_id: point.mission_id,
+  latitude: nullableNumberFromApi(point.latitude),
+  longitude: nullableNumberFromApi(point.longitude),
+  altitude_m: point.relative_altitude_m,
+  ground_speed_m_s: point.ground_speed_m_s,
+  battery_percent: point.battery_percent,
+  satellites: point.satellites,
+  flight_mode: point.flight_mode,
+  armed: point.armed,
+  recorded_at: point.recorded_at,
 });
 
 const apiRequest = async <T>(
@@ -356,8 +427,21 @@ const apiRequest = async <T>(
   return (await response.json()) as T;
 };
 
+export const createRequestId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 const post = <T>(path: string, body: object = {}) =>
   apiRequest<T>(path, { method: 'POST', body: JSON.stringify(body) });
+
+const postCritical = <T>(path: string, body: object = {}) => {
+  const requestId = createRequestId();
+  return apiRequest<T>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'Idempotency-Key': requestId },
+  });
+};
 
 export const realApi: AdminApi = {
   login: async (input: LoginInput) => {
@@ -375,30 +459,30 @@ export const realApi: AdminApi = {
     adaptAdminOrder(await apiRequest<BackendAdminOrder>(`/admin/orders/${id}`)),
   approveOrder: async (id: string) =>
     adaptAdminOrder(
-      await post<BackendAdminOrder>(`/admin/orders/${id}/approve`, {}),
+      await postCritical<BackendAdminOrder>(`/admin/orders/${id}/approve`, {}),
     ),
   rejectOrder: async (id: string, reason: string) =>
     adaptAdminOrder(
-      await post<BackendAdminOrder>(`/admin/orders/${id}/reject`, { reason }),
+      await postCritical<BackendAdminOrder>(`/admin/orders/${id}/reject`, { reason }),
     ),
   prepareMission: async (orderId: string) =>
     adaptMission(
-      await post<RawMission>(`/admin/orders/${orderId}/prepare-mission`, {}),
+      await postCritical<RawMission>(`/admin/orders/${orderId}/prepare-mission`, {}),
     ),
   getMission: async (id: string) =>
     adaptMission(await apiRequest<RawMission>(`/admin/missions/${id}`)),
   markMissionUnderReview: async (id: string) =>
     adaptMission(
-      await post<RawMission>(`/admin/missions/${id}/mark-under-review`, {}),
+      await postCritical<RawMission>(`/admin/missions/${id}/mark-under-review`, {}),
     ),
   markMissionReviewed: async (id: string) =>
     adaptMission(
-      await post<RawMission>(`/admin/missions/${id}/mark-reviewed`, {
+      await postCritical<RawMission>(`/admin/missions/${id}/mark-reviewed`, {
         notes: 'Rota revisada visualmente no Mission Planner pelo painel administrativo.',
       }),
     ),
   authorizeFlight: async (id: string, input: FlightAuthorizationInput) => {
-    const response = await post<RawAuthorizationResult>(
+    const response = await postCritical<RawAuthorizationResult>(
       `/admin/missions/${id}/authorize-flight`,
       {
         vehicle_id: input.vehicle_id,
@@ -424,10 +508,16 @@ export const realApi: AdminApi = {
       expires_at: response.authorization.expires_at,
     });
   },
-  abortMission: async (id: string) =>
-    adaptMission(await post<RawMission>(`/admin/missions/${id}/abort`, {})),
-  requestRtl: async (id: string) =>
-    adaptMission(await post<RawMission>(`/admin/missions/${id}/request-rtl`, {})),
+  abortMission: async (id: string, reason: string) =>
+    adaptMission(
+      await postCritical<RawMission>(`/admin/missions/${id}/abort`, { reason }),
+    ),
+  requestRtl: async (id: string, reason: string) =>
+    adaptMission(
+      await postCritical<RawMission>(`/admin/missions/${id}/request-rtl`, {
+        reason,
+      }),
+    ),
   exportMission: async (id: string) => {
     const token = sessionToken.get();
     const response = await fetch(
@@ -450,8 +540,8 @@ export const realApi: AdminApi = {
   listVehicles: async () =>
     (await apiRequest<RawVehicle[]>('/admin/vehicles')).map(adaptVehicle),
   getVehicleHealth: async (id: string) =>
-    adaptHealth(
-      await apiRequest<RawVehicleHealth>(`/admin/vehicles/${id}/health`),
+    adaptVehicleHealth(
+      await apiRequest<BackendVehicleHealth>(`/admin/vehicles/${id}/health`),
     ),
   listEvents: async () =>
     (await apiRequest<RawEvent[]>('/admin/events')).map(
@@ -470,23 +560,9 @@ export const realApi: AdminApi = {
   listTelemetry: async (missionId?: string) => {
     if (!missionId) return [];
     return (
-      await apiRequest<RawTelemetry[]>(
+      await apiRequest<BackendTelemetry[]>(
         `/admin/missions/${encodeURIComponent(missionId)}/telemetry?limit=200`,
       )
-    ).map(
-      (point): TelemetryPoint => ({
-        id: point.id,
-        mission_id: point.mission_id,
-        latitude: Number(point.latitude),
-        longitude: Number(point.longitude),
-        altitude_m: point.relative_altitude_m,
-        ground_speed_m_s: point.ground_speed_m_s,
-        battery_percent: point.battery_percent,
-        satellites: point.satellites,
-        flight_mode: point.flight_mode,
-        armed: point.armed,
-        recorded_at: point.recorded_at,
-      }),
-    );
+    ).map(adaptTelemetryPoint);
   },
 };

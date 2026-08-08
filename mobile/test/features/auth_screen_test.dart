@@ -11,6 +11,35 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  testWidgets('login compacto não apresenta overflow no navegador', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final AppController controller = AppController(
+      authRepository: DemoAuthRepository(),
+      productRepository: DemoProductRepository(),
+      checkoutRepository: const DemoCheckoutRepository(),
+      mapProvider: const DevelopmentMapProvider(),
+      locationService: const DevelopmentLocationService(),
+      isDemoMode: true,
+    );
+    addTearDown(controller.dispose);
+    await tester.pumpWidget(
+      AppScope(
+        controller: controller,
+        child: MaterialApp(theme: AppTheme.light, home: const LoginScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('login-submit')), findsOneWidget);
+  });
+
   testWidgets('login valida e-mail e tamanho mínimo da senha', (
     WidgetTester tester,
   ) async {

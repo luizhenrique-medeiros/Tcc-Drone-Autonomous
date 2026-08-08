@@ -58,6 +58,10 @@ class MissionReview(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class SafetyActionRequest(BaseModel):
+    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
 class PreflightChecklist(BaseModel):
     mission_planner_reviewed: bool
     controlled_area_secured: bool
@@ -118,6 +122,7 @@ class GatewayCommandRead(BaseModel):
     id: UUID
     mission_id: UUID
     command: GatewayCommandType
+    reason: str | None
     status: GatewayCommandStatus
     gateway_id: str | None
     requested_at: datetime

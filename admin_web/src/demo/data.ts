@@ -17,6 +17,9 @@ export const DEMO_VEHICLE: Vehicle = {
 };
 
 export const DEMO_HEALTH: VehicleHealth = {
+  source: 'SIMULATION',
+  received_at: '2026-08-06T12:35:27.000Z',
+  is_stale: false,
   vehicle_id: DEMO_VEHICLE.id,
   connected: true,
   heartbeat_ok: true,
@@ -345,6 +348,11 @@ export const DEMO_EVENTS: SystemEvent[] = [
 export const DEMO_TELEMETRY: TelemetryPoint[] = Array.from(
   { length: 12 },
   (_, index) => ({
+    source: 'SIMULATION',
+    received_at: new Date(
+      Date.parse('2026-08-06T12:33:21.000Z') + index * 7000,
+    ).toISOString(),
+    is_stale: false,
     id: `telemetry-${index + 1}`,
     mission_id: 'mission-demo-flight-02',
     latitude: -22.9534 + index * 0.00019,

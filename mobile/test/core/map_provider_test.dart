@@ -3,15 +3,27 @@ import 'package:drone_delivery_mobile/core/models/delivery_point.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('coordenada rejeita faixa inválida e valores não finitos', () {
+    expect(
+      const GeoCoordinate(latitude: -23.1, longitude: -46.5).isValid,
+      isTrue,
+    );
+    expect(const GeoCoordinate(latitude: 91, longitude: 0).isValid, isFalse);
+    expect(
+      const GeoCoordinate(latitude: 0, longitude: double.infinity).isValid,
+      isFalse,
+    );
+  });
+
   group('MapProviderFactory', () {
-    test('usa fallback explícito quando Google não possui bridge', () {
+    test('usa fallback explícito quando MapTiler não possui bridge', () {
       final MapProvider provider = MapProviderFactory.create(
-        configuredProvider: 'google_maps',
+        configuredProvider: 'maptiler',
       );
 
       expect(provider, isA<DevelopmentMapProvider>());
       expect(provider.isDevelopmentFallback, isTrue);
-      expect(provider.displayName, contains('Google não conectado'));
+      expect(provider.displayName, contains('MapTiler não configurado'));
     });
 
     test('converte movimento do marcador em novas coordenadas', () {
@@ -32,15 +44,16 @@ void main() {
       expect(moved.formatted, isNot(center.formatted));
     });
 
-    test('usa Google somente quando configurado e com bridge', () {
+    test('usa MapTiler somente quando configurado e com bridge', () {
       final MapProvider provider = MapProviderFactory.create(
-        configuredProvider: 'google_maps',
-        googleMapsConfigured: true,
-        googleMapsBridge: _FakeGoogleMapsBridge(),
+        configuredProvider: 'maptiler',
+        mapTilerConfigured: true,
+        onlineMapBridge: _FakeOnlineMapBridge(),
       );
 
-      expect(provider, isA<GoogleMapsProvider>());
+      expect(provider, isA<MapTilerMapProvider>());
       expect(provider.isDevelopmentFallback, isFalse);
+      expect(provider.id, 'maptiler');
     });
 
     test(
@@ -53,7 +66,7 @@ void main() {
   });
 }
 
-class _FakeGoogleMapsBridge implements GoogleMapsBridge {
+class _FakeOnlineMapBridge implements OnlineMapBridge {
   @override
   Future<String> reverseGeocode(GeoCoordinate coordinate) async => 'Teste';
 

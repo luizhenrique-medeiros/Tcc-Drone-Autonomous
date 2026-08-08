@@ -1,4 +1,5 @@
 import '../network/api_client.dart';
+import '../security/session_token_store.dart';
 
 class UserSession {
   const UserSession({required this.name, required this.email});
@@ -8,6 +9,8 @@ class UserSession {
 }
 
 abstract interface class AuthRepository {
+  Future<UserSession?> restoreSession();
+
   Future<UserSession> login({required String email, required String password});
 
   Future<UserSession> register({
@@ -17,12 +20,15 @@ abstract interface class AuthRepository {
     String? phone,
   });
 
-  void clearSession();
+  Future<void> clearSession();
 }
 
 class DemoAuthRepository implements AuthRepository {
   @override
-  void clearSession() {}
+  Future<void> clearSession() async {}
+
+  @override
+  Future<UserSession?> restoreSession() async => null;
 
   @override
   Future<UserSession> login({
@@ -30,7 +36,7 @@ class DemoAuthRepository implements AuthRepository {
     required String password,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 250));
-    return UserSession(name: 'Cliente Demo', email: email);
+    return UserSession(name: 'Cliente', email: email);
   }
 
   @override
@@ -46,12 +52,39 @@ class DemoAuthRepository implements AuthRepository {
 }
 
 class ApiAuthRepository implements AuthRepository {
-  ApiAuthRepository(this._client);
+  ApiAuthRepository(this._client, this._tokenStore);
 
   final ApiClient _client;
+  final SessionTokenStore _tokenStore;
 
   @override
-  void clearSession() => _client.accessToken = null;
+  Future<void> clearSession() async {
+    _client.accessToken = null;
+    await _tokenStore.clear();
+  }
+
+  @override
+  Future<UserSession?> restoreSession() async {
+    final String? token;
+    try {
+      token = await _tokenStore.read();
+    } on Object {
+      _client.accessToken = null;
+      return null;
+    }
+    if (token == null || token.isEmpty) return null;
+    _client.accessToken = token;
+    try {
+      return _sessionFromUser(
+        expectJsonMap(await _client.get('/api/v1/auth/me')),
+      );
+    } on ApiException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        await clearSession();
+      }
+      return null;
+    }
+  }
 
   @override
   Future<UserSession> login({
@@ -64,12 +97,24 @@ class ApiAuthRepository implements AuthRepository {
         body: <String, Object?>{'email': email, 'password': password},
       ),
     );
-    _client.accessToken = response['access_token']?.toString();
-    final Map<String, Object?> user = expectJsonMap(response['user']);
-    return UserSession(
-      name: (user['name'] ?? 'Cliente').toString(),
-      email: (user['email'] ?? email).toString(),
+    final String token = response['access_token']?.toString() ?? '';
+    if (token.isEmpty) {
+      throw const ApiException('A API não retornou uma sessão válida.');
+    }
+    final UserSession session = _sessionFromUser(
+      expectJsonMap(response['user']),
+      email: email,
     );
+    _client.accessToken = token;
+    try {
+      await _tokenStore.write(token);
+    } on Object {
+      _client.accessToken = null;
+      throw const ApiException(
+        'Não foi possível armazenar a sessão com segurança neste navegador.',
+      );
+    }
+    return session;
   }
 
   @override
@@ -89,5 +134,14 @@ class ApiAuthRepository implements AuthRepository {
       },
     );
     return login(email: email, password: password);
+  }
+
+  UserSession _sessionFromUser(Map<String, Object?> user, {String email = ''}) {
+    final String name = user['name']?.toString().trim() ?? '';
+    final String resolvedEmail = (user['email'] ?? email).toString().trim();
+    if (name.isEmpty || resolvedEmail.isEmpty) {
+      throw const ApiException('A API não retornou um usuário válido.');
+    }
+    return UserSession(name: name, email: resolvedEmail);
   }
 }

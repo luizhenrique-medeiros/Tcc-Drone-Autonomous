@@ -2,8 +2,8 @@ enum SimulatedPaymentMethod { pix, creditCard }
 
 extension SimulatedPaymentMethodX on SimulatedPaymentMethod {
   String get label => switch (this) {
-    SimulatedPaymentMethod.pix => 'PIX simulado',
-    SimulatedPaymentMethod.creditCard => 'Crédito simulado',
+    SimulatedPaymentMethod.pix => 'PIX',
+    SimulatedPaymentMethod.creditCard => 'Cartão de crédito',
   };
 
   String get apiValue => switch (this) {

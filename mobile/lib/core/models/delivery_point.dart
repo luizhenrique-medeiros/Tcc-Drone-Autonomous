@@ -4,6 +4,16 @@ class GeoCoordinate {
   final double latitude;
   final double longitude;
 
+  static bool valuesAreValid(double latitude, double longitude) =>
+      latitude.isFinite &&
+      longitude.isFinite &&
+      latitude >= -90 &&
+      latitude <= 90 &&
+      longitude >= -180 &&
+      longitude <= 180;
+
+  bool get isValid => valuesAreValid(latitude, longitude);
+
   String get formatted =>
       '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
 }

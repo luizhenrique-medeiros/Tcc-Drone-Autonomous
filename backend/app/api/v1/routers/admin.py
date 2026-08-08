@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Header, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.api.dependencies import AdminUser, AppSettings, DatabaseSession
 from app.core.enums import MissionStatus, OrderStatus
 from app.core.exceptions import NotFoundError
 from app.core.websocket import manager
+from app.modules.idempotency.service import execute_idempotently
 from app.modules.missions.models import Mission
 from app.modules.missions.schemas import (
     FlightAuthorizationCreate,
@@ -16,6 +19,7 @@ from app.modules.missions.schemas import (
     MissionAuthorizationResult,
     MissionRead,
     MissionReview,
+    SafetyActionRequest,
 )
 from app.modules.missions.service import (
     authorize_flight,
@@ -42,9 +46,10 @@ from app.modules.system_events.models import SystemEvent
 from app.modules.system_events.schemas import SystemEventRead
 from app.modules.telemetry.models import TelemetryLog
 from app.modules.telemetry.schemas import TelemetryRead
+from app.modules.telemetry.service import telemetry_to_read
 from app.modules.vehicles.models import Vehicle
 from app.modules.vehicles.schemas import VehicleHealthRead, VehicleRead
-from app.modules.vehicles.service import latest_health
+from app.modules.vehicles.service import health_to_read, latest_health
 
 router = APIRouter(prefix="/admin", tags=["Administração"])
 
@@ -239,25 +244,81 @@ async def admin_authorize_flight(
 
 
 @router.post("/missions/{mission_id}/abort", response_model=MissionRead, status_code=202)
-async def admin_abort(mission_id: UUID, session: DatabaseSession, admin: AdminUser) -> Mission:
+async def admin_abort(
+    mission_id: UUID,
+    session: DatabaseSession,
+    admin: AdminUser,
+    payload: SafetyActionRequest | None = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=200),
+    ] = None,
+) -> JSONResponse:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    result = request_safety_action(session, mission, admin, "ABORT")
-    await _broadcast_mission(result)
-    return result
+    reason = payload.reason if payload else None
+
+    def action() -> dict[str, object]:
+        result = request_safety_action(session, mission, admin, "ABORT", reason, commit=False)
+        return MissionRead.model_validate(result).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.abort:{mission_id}",
+        key=idempotency_key,
+        request_payload={"mission_id": str(mission_id), "action": "ABORT", "reason": reason},
+        response_status=status.HTTP_202_ACCEPTED,
+        action=action,
+    )
+    message = {"type": "mission.status", "data": result.body}
+    await manager.broadcast_order(mission.order_id, message)
+    await manager.broadcast_admin(message)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
+    )
 
 
 @router.post("/missions/{mission_id}/request-rtl", response_model=MissionRead, status_code=202)
 async def admin_request_rtl(
-    mission_id: UUID, session: DatabaseSession, admin: AdminUser
-) -> Mission:
+    mission_id: UUID,
+    session: DatabaseSession,
+    admin: AdminUser,
+    payload: SafetyActionRequest | None = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=200),
+    ] = None,
+) -> JSONResponse:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    result = request_safety_action(session, mission, admin, "RTL")
-    await _broadcast_mission(result)
-    return result
+    reason = payload.reason if payload else None
+
+    def action() -> dict[str, object]:
+        result = request_safety_action(session, mission, admin, "RTL", reason, commit=False)
+        return MissionRead.model_validate(result).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.rtl:{mission_id}",
+        key=idempotency_key,
+        request_payload={"mission_id": str(mission_id), "action": "RTL", "reason": reason},
+        response_status=status.HTTP_202_ACCEPTED,
+        action=action,
+    )
+    message = {"type": "mission.status", "data": result.body}
+    await manager.broadcast_order(mission.order_id, message)
+    await manager.broadcast_admin(message)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
+    )
 
 
 @router.get("/vehicles", response_model=list[VehicleRead], summary="Listar veículos conhecidos")
@@ -270,8 +331,13 @@ def list_vehicles(session: DatabaseSession, _admin: AdminUser) -> list[Vehicle]:
     response_model=VehicleHealthRead,
     summary="Obter último estado real reportado",
 )
-def vehicle_health(vehicle_id: UUID, session: DatabaseSession, _admin: AdminUser) -> object:
-    return latest_health(session, vehicle_id)
+def vehicle_health(
+    vehicle_id: UUID,
+    session: DatabaseSession,
+    settings: AppSettings,
+    _admin: AdminUser,
+) -> VehicleHealthRead:
+    return health_to_read(latest_health(session, vehicle_id), settings)
 
 
 @router.get("/events", response_model=list[SystemEventRead], summary="Consultar auditoria")
@@ -299,12 +365,13 @@ def list_events(
 def mission_telemetry(
     mission_id: UUID,
     session: DatabaseSession,
+    settings: AppSettings,
     _admin: AdminUser,
     limit: int = Query(default=200, ge=1, le=1000),
-) -> list[TelemetryLog]:
+) -> list[TelemetryRead]:
     if not session.get(Mission, mission_id):
         raise NotFoundError("Missão não encontrada")
-    return list(
+    telemetry = list(
         session.scalars(
             select(TelemetryLog)
             .where(TelemetryLog.mission_id == mission_id)
@@ -312,6 +379,7 @@ def mission_telemetry(
             .limit(limit)
         )
     )
+    return [telemetry_to_read(item, settings) for item in telemetry]
 
 
 @router.get(
@@ -322,7 +390,8 @@ def mission_telemetry(
 def telemetry_history(
     mission_id: UUID,
     session: DatabaseSession,
+    settings: AppSettings,
     _admin: AdminUser,
     limit: int = Query(default=200, ge=1, le=1000),
-) -> list[TelemetryLog]:
-    return mission_telemetry(mission_id, session, _admin, limit)
+) -> list[TelemetryRead]:
+    return mission_telemetry(mission_id, session, settings, _admin, limit)

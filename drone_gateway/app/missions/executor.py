@@ -161,6 +161,7 @@ class MissionExecutor:
         self._now = now or (lambda: datetime.now(UTC))
         self._backend_vehicle_id: UUID | None = None
         self._backend_health_failures: list[str] = []
+        self._last_telemetry_report_at: datetime | None = None
         self._pending_claim: AuthorizedMission | None = None
         self._active = self._restore_active()
 
@@ -232,6 +233,7 @@ class MissionExecutor:
     def _clear_active(self) -> None:
         self._active = None
         self._pending_claim = None
+        self._last_telemetry_report_at = None
         self._journal.clear()
 
     async def run_cycle(self) -> None:
@@ -302,7 +304,9 @@ class MissionExecutor:
         for event in events:
             if active is None:
                 log_method = (
-                    logger.warning if event.severity in {"WARNING", "ERROR"} else logger.info
+                    logger.warning
+                    if event.severity in {"WARNING", "ERROR", "CRITICAL"}
+                    else logger.info
                 )
                 log_method(
                     event.message,
@@ -330,14 +334,23 @@ class MissionExecutor:
                 ),
             )
             return
-        await self._backend.acknowledge_command(
-            command.id,
-            GatewayCommandStatus.ACKNOWLEDGED,
-            detail="Comando recebido pelo gateway.",
-        )
+        if command.status is GatewayCommandStatus.PENDING:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.ACKNOWLEDGED,
+                detail="Comando recebido pelo gateway.",
+            )
+        reason_suffix = f" Motivo administrativo: {command.reason}" if command.reason else ""
         try:
             if command.command is GatewayCommandType.RTL:
                 await self._vehicle.request_rtl()
+                await self._backend.report_status(
+                    command.mission_id,
+                    MissionStatus.RETURNING,
+                    detail="Adaptador confirmou a solicitação RTL." + reason_suffix,
+                )
+                active.last_reported_progress_status = MissionStatus.RETURNING
+                self._save_active()
                 await self._backend.report_event(
                     command.mission_id,
                     event_type="MISSION_RTL_ACCEPTED",
@@ -346,13 +359,14 @@ class MissionExecutor:
                         "Veículo aceitou solicitação RTL; o evento não confirma entrega "
                         "nem conclusão da missão."
                     ),
+                    metadata={"reason": command.reason},
                 )
             else:
                 await self._vehicle.abort()
                 await self._backend.report_status(
                     command.mission_id,
                     MissionStatus.ABORTED,
-                    detail="Adaptador confirmou abortamento controlado.",
+                    detail="Adaptador confirmou abortamento controlado." + reason_suffix,
                 )
                 self._clear_active()
             await self._backend.acknowledge_command(
@@ -689,7 +703,17 @@ class MissionExecutor:
                 message="Backend não associou vehicle_id após o claim.",
             )
             return
-        await self._backend.report_telemetry(active.claim.mission.id, vehicle_id, poll.telemetry)
+        now = self._now()
+        should_persist = (
+            self._last_telemetry_report_at is None
+            or (now - self._last_telemetry_report_at).total_seconds()
+            >= self._settings.telemetry_persist_interval_seconds
+        )
+        if should_persist:
+            await self._backend.report_telemetry(
+                active.claim.mission.id, vehicle_id, poll.telemetry
+            )
+            self._last_telemetry_report_at = now
         if progress_prepared:
             await self._flush_pending_status(active)
 

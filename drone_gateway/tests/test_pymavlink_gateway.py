@@ -279,6 +279,23 @@ async def test_poll_rejects_stale_position_without_fabricating_timestamp() -> No
 
 
 @pytest.mark.asyncio
+async def test_health_keeps_unreceived_mavlink_values_null_and_filters_other_vehicle() -> None:
+    gateway, _connection = configured_gateway()
+    gateway._ingest_message(
+        FakeMessage("GPS_RAW_INT", source_system=99, fix_type=3, satellites_visible=14)
+    )
+    gateway._last_heartbeat_monotonic = time.monotonic()
+
+    health = await gateway.read_health()
+
+    assert health.gps_fix_type is None
+    assert health.satellites is None
+    assert health.battery_percent is None
+    assert health.flight_mode is None
+    assert health.armed is None
+
+
+@pytest.mark.asyncio
 async def test_mission_progress_is_explicit_ordered_and_conservative() -> None:
     gateway, _connection = configured_gateway()
     mission = canonical_mission()

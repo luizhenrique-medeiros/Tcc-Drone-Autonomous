@@ -2,11 +2,26 @@
 param(
     [string]$BaseUrl = 'http://127.0.0.1:8000',
     [string]$AdminEmail = 'admin@example.local',
-    [string]$AdminPassword = 'change_me',
-    [int]$TimeoutSeconds = 75
+    [string]$AdminPassword = $env:ADMIN_INITIAL_PASSWORD,
+    [int]$TimeoutSeconds = 75,
+    [switch]$ConfirmSimulationMutation,
+    [switch]$AllowNonLocalTarget
 )
 
 $ErrorActionPreference = 'Stop'
+$targetUri = $null
+if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$targetUri)) {
+    throw "BaseUrl inválida: '$BaseUrl'."
+}
+if (-not $ConfirmSimulationMutation) {
+    throw 'Este smoke cria e altera dados. Repita com -ConfirmSimulationMutation somente contra o ambiente local de simulação.'
+}
+if (-not $AllowNonLocalTarget -and $targetUri.Host -notin @('localhost', '127.0.0.1', '::1')) {
+    throw 'Destino não local bloqueado. O smoke não deve ser executado contra demo/produção; -AllowNonLocalTarget exige revisão explícita.'
+}
+if ([string]::IsNullOrWhiteSpace($AdminPassword) -or $AdminPassword -eq 'change_me') {
+    throw 'Informe -AdminPassword ou ADMIN_INITIAL_PASSWORD; a senha padrão não é aceita.'
+}
 $api = "$($BaseUrl.TrimEnd('/'))/api/v1"
 
 function Invoke-Api {
@@ -84,7 +99,7 @@ $point = Invoke-Api POST '/delivery-points' -Headers $pointHeaders -Body @{
     final_longitude = -46.5500
     label = 'Ponto exato do smoke test'
     instructions = 'Simulação: usar o centro da área isolada.'
-    map_provider = 'google_maps'
+    map_provider = 'maptiler'
     map_type = 'satellite'
     accuracy_meters = 3
     region_confirmed = $true

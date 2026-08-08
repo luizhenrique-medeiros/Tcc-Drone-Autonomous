@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
 import { SatelliteMap } from '../../components/SatelliteMap';
 import {
   Button,
@@ -41,16 +42,20 @@ import {
   formatCoordinate,
   formatDateTime,
   formatDistance,
+  formatNullableText,
+  formatOptionalNumber,
+  formatPercent,
   shortId,
 } from '../../utils/format';
 import { FlightAuthorizationDialog } from './FlightAuthorizationDialog';
-import { isVehicleReadyForAuthorization } from './vehicle-readiness';
+import { getVehicleReadiness } from './vehicle-readiness';
 
 interface MissionPageData {
   mission: Mission;
   order: Order;
   vehicle: Vehicle | null;
   health: VehicleHealth | null;
+  healthError: string;
 }
 
 const flowStages = [
@@ -85,10 +90,16 @@ export function MissionPage() {
     ]);
     const vehicle =
       vehicles.find((item) => item.id === mission.vehicle_id) ?? vehicles[0] ?? null;
-    const health = vehicle
-      ? await adminApi.getVehicleHealth(vehicle.id).catch(() => null)
-      : null;
-    return { mission, order, vehicle, health };
+    let health: VehicleHealth | null = null;
+    let healthError = '';
+    if (vehicle) {
+      try {
+        health = await adminApi.getVehicleHealth(vehicle.id);
+      } catch (loadError) {
+        healthError = getErrorMessage(loadError);
+      }
+    }
+    return { mission, order, vehicle, health, healthError };
   }, [missionId]);
   const { data, isLoading, error, reload, setData } = useAsyncData(loader);
   const [isActing, setIsActing] = useState(false);
@@ -111,7 +122,8 @@ export function MissionPage() {
   }
   if (!data) return null;
 
-  const { mission, order, vehicle, health } = data;
+  const { mission, order, vehicle, health, healthError } = data;
+  const readiness = getVehicleReadiness(health);
   const activeStage = getStage(mission.status);
   const canStartReview = ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'].includes(
     mission.status,
@@ -204,6 +216,11 @@ export function MissionPage() {
       {success ? <Feedback tone="success" className="page-feedback">{success}</Feedback> : null}
       {actionError && !authorizationOpen && !criticalAction ? (
         <Feedback tone="error" className="page-feedback">{actionError}</Feedback>
+      ) : null}
+      {healthError ? (
+        <Feedback tone="error" className="page-feedback">
+          Falha ao atualizar a saúde: {healthError}. A autorização permanece bloqueada.
+        </Feedback>
       ) : null}
 
       <ol className="mission-progress" aria-label="Progresso da missão">
@@ -321,14 +338,14 @@ export function MissionPage() {
               ) : null}
               {canAuthorize ? (
                 <>
-                  <Feedback tone={isVehicleReadyForAuthorization(health) ? 'success' : 'error'}>
-                    {isVehicleReadyForAuthorization(health)
+                  <Feedback tone={readiness.ready ? 'success' : 'error'}>
+                    {readiness.ready
                       ? 'Saúde atual atende aos limites mínimos. Ainda é necessário preencher todo o checklist.'
-                      : 'Autorização bloqueada: a leitura do veículo não atende aos limites mínimos.'}
+                      : `Autorização bloqueada: ${readiness.blockers.join(' ')}`}
                   </Feedback>
                   <Button
                     variant="warning"
-                    disabled={!isVehicleReadyForAuthorization(health)}
+                    disabled={!readiness.ready}
                     onClick={() => { setActionError(''); setAuthorizationOpen(true); }}
                   >
                     <ShieldCheck size={18} /> Iniciar autorização de voo
@@ -359,17 +376,57 @@ export function MissionPage() {
             </div>
           </Card>
 
-          <Card title="Saúde antes do voo" action={<Link to="/vehicles">Diagnóstico</Link>}>
+          <Card
+            title="Saúde antes do voo"
+            action={
+              <div className="cluster">
+                {health ? <OperationalSourceBadge {...health} /> : null}
+                <Link to="/vehicles">Diagnóstico</Link>
+              </div>
+            }
+          >
             {!vehicle || !health ? (
-              <StateView state="empty" compact title="Sem leitura de saúde" description="A autorização permanece bloqueada." />
+              <StateView
+                state="error"
+                compact
+                title="Sem leitura de saúde"
+                description={`${healthError || 'Nenhum snapshot foi retornado.'} A autorização permanece bloqueada.`}
+              />
             ) : (
               <div className="vehicle-checks">
-                <VehicleCheck icon={<Radio />} label="Conexão / heartbeat" value={health.heartbeat_ok ? 'Ativo' : 'Ausente'} ok={health.connected && health.heartbeat_ok} />
-                <VehicleCheck icon={<Satellite />} label="GPS / satélites" value={`${health.gps_fix} · ${health.satellites}`} ok={health.satellites >= 10} />
-                <VehicleCheck icon={<Gauge />} label="EKF / armamento" value={`${health.ekf_ok ? 'EKF OK' : 'Falha'} · ${health.armed ? 'ARMADO' : 'Desarmado'}`} ok={health.ekf_ok && !health.armed} />
-                <VehicleCheck icon={<BatteryCharging />} label="Bateria" value={`${health.battery_percent}%${health.battery_voltage ? ` · ${health.battery_voltage} V` : ''}`} ok={health.battery_percent >= 40} />
-                <VehicleCheck icon={<Navigation />} label="Origem / RTL / geofence" value={health.origin_known && health.rtl_configured && health.geofence_enabled ? 'Configurados' : 'Incompleto'} ok={health.origin_known && health.rtl_configured && health.geofence_enabled} />
-                <p className="last-update">Leitura: {formatDateTime(health.measured_at)}</p>
+                <VehicleCheck
+                  icon={<Radio />}
+                  label="Conexão / heartbeat"
+                  value={health.connected === true && health.heartbeat_ok === true ? 'Ativo' : health.connected === false || health.heartbeat_ok === false ? 'Ausente' : '--'}
+                  ok={health.connected === true && health.heartbeat_ok === true}
+                />
+                <VehicleCheck
+                  icon={<Satellite />}
+                  label="GPS / satélites"
+                  value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} sat.`}
+                  ok={Boolean(health.gps_fix) && health.satellites !== null && health.satellites >= 10}
+                />
+                <VehicleCheck
+                  icon={<Gauge />}
+                  label="EKF / armamento"
+                  value={`${health.ekf_ok === true ? 'EKF OK' : health.ekf_ok === false ? 'EKF inválido' : 'EKF --'} · ${health.armed === true ? 'ARMADO' : health.armed === false ? 'Desarmado' : 'Armamento --'}`}
+                  ok={health.ekf_ok === true && health.armed === false}
+                />
+                <VehicleCheck
+                  icon={<BatteryCharging />}
+                  label="Bateria"
+                  value={`${formatPercent(health.battery_percent)}${health.battery_voltage !== null ? ` · ${formatOptionalNumber(health.battery_voltage, { maximumFractionDigits: 2 })} V` : ''}`}
+                  ok={health.battery_percent !== null && health.battery_percent >= 40}
+                />
+                <VehicleCheck
+                  icon={<Navigation />}
+                  label="Origem / RTL / geofence"
+                  value={health.origin_known === true && health.rtl_configured === true && health.geofence_enabled === true ? 'Configurados' : 'Incompleto ou desconhecido'}
+                  ok={health.origin_known === true && health.rtl_configured === true && health.geofence_enabled === true}
+                />
+                <p className="last-update">
+                  Medida: {formatDateTime(health.measured_at)} · recebida: {formatDateTime(health.received_at)} · {health.is_stale ? 'DADO VENCIDO' : 'fresca segundo a API'}
+                </p>
               </div>
             )}
           </Card>

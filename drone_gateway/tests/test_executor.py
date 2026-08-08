@@ -346,10 +346,12 @@ async def test_simulation_runs_one_claim_through_return_and_completion(tmp_path:
     backend = RecordingBackend(claim)
     vehicle = FakeVehicleGateway(settings)
     await vehicle.connect()
-    executor = MissionExecutor(settings, backend, vehicle)
+    current_time = [datetime.now(UTC)]
+    executor = MissionExecutor(settings, backend, vehicle, now=lambda: current_time[0])
 
     for _ in range(6):
         await executor.run_cycle()
+        current_time[0] += timedelta(seconds=settings.telemetry_persist_interval_seconds)
 
     assert backend.claim_count == 1
     assert backend.upload_statuses == [MissionStatus.UPLOADING, MissionStatus.UPLOADED]

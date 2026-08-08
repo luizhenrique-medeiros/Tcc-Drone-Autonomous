@@ -8,6 +8,7 @@ import 'package:drone_delivery_mobile/core/repositories/checkout_repository.dart
 import 'package:drone_delivery_mobile/core/repositories/product_repository.dart';
 import 'package:drone_delivery_mobile/design_system/components/app_button.dart';
 import 'package:drone_delivery_mobile/design_system/theme/app_theme.dart';
+import 'package:drone_delivery_mobile/features/delivery_point/presentation/approximate_location_screen.dart';
 import 'package:drone_delivery_mobile/features/delivery_point/presentation/exact_location_screen.dart';
 import 'package:drone_delivery_mobile/features/payment/presentation/payment_screen.dart';
 import 'package:flutter/material.dart';
@@ -50,27 +51,63 @@ void main() {
     expect(controller.exactCoordinate, isNull);
 
     final Finder map = find.byKey(const Key('development-satellite-map'));
-    await tester.tapAt(tester.getCenter(map) + const Offset(50, 20));
-    await tester.drag(find.byType(ListView), const Offset(0, -650));
-    await tester.pump();
-
-    AppButton button = tester.widget<AppButton>(
-      find.byKey(const Key('confirm-exact-point')),
+    await tester.ensureVisible(map);
+    await tester.pumpAndSettle();
+    final GestureDetector mapGesture = tester.widget<GestureDetector>(map);
+    mapGesture.onPanUpdate!(
+      DragUpdateDetails(
+        delta: const Offset(140, 0),
+        globalPosition: Offset.zero,
+      ),
     );
+    await tester.pump();
+    expect(find.text('Mova o mapa para continuar'), findsNothing);
+    final Finder safeArea = find.byKey(const Key('safe-area-confirmation'));
+    await tester.scrollUntilVisible(
+      safeArea,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    final Finder confirm = find.byKey(const Key('confirm-exact-point'));
+    await tester.ensureVisible(confirm);
+    await tester.pumpAndSettle();
+
+    AppButton button = tester.widget<AppButton>(confirm);
     expect(button.onPressed, isNull);
 
-    await tester.tap(find.byKey(const Key('safe-area-confirmation')));
+    await tester.tap(safeArea);
     await tester.pump();
 
-    button = tester.widget<AppButton>(
-      find.byKey(const Key('confirm-exact-point')),
-    );
+    button = tester.widget<AppButton>(confirm);
     expect(button.onPressed, isNotNull);
 
-    await tester.tap(find.byKey(const Key('confirm-exact-point')));
+    await tester.tap(confirm);
     await tester.pumpAndSettle();
     expect(find.text('Confirme o ponto final'), findsOneWidget);
     expect(find.textContaining('-23.'), findsWidgets);
+  });
+
+  testWidgets('abre o mapa diretamente sem endereço nem GPS', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      _TestHost(
+        controller: controller,
+        child: const ApproximateLocationScreen(),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const Key('open-map-directly')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ExactLocationScreen), findsOneWidget);
+    expect(controller.approximatePlace, isNotNull);
+    expect(
+      controller.approximatePlace!.referenceAddress,
+      'Local sem endereço identificado',
+    );
   });
 
   testWidgets('pagamento não possui campos bancários', (
@@ -85,7 +122,11 @@ void main() {
       _TestHost(controller: controller, child: const PaymentScreen()),
     );
 
-    expect(find.textContaining('Pagamento 100% simulado'), findsOneWidget);
+    expect(find.text('Escolha a forma de pagamento'), findsOneWidget);
+    expect(
+      find.textContaining('sem solicitar dados bancários'),
+      findsOneWidget,
+    );
     expect(find.textContaining('Número do cartão'), findsNothing);
     expect(find.text('CVV'), findsNothing);
     expect(find.byType(TextFormField), findsNothing);

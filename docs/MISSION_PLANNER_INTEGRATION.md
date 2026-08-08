@@ -18,7 +18,7 @@ O formato ser aceito pelo Mission Planner não torna a rota segura. O operador d
 
 ## Upload MAVLink
 
-Após autorização válida, o gateway aguarda heartbeat, identifica veículo, refaz preflight e usa o protocolo de missão MAVLink com timeout. Ele envia a contagem e os itens canônicos sem disparar `CLEAR_ALL` indiscriminadamente, confirma o ACK, relê a missão enviada e compara campos permitidos antes de publicar o resultado. Upload não equivale a início.
+Após autorização válida, o gateway aguarda heartbeat do system/component configurado, solicita versão/streams, refaz preflight e usa o protocolo de missão MAVLink com timeout. Ele envia a contagem e os itens canônicos sem disparar `CLEAR_ALL` indiscriminadamente, confirma o ACK, relê a missão enviada, confere quantidade e compara campos permitidos antes de publicar o resultado. Upload não equivale a início.
 
 Início exige autorização ainda válida/consumida de forma atômica e procedimento operacional. O gateway nunca arma no startup ou health check. Mission Planner permanece aberto para monitoramento, mensagens e logs.
 
@@ -28,7 +28,7 @@ SITL valida parsing, upload, ACK, telemetria, chegada, retorno, perda de link e 
 
 ## Pixhawk real
 
-`MAVLINK_MODE=real`, conexão explícita e confirmação externa são necessários. Validar primeiro comunicação e sensores, depois motores sem hélices, voo manual, missão curta sem carga e somente então carga leve/mecanismo. Parâmetros e pinagem não são definidos por este software sem confirmação da montagem.
+`MAVLINK_MODE=real`, conexão explícita e confirmação externa são necessários. A topologia recomendada e os comandos para porta serial/encaminhamento UDP estão em [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md). Validar primeiro comunicação e sensores, depois motores sem hélices, voo manual, missão curta sem carga e somente então carga leve/mecanismo. Parâmetros e pinagem não são definidos por este software sem confirmação da montagem.
 
 ## Limites
 

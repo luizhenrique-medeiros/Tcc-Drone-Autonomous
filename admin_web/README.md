@@ -16,7 +16,18 @@ O token Bearer, quando necessário, fica apenas em `sessionStorage` e é apagado
 
 ## Mapas
 
-`VITE_GOOGLE_MAPS_BROWSER_API_KEY` habilita a imagem de satélite. A chave deve ser do tipo navegador, restrita por origem e por API. Sem chave, ou em caso de falha do provedor, o painel mantém coordenadas, waypoints e um diagrama geográfico acessível; ele não finge que esse fallback é uma imagem de satélite.
+O painel usa MapLibre GL JS com o estilo vetorial híbrido do MapTiler. O mapa é interativo, permite pan/zoom, desenha a rota e seus pontos e ajusta a câmera ao conjunto de coordenadas. Não é usado `iframe` nem Static Maps. O worker ESM do MapLibre 6 é importado com `?worker&url`; mantenha esse pipeline do Vite para gerar um worker autocontido com MIME JavaScript correto.
+
+Configure no `.env.local`:
+
+```dotenv
+MAPTILER_WEB_API_KEY=sua_chave_web
+MAPTILER_STYLE_URL=https://api.maptiler.com/maps/hybrid-v4/style.json
+```
+
+A chave é incorporada ao bundle web e, portanto, deve ser tratada como chave pública de navegador: restrinja-a aos domínios autorizados no painel do MapTiler e rotacione-a se for exposta. Mantenha a chave fora de `MAPTILER_STYLE_URL`; a aplicação acrescenta o parâmetro ao carregar o estilo. As atribuições do estilo continuam visíveis pelo controle nativo do MapLibre e o logo oficial linkado do MapTiler é exibido para atender ao plano Free.
+
+Enquanto o estilo carrega, o painel informa o estado. Sem configuração, com coordenadas inválidas, após timeout ou erro do provedor, ele mantém coordenadas, waypoints e um diagrama geográfico acessível; o fallback é identificado e nunca se apresenta como mapa carregado.
 
 ## Validação
 
@@ -30,4 +41,11 @@ O catálogo visual existe em `/design-system` somente no servidor de desenvolvim
 
 ## Container
 
-O `Dockerfile` gera os assets com Node e os publica pelo Nginx na porta 80, com fallback de SPA e `/health`. As variáveis `VITE_*` são incorporadas no build; alterá-las exige reconstruir a imagem.
+O `Dockerfile` gera os assets com Node e os publica pelo Nginx na porta 80, com fallback de SPA e `/health`. `VITE_*`, `MAPTILER_WEB_API_KEY` e `MAPTILER_STYLE_URL` são incorporadas no build; alterá-las exige reconstruir a imagem. Exemplo:
+
+```powershell
+docker build `
+  --build-arg MAPTILER_WEB_API_KEY=$env:MAPTILER_WEB_API_KEY `
+  --build-arg MAPTILER_STYLE_URL=https://api.maptiler.com/maps/hybrid-v4/style.json `
+  -t devcore-admin-web .
+```

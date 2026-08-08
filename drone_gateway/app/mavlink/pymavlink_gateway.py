@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import (
     MissionUploadError,
     UnsafeOperationError,
@@ -19,6 +19,7 @@ from app.core.geo import distance_m
 from app.models import (
     AuthorizedMission,
     MissionStatus,
+    OperationalSource,
     TelemetrySnapshot,
     UploadResult,
     VehicleEvent,
@@ -43,16 +44,17 @@ class PymavlinkVehicleGateway:
         # pymavlink builds dynamic dialect classes, so a static type is not available here.
         self._connection: Any | None = None
         self._last_heartbeat_monotonic: float | None = None
-        self._mode = "UNKNOWN"
-        self._armed = False
-        self._gps_fix = 0
-        self._satellites = 0
-        self._ekf_ok = False
-        self._battery_percent = 0.0
+        self._mode: str | None = None
+        self._armed: bool | None = None
+        self._gps_fix: int | None = None
+        self._satellites: int | None = None
+        self._ekf_ok: bool | None = None
+        self._battery_percent: float | None = None
         self._battery_voltage: float | None = None
-        self._preflight_ok = False
-        self._rtl_configured = False
-        self._geofence_enabled = False
+        self._preflight_ok: bool | None = None
+        self._rtl_configured: bool | None = None
+        self._geofence_enabled: bool | None = None
+        self._autopilot_version: str | None = None
         self._origin_latitude: float | None = None
         self._origin_longitude: float | None = None
         self._latitude: float | None = None
@@ -80,18 +82,48 @@ class PymavlinkVehicleGateway:
         self._mavutil = self._load_mavutil()
         self._connection = self._mavutil.mavlink_connection(
             self._settings.mavlink_connection,
+            baud=self._settings.mavlink_baud_rate,
             autoreconnect=True,
-            source_system=254,
+            source_system=self._settings.mavlink_source_system_id,
         )
-        heartbeat = await asyncio.to_thread(
-            self._connection.wait_heartbeat,
-            timeout=self._settings.heartbeat_timeout_seconds,
-        )
+        heartbeat = await asyncio.to_thread(self._wait_for_target_heartbeat)
         if heartbeat is None:
             raise VehicleTimeoutError("Heartbeat MAVLink não chegou dentro do timeout.")
-        self._last_heartbeat_monotonic = time.monotonic()
+        self._ingest_message(heartbeat)
         await asyncio.to_thread(self._request_initial_state)
         await asyncio.to_thread(self._drain_messages, 100)
+
+    def _wait_for_target_heartbeat(self) -> Any | None:
+        connection = self._required_connection()
+        mavutil = self._required_mavutil()
+        deadline = time.monotonic() + self._settings.heartbeat_timeout_seconds
+        invalid_autopilot = getattr(mavutil.mavlink, "MAV_AUTOPILOT_INVALID", 8)
+        while time.monotonic() < deadline:
+            heartbeat = connection.recv_match(
+                type="HEARTBEAT",
+                blocking=True,
+                timeout=max(0.1, deadline - time.monotonic()),
+            )
+            if heartbeat is None:
+                continue
+            source_system = int(heartbeat.get_srcSystem())
+            source_component = int(heartbeat.get_srcComponent())
+            if (
+                self._settings.mavlink_target_system_id is not None
+                and source_system != self._settings.mavlink_target_system_id
+            ):
+                continue
+            if (
+                self._settings.mavlink_target_component_id is not None
+                and source_component != self._settings.mavlink_target_component_id
+            ):
+                continue
+            if int(getattr(heartbeat, "autopilot", invalid_autopilot)) == invalid_autopilot:
+                continue
+            connection.target_system = source_system
+            connection.target_component = source_component
+            return heartbeat
+        return None
 
     def _request_initial_state(self) -> None:
         connection = self._required_connection()
@@ -111,8 +143,104 @@ class PymavlinkVehicleGateway:
             0,
             0,
         )
+        self._request_autopilot_version()
+        if not self._request_message_intervals():
+            self._request_data_stream_fallback()
         for parameter in (b"FENCE_ENABLE", b"RTL_ALT"):
             connection.mav.param_request_read_send(target_system, target_component, parameter, -1)
+
+    def _request_autopilot_version(self) -> None:
+        connection = self._required_connection()
+        mavlink = self._required_mavutil().mavlink
+        request_message = getattr(mavlink, "MAV_CMD_REQUEST_MESSAGE", None)
+        message_id = getattr(mavlink, "MAVLINK_MSG_ID_AUTOPILOT_VERSION", None)
+        if request_message is not None and message_id is not None:
+            connection.mav.command_long_send(
+                connection.target_system,
+                connection.target_component,
+                request_message,
+                0,
+                message_id,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+            return
+        legacy_command = getattr(mavlink, "MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES", None)
+        if legacy_command is not None:
+            connection.mav.command_long_send(
+                connection.target_system,
+                connection.target_component,
+                legacy_command,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+
+    def _request_message_intervals(self) -> bool:
+        connection = self._required_connection()
+        mavlink = self._required_mavutil().mavlink
+        command = getattr(mavlink, "MAV_CMD_SET_MESSAGE_INTERVAL", None)
+        if command is None:
+            return False
+        requested = (
+            ("MAVLINK_MSG_ID_HEARTBEAT", 1_000_000),
+            ("MAVLINK_MSG_ID_SYS_STATUS", 1_000_000),
+            ("MAVLINK_MSG_ID_GPS_RAW_INT", 1_000_000),
+            ("MAVLINK_MSG_ID_GLOBAL_POSITION_INT", 500_000),
+            ("MAVLINK_MSG_ID_EKF_STATUS_REPORT", 1_000_000),
+            ("MAVLINK_MSG_ID_HOME_POSITION", 5_000_000),
+            ("MAVLINK_MSG_ID_MISSION_CURRENT", 1_000_000),
+            ("MAVLINK_MSG_ID_MISSION_ITEM_REACHED", 1_000_000),
+            ("MAVLINK_MSG_ID_STATUSTEXT", 1_000_000),
+        )
+        sent_any = False
+        for constant_name, interval_us in requested:
+            message_id = getattr(mavlink, constant_name, None)
+            if message_id is None:
+                continue
+            try:
+                connection.mav.command_long_send(
+                    connection.target_system,
+                    connection.target_component,
+                    command,
+                    0,
+                    message_id,
+                    interval_us,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            except (AttributeError, OSError, TypeError, ValueError):
+                return False
+            sent_any = True
+        return sent_any
+
+    def _request_data_stream_fallback(self) -> None:
+        connection = self._required_connection()
+        mavlink = self._required_mavutil().mavlink
+        stream = getattr(mavlink, "MAV_DATA_STREAM_ALL", 0)
+        try:
+            connection.mav.request_data_stream_send(
+                connection.target_system,
+                connection.target_component,
+                stream,
+                2,
+                1,
+            )
+        except (AttributeError, OSError, TypeError, ValueError):
+            # Failure is non-fatal: consume whatever stream the autopilot exposes.
+            return
 
     def _required_connection(self) -> Any:
         if self._connection is None:
@@ -137,6 +265,8 @@ class PymavlinkVehicleGateway:
         message_type = message.get_type()
         if message_type == "BAD_DATA":
             return
+        if not self._message_matches_target(message):
+            return
         if message_type == "HEARTBEAT":
             self._last_heartbeat_monotonic = time.monotonic()
             self._mode = mavutil.mode_string_v10(message)
@@ -145,7 +275,7 @@ class PymavlinkVehicleGateway:
         elif message_type == "GPS_RAW_INT":
             self._gps_fix = int(message.fix_type)
             satellites = int(message.satellites_visible)
-            self._satellites = satellites if 0 <= satellites <= 100 else 0
+            self._satellites = satellites if 0 <= satellites <= 100 else None
         elif message_type == "SYS_STATUS":
             if int(message.battery_remaining) >= 0:
                 self._battery_percent = float(message.battery_remaining)
@@ -180,6 +310,17 @@ class PymavlinkVehicleGateway:
                 self._geofence_enabled = float(message.param_value) >= 1
             elif parameter_id == "RTL_ALT":
                 self._rtl_configured = float(message.param_value) > 0
+        elif message_type == "AUTOPILOT_VERSION":
+            software = int(getattr(message, "flight_sw_version", 0))
+            major = (software >> 24) & 0xFF
+            minor = (software >> 16) & 0xFF
+            patch = (software >> 8) & 0xFF
+            release_type = software & 0xFF
+            vendor = int(getattr(message, "vendor_id", 0))
+            product = int(getattr(message, "product_id", 0))
+            self._autopilot_version = (
+                f"{major}.{minor}.{patch} (tipo {release_type}; vendor {vendor}; produto {product})"
+            )
         elif message_type == "MISSION_CURRENT":
             sequence = int(message.seq)
             if sequence != self._last_current_sequence:
@@ -226,6 +367,30 @@ class PymavlinkVehicleGateway:
                 metadata={"mav_severity": severity_number},
             )
 
+    def _message_matches_target(self, message: Any) -> bool:
+        connection = self._required_connection()
+        source_system_getter = getattr(message, "get_srcSystem", None)
+        source_component_getter = getattr(message, "get_srcComponent", None)
+        if not callable(source_system_getter) or not callable(source_component_getter):
+            return False
+        try:
+            source_system = int(source_system_getter())
+            source_component = int(source_component_getter())
+        except (TypeError, ValueError):
+            return False
+        if source_system != int(connection.target_system):
+            return False
+        return int(connection.target_component) <= 0 or source_component == int(
+            connection.target_component
+        )
+
+    def _operational_source(self) -> OperationalSource:
+        if self._settings.mavlink_mode is MavlinkMode.SITL:
+            return OperationalSource.SITL
+        if self._settings.mavlink_mode is MavlinkMode.REAL:
+            return OperationalSource.HARDWARE_REAL
+        return OperationalSource.SIMULATION
+
     def _queue_event(
         self,
         *,
@@ -259,6 +424,8 @@ class PymavlinkVehicleGateway:
         connected = self._connection is not None and heartbeat
         try:
             return VehicleHealth(
+                source=self._operational_source(),
+                autopilot_version=self._autopilot_version,
                 connected=connected,
                 heartbeat=heartbeat,
                 gps_fix_type=self._gps_fix,
@@ -608,6 +775,7 @@ class PymavlinkVehicleGateway:
             raise VehicleTimeoutError("GLOBAL_POSITION_INT ficou vencido durante a missão.")
         try:
             telemetry = TelemetrySnapshot(
+                source=self._operational_source(),
                 latitude=self._latitude,
                 longitude=self._longitude,
                 relative_altitude_m=self._relative_altitude_m,

@@ -92,6 +92,8 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
         "vehicle_identifier": "sitl-copter-1",
         "vehicle_name": "Copter SITL",
         "autopilot_system": "ArduPilot",
+        "autopilot_version": "4.5.7",
+        "source": "SITL",
         "connected": True,
         "heartbeat": True,
         "gps_fix_type": 3,
@@ -112,6 +114,10 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     )
     assert heartbeat.status_code == 200, heartbeat.text
     assert heartbeat.json()["authorization_eligible"] is True
+    assert heartbeat.json()["health"]["source"] == "SITL"
+    assert heartbeat.json()["health"]["is_stale"] is False
+    assert heartbeat.json()["health"]["received_at"]
+    assert heartbeat.json()["vehicle"]["operational_source"] == "SITL"
     vehicle_id = heartbeat.json()["vehicle"]["id"]
 
     authorization = client.post(
@@ -178,6 +184,7 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     telemetry_payload = {
         "event_id": "telemetry-event-001",
         "vehicle_id": vehicle_id,
+        "source": "SITL",
         "latitude": -23.1173,
         "longitude": -46.5501,
         "relative_altitude_m": 8.5,
@@ -194,6 +201,10 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
         json=telemetry_payload,
     )
     assert telemetry.status_code == 200, telemetry.text
+    assert telemetry.json()["source"] == "SITL"
+    assert telemetry.json()["received_at"]
+    assert telemetry.json()["recorded_at"]
+    assert telemetry.json()["is_stale"] is False
     duplicate_telemetry = client.post(
         f"/api/v1/gateway/missions/{mission['id']}/telemetry",
         headers=gateway_headers,
@@ -202,16 +213,36 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     assert duplicate_telemetry.status_code == 200
     assert duplicate_telemetry.json()["id"] == telemetry.json()["id"]
 
+    abort_headers = {**admin_headers, "Idempotency-Key": "admin-abort-flow-001"}
     abort_request = client.post(
-        f"/api/v1/admin/missions/{mission['id']}/abort", headers=admin_headers
+        f"/api/v1/admin/missions/{mission['id']}/abort",
+        headers=abort_headers,
+        json={"reason": "Intervenção de segurança do teste"},
     )
     assert abort_request.status_code == 202
+    abort_replay = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/abort",
+        headers=abort_headers,
+        json={"reason": "Intervenção de segurança do teste"},
+    )
+    assert abort_replay.status_code == 202
+    assert abort_replay.json() == abort_request.json()
+    assert abort_replay.headers["idempotency-replayed"] == "true"
+    abort_mismatch = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/abort",
+        headers=abort_headers,
+        json={"reason": "Outro motivo"},
+    )
+    assert abort_mismatch.status_code == 409
+    assert abort_mismatch.json()["code"] == "IDEMPOTENCY_KEY_REUSED"
     commands = client.get(
         "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
         headers=gateway_headers,
     )
     assert commands.status_code == 200, commands.text
+    assert len(commands.json()) == 1
     assert commands.json()[0]["command"] == "ABORT"
+    assert commands.json()[0]["reason"] == "Intervenção de segurança do teste"
     command_id = commands.json()[0]["id"]
     ack = client.post(
         f"/api/v1/gateway/commands/{command_id}/ack",

@@ -53,96 +53,102 @@ class OrderTrackingScreen extends StatelessWidget {
         title: const Text('Acompanhar pedido'),
         automaticallyImplyLeading: false,
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(AppSpacing.screen),
-        children: <Widget>[
-          if (controller.isDemoMode) ...<Widget>[
-            const AppBanner(
-              title: 'Progressão simulada no aplicativo',
-              message:
-                  'Neste modo, os estados avançam automaticamente para demonstrar a interface. Isso não representa telemetria, aprovação ou voo real.',
-              tone: AppBannerTone.warning,
-            ),
-            const SizedBox(height: AppSpacing.md),
-          ],
-          _StatusHero(order: order),
-          if (controller.checkoutError != null) ...<Widget>[
-            const SizedBox(height: AppSpacing.md),
-            AppBanner(
-              title: 'Atualização interrompida',
-              message: controller.checkoutError!,
-              tone: AppBannerTone.danger,
-            ),
-          ],
-          if (order.rejectionReason != null) ...<Widget>[
-            const SizedBox(height: AppSpacing.md),
-            AppBanner(
-              title: 'Motivo informado pela administração',
-              message: order.rejectionReason!,
-              tone: AppBannerTone.danger,
-            ),
-          ],
-          const SizedBox(height: AppSpacing.lg),
-          const SectionHeader(
-            title: 'Etapas da operação',
-            subtitle:
-                'Aprovação do pedido e autorização do voo são controles distintos.',
-          ),
-          SurfaceCard(
-            child: Column(
-              children: <Widget>[
-                for (int index = 0; index < _milestones.length; index++)
-                  _TimelineItem(
-                    status: _milestones[index],
-                    currentStatus: order.status,
-                    isLast: index == _milestones.length - 1,
-                    exceptional: exceptional,
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: AppSpacing.lg),
-          SurfaceCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text('Pedido ${order.id}', style: AppTypography.label),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  'Ponto final: ${controller.exactCoordinate?.formatted ?? 'indisponível'}',
-                  style: AppTypography.body,
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  'Pagamento: ${controller.paymentMethod.label}',
-                  style: AppTypography.body,
-                ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            padding: const EdgeInsets.all(AppSpacing.screen),
+            children: <Widget>[
+              _StatusHero(order: order),
+              if (controller.isDemoMode) ...<Widget>[
                 const SizedBox(height: AppSpacing.xs),
                 const Text(
-                  'O aplicativo apenas acompanha. Ele não aprova, autoriza voo, envia MAVLink ou controla o drone.',
+                  'Acompanhamento local com atualizações automáticas de apresentação.',
                   style: AppTypography.caption,
+                  textAlign: TextAlign.center,
                 ),
               ],
-            ),
+              if (controller.checkoutError != null) ...<Widget>[
+                const SizedBox(height: AppSpacing.md),
+                AppBanner(
+                  title: 'Atualização interrompida',
+                  message: controller.checkoutError!,
+                  tone: AppBannerTone.danger,
+                ),
+              ],
+              if (order.rejectionReason != null) ...<Widget>[
+                const SizedBox(height: AppSpacing.md),
+                AppBanner(
+                  title: 'Motivo informado pela administração',
+                  message: order.rejectionReason!,
+                  tone: AppBannerTone.danger,
+                ),
+              ],
+              const SizedBox(height: AppSpacing.lg),
+              const SectionHeader(
+                title: 'Etapas da operação',
+                subtitle:
+                    'Aprovação do pedido e autorização do voo são controles distintos.',
+              ),
+              SurfaceCard(
+                child: Column(
+                  children: <Widget>[
+                    for (int index = 0; index < _milestones.length; index++)
+                      _TimelineItem(
+                        status: _milestones[index],
+                        currentStatus: order.status,
+                        isLast: index == _milestones.length - 1,
+                        exceptional: exceptional,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              SurfaceCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text('Pedido ${order.id}', style: AppTypography.label),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      'Ponto final: ${controller.exactCoordinate?.formatted ?? 'indisponível'}',
+                      style: AppTypography.body,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      'Pagamento: ${controller.paymentMethod.label}',
+                      style: AppTypography.body,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    const Text(
+                      'O aplicativo apenas acompanha. Ele não aprova, autoriza voo, envia MAVLink ou controla o drone.',
+                      style: AppTypography.caption,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              if (order.status.isTerminal)
+                AppButton(
+                  label: 'Voltar ao início',
+                  onPressed: () async {
+                    await Navigator.of(context).pushAndRemoveUntil<void>(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const HomeScreen(),
+                      ),
+                      (Route<Object?> route) => false,
+                    );
+                  },
+                )
+              else
+                const AppBanner(
+                  title: 'Atualizações automáticas',
+                  message:
+                      'Mantenha esta tela aberta para receber novos estados.',
+                ),
+            ],
           ),
-          const SizedBox(height: AppSpacing.lg),
-          if (order.status.isTerminal)
-            AppButton(
-              label: 'Voltar ao início',
-              onPressed: () async {
-                await Navigator.of(context).pushAndRemoveUntil<void>(
-                  MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
-                  (Route<Object?> route) => false,
-                );
-              },
-            )
-          else
-            const AppBanner(
-              title: 'Atualizações automáticas',
-              message:
-                  'Mantenha esta tela aberta. Em integração real, o backend continua sendo a fonte de verdade.',
-            ),
-        ],
+        ),
       ),
     );
   }

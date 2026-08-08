@@ -2,65 +2,91 @@
 
 ## Camadas
 
-1. **Unitário:** domínio, schemas, widgets/componentes, fake gateway; sem rede/banco real.
-2. **Integração:** FastAPI + banco PostGIS isolado, contratos frontend e exportador.
-3. **Sistema fake:** fluxo cliente→admin→gateway determinístico.
+1. **Unitário:** domínio, schemas, widgets/componentes e gateway fake; sem hardware.
+2. **Integração local:** FastAPI + PostGIS, contratos frontend, WebSocket e exportador.
+3. **Sistema `simulation`:** fluxo cliente → admin → gateway determinístico.
 4. **SITL:** MAVLink real contra ArduPilot virtual.
 5. **Bancada Pixhawk:** manual, inicialmente sem hélices.
 6. **Voo controlado:** progressão manual com critérios e evidência.
 
+Teste em camada inferior não comprova camada superior.
+
 ## Backend
 
-Cadastro/login/RBAC; propriedade; pontos válidos/inválidos/segunda etapa/cobertura/PostGIS; dinheiro; submit/cancel; approve/reject/motivo; missão/versionamento/exportação/revisão; autorização separada/TTL/uso único/saúde vencida; transições concorrentes; auditoria/idempotência; telemetria antiga; WebSocket e erros.
+Cobrir cadastro/login/RBAC, propriedade, pontos válidos/inválidos, PostGIS, dinheiro, submit/cancel, approve/reject/motivo, missão/versionamento/exportação/revisão, autorização separada/TTL/uso único, snapshot vencido/incompleto, idempotência, telemetria antiga/provenance, WebSocket e erros.
+
+Em PostgreSQL isolado, executar `upgrade`, `alembic check`, `downgrade` e novo `upgrade`. Nunca testar downgrade destrutivo no banco do usuário sem backup.
 
 ## Mobile
 
-Formulários, catálogo/carrinho, responsividade, permissão, busca/sem resultado, duas etapas, satélite, marcador/coordenadas, confirmação/erro/restauração, pagamento sem dado bancário, submit e todos os estados. Golden tests somente para componentes/telas estáveis e revisados manualmente.
+Cobrir formulários, restauração/expiração da sessão, catálogo/carrinho, responsividade, busca/sem resultado, abertura direta sem endereço/GPS, MapLibre/pino central/coordenadas, confirmação de área, pagamento sem dado bancário, submit e estados de acompanhamento. MapTiler real requer testes separados com chave restrita e aparelho/navegador.
 
 ## Admin
 
-Proteção de rota, fila/vazio/erro, detalhe/mapa, diferença aproximado/final, approve/reject, bloqueio de edição, export/revisão, health stale, checklist, confirmação reforçada, duplo clique, autorização, WebSocket/reconexão, RTL/abort e catálogo dev protegido.
+Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, checklist, confirmação reforçada, idempotência, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, RTL e abortamento.
+
+## MapTiler e MapLibre
+
+- backend: contrato interno, URL externa codificada, ordem longitude/latitude, `language`, `limit`, `autocomplete`, país opcional e parser GeoJSON;
+- segurança: chave de servidor ausente dos DTOs/erros/logs; chaves Web/Android separadas; estilo sem `?key=` no arquivo;
+- erros: chave ausente, 403, 429, timeout, falha de rede, JSON/GeoJSON inválido, zero features e retry sem sucesso falso;
+- Flutter Web: estilo/tiles, eventos de câmera, pino central, CORS, origem autorizada, atribuição/logo e fallback com `-WithoutMapTiler`;
+- Android: mapa no emulador/aparelho, geolocalização, `User-Agent` observado e chave Android restrita;
+- admin: MapLibre GL JS, estilo híbrido, rota/pontos, zoom/fit bounds, CSP/worker e fallback.
+
+HTTP 200 do estilo ou da Geocoding API não prova renderização em browser/Android. Um build aprovado também não prova acesso a tiles, atribuição visível ou restrição correta da chave.
 
 ## Gateway
 
-Config segura, fake, heartbeat, parsing/normalização, preflight, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura, duplicidade, telemetria, reconexão, missão consumida, abortamento e RTL. Parte dos testes instancia o adaptador Pymavlink com conexão controlada em memória para verificar o protocolo; eles não abrem socket, não executam SITL e não se conectam a hardware.
+Cobrir configuração segura, fake, heartbeat, normalização, preflight, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, abortamento e RTL.
+
+Os testes Pymavlink usam conexão controlada em memória. Eles não abrem serial/UDP, não executam SITL e não se conectam a hardware.
 
 ## SITL
 
-Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenários: conexão/heartbeat, upload curto, início deliberado, chegada, retorno, perda de link simulada, bateria/falha simulada, upload incorreto, abort/RTL e reconciliação. Rodar tudo antes de Pixhawk.
+Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenários: heartbeat, upload curto, início deliberado, chegada, retorno, perda de link, bateria/falha simulada, upload incorreto, abort/RTL e reconciliação. Rodar antes de Pixhawk.
 
 ## Hardware e voo
 
-Evidência manual deve identificar data, local controlado, operador, hardware/firmware, checklist, missão/hash, log Mission Planner, vídeo/foto quando permitido e resultado real. Progressão: comunicação → sensores → upload desarmado → motores sem hélices → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno.
+Registrar data, local controlado, operador, hardware/firmware, checklist, missão/hash, logs Mission Planner/TLOG/dataflash e resultado real. Progressão: comunicação → sensores → upload desarmado → motores sem hélices → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno.
 
-## Matriz de estado atual — 2026-08-06
+## Evidência acumulada — atualizada em 2026-08-07
 
 | Evidência | Estado comprovado | Limite |
 |---|---|---|
-| código do protótipo | **implementado e revisado localmente** | não equivale a homologação operacional |
-| backend | **Ruff, format, `pip check` e 11 testes aprovados** | 1 aviso de depreciação Starlette/httpx no ambiente de teste |
-| gateway | **Ruff, format, `pip check` e 28 testes aprovados** | Pymavlink controlado em memória; sem socket/SITL/hardware |
-| painel admin | **ESLint, 11 testes e build Vite aprovados** | sem automação em navegador real |
-| aplicativo Android | **format, analyze e 12 testes aprovados; APK debug gerado** | APK não instalado em aparelho/emulador nesta rodada |
-| migrações/PostGIS | **upgrade, ausência de drift, downgrade e novo upgrade aprovados em banco limpo** | reflexão de `geography` gera aviso informativo do SQLAlchemy |
-| imagens Docker | **backend, admin e gateway construídos; quatro serviços healthy** | validação local, não implantação de produção |
-| fluxo integrado fake | **`COMPLETED`, 13 eventos e 5 amostras de telemetria** | determinístico; não comprova deslocamento nem entrega física |
-| Google Maps/GPS | **integração implementada** | não validada com chave real, rede móvel ou GPS de aparelho |
-| SITL | **não validado** | exige suíte separada com versão e log ArduPilot |
-| Pixhawk 6C | **não validada** | exige checklist e log de bancada, inicialmente sem hélices |
-| voo real | **não validado** | exige evidência de missão controlada completa |
+| backend | Ruff/format e 28 testes | aviso de depreciação Starlette/httpx |
+| gateway | Ruff/format e 31 testes | doubles; sem socket/SITL/hardware |
+| admin | ESLint, 33 testes, build Vite e smoke visual autenticado com MapTiler real | Android e chave Web substituta/restrita continuam fora desta evidência |
+| Flutter | format/analyze, 32 testes, build Web, smoke Chrome completo e APK debug configurado | APK não instalado; geolocalização concedida/timeout não exercitados |
+| migrations/PostGIS | head, sem drift, ciclo upgrade/downgrade aprovado em banco temporário | avisos informativos de reflexão `geography` |
+| Docker | imagens construídas; API/admin/DB healthy; gateway ativo | ambiente local, não produção |
+| integração gateway/backend | heartbeat e polling `simulation` observados | nenhum pedido foi aprovado, autorizado ou despachado |
+| MapTiler HTTP direto | estilo 200 (GL v8/40 layers), pesquisa 200 (3 features neste ensaio) e reverse 200 (1 feature) | a chave usada foi exposta e deve ser rotacionada |
+| MapLibre Web | estilo/tiles/fontes/sprites 200, câmera inicial/zoom, arraste, busca/reverse, logo/atribuição e checkout confirmados no Chrome | chave temporária exposta; restrição de origem ainda não provada |
+| MapLibre Android e GPS | APK debug compilado; no Web, estado de permissão bloqueada tratado sem impedir o mapa manual | exigem emulador/aparelho e matriz concedida/negada/timeout |
+| auditoria Python | `PYSEC-2026-1845` encontrado no pytest 8.4.2; constraints de desenvolvimento atualizadas para `pytest>=9.0.3,<10`; suítes backend/gateway passaram e `pip-audit` final retornou zero vulnerabilidades conhecidas | risco era médio, ligado a `tmpdir` UNIX; repetir após alterar constraints/lock |
+| auditoria npm de produção | zero vulnerabilidades conhecidas | fotografia de 2026-08-07; repetir antes de publicar |
+| SITL/Mission Planner/Pixhawk/voo | não validado | exige evidência separada |
 
-O build Android comprovado é de demonstração/debug em `mobile/build/app/outputs/flutter-apk/app-debug.apk`: 154.917.450 bytes, SHA-256 `612652F2D24272F3693CF6615BCAC26A128F5730A50DB1E26C7657365764530D`. A transição `DELIVERY_CONFIRMED` no fake significa apenas que a etapa lógica do mecanismo foi alcançada; não confirma que um pacote foi fisicamente entregue.
-
-O `npm audit` registrou duas ocorrências altas do mesmo aviso `GHSA-qwww-vcr4-c8h2` em `react-router`/`react-router-dom`. O cenário descrito exige RSC Actions, recurso ausente neste painel Vite puramente client-side; ainda assim, o alerta permanece risco residual acompanhado, e não foi ocultado nem “corrigido” com downgrade que reintroduziria vulnerabilidades antigas.
+Total comprovado: **124 testes automatizados aprovados**. Artefato Android atual: `mobile/build/app/outputs/flutter-apk/app-debug.apk`, 190.538.195 bytes, SHA-256 `AF1328CB60E74CFF0D3A5CDE5A8527618F79FB2D55A9E1778061BE221285BE25`, assinatura Android Debug v2 verificada.
 
 ## Comandos
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test_all.ps1 -SkipBuilds
-docker compose --profile gateway config
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\test_all.ps1 -SkipBuilds
+docker compose --profile gateway config --quiet
 docker compose --profile gateway up -d --build
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\integration_smoke.ps1
+docker compose exec -T backend alembic check
 ```
 
-O script `scripts/test_all.ps1` executa os grupos locais disponíveis e falha se um grupo executado falhar. Em caminhos Windows com acento, ele usa uma junção ASCII validada no diretório temporário para manter projeto, SDK e cache Pub no mesmo disco. O smoke integrado cria registros identificados por e-mail único no banco local; execute-o somente em ambiente de desenvolvimento/simulação.
+Depois de trocar todos os placeholders locais e rotacionar a conta existente:
+
+```powershell
+$env:ADMIN_INITIAL_PASSWORD='SENHA_LOCAL_ROTACIONADA'
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\integration_smoke.ps1 `
+  -ConfirmSimulationMutation
+```
+
+O smoke cria registros identificados no banco local. Execute somente em loopback/simulação. Não registre um comando como aprovado se ele não terminou com exit code zero.

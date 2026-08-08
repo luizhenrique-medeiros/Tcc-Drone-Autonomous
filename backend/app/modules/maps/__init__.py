@@ -1,1 +1,1 @@
-"""Server-side Google Maps proxy module."""
+"""Server-side MapTiler Search and Geocoding proxy module."""

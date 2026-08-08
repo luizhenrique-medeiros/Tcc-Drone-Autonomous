@@ -23,11 +23,11 @@ O painel não é um módulo visual do backend e o gateway não é um microsservi
 
 ### Aplicativo do cliente
 
-O Flutter autentica clientes, apresenta o catálogo acadêmico, mantém um carrinho simples, conduz a seleção de localização em duas etapas, registra a forma de pagamento simulada e acompanha o pedido. Ele nunca aprova pedido, escolhe altitude, autoriza voo ou envia MAVLink.
+O Flutter roda em Android e Web, autentica clientes, apresenta o catálogo acadêmico, mantém um carrinho simples, conduz a seleção de localização em duas etapas, registra a forma de pagamento simulada e acompanha o pedido. O mapa pode abrir diretamente em qualquer região do mundo, sem endereço e sem permissão de localização; busca e geocodificação são auxílios opcionais. Ele nunca aprova pedido, escolhe altitude, autoriza voo ou envia MAVLink.
 
 ### Painel administrativo
 
-O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checklist, autorização de voo, telemetria e eventos. A interface pode solicitar RTL/abortamento, mas o backend e o gateway ainda validam estado e segurança.
+O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checklist, autorização de voo, telemetria e eventos. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar RTL/abortamento, mas o backend e o gateway ainda validam estado e segurança.
 
 ### Backend
 
@@ -54,7 +54,7 @@ A Pixhawk/ArduPilot é a fonte de verdade física durante execução. O software
 5. Um administrador aprova ou rejeita. Rejeição exige motivo.
 6. Para pedido aprovado, uma ação separada gera a missão e seu arquivo versionado.
 7. O administrador registra abertura/revisão no Mission Planner.
-8. Um snapshot recente do veículo e o checklist alimentam a segunda decisão.
+8. Um snapshot recente, não nulo e com origem conhecida do veículo, junto ao checklist, alimenta a segunda decisão.
 9. A autorização fica ligada à versão, expira e é de uso único.
 10. O gateway reivindica a missão de forma idempotente, valida novamente, envia e confirma o upload.
 11. Telemetria e eventos atualizam backend, painel e cliente.

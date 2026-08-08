@@ -4,12 +4,6 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val googleMapsApiKey =
-    providers
-        .gradleProperty("GOOGLE_MAPS_ANDROID_API_KEY")
-        .orElse(providers.environmentVariable("GOOGLE_MAPS_ANDROID_API_KEY"))
-        .orElse("")
-
 android {
     namespace = "br.edu.devcore.drone_delivery_mobile"
     compileSdk = flutter.compileSdkVersion
@@ -21,15 +15,12 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "br.edu.devcore.drone_delivery_mobile"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // flutter_secure_storage exige API 23; o baseline deste Flutter é API 24.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["GOOGLE_MAPS_ANDROID_API_KEY"] = googleMapsApiKey.get()
     }
 
     // Release signing is intentionally not mapped to the public debug key.

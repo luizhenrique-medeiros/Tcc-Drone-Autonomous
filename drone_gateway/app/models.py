@@ -18,6 +18,13 @@ class MissionStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class OperationalSource(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    SIMULATION = "SIMULATION"
+    SITL = "SITL"
+    HARDWARE_REAL = "HARDWARE_REAL"
+
+
 class GatewayCommandType(StrEnum):
     ABORT = "ABORT"
     RTL = "RTL"
@@ -42,6 +49,7 @@ class GatewayCommand(BaseModel):
     acknowledged_at: datetime | None = None
     completed_at: datetime | None = None
     result_detail: str | None = None
+    reason: str | None = None
 
 
 class MissionWaypoint(BaseModel):
@@ -112,32 +120,35 @@ class HeartbeatResponse(BaseModel):
 
 
 class VehicleHealth(BaseModel):
+    source: OperationalSource = OperationalSource.UNKNOWN
+    autopilot_version: str | None = Field(default=None, max_length=120)
     connected: bool
     heartbeat: bool
-    gps_fix_type: int = Field(ge=0, le=6)
-    satellites: int = Field(ge=0, le=100)
-    ekf_ok: bool
-    battery_percent: float = Field(ge=0, le=100)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    satellites: int | None = Field(default=None, ge=0, le=100)
+    ekf_ok: bool | None = None
+    battery_percent: float | None = Field(default=None, ge=0, le=100)
     battery_voltage: float | None = Field(default=None, ge=0)
-    flight_mode: str = Field(max_length=40)
-    armed: bool
-    preflight_ok: bool
-    rtl_configured: bool
-    geofence_enabled: bool
+    flight_mode: str | None = Field(default=None, max_length=40)
+    armed: bool | None = None
+    preflight_ok: bool | None = None
+    rtl_configured: bool | None = None
+    geofence_enabled: bool | None = None
     origin_latitude: float | None = Field(default=None, ge=-90, le=90)
     origin_longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
 class TelemetrySnapshot(BaseModel):
+    source: OperationalSource = OperationalSource.UNKNOWN
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     relative_altitude_m: float = Field(ge=-100, le=1000)
     ground_speed_m_s: float = Field(ge=0, le=200)
-    battery_percent: float = Field(ge=0, le=100)
-    gps_fix_type: int = Field(ge=0, le=6)
-    satellites: int = Field(ge=0, le=100)
-    flight_mode: str = Field(max_length=40)
-    armed: bool
+    battery_percent: float | None = Field(default=None, ge=0, le=100)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    satellites: int | None = Field(default=None, ge=0, le=100)
+    flight_mode: str | None = Field(default=None, max_length=40)
+    armed: bool | None = None
     recorded_at: datetime
 
 

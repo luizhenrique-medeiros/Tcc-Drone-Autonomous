@@ -2,7 +2,7 @@ from enum import StrEnum
 from pathlib import Path
 from tempfile import gettempdir
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import ConfigurationError
@@ -31,6 +31,15 @@ class Settings(BaseSettings):
 
     mavlink_mode: MavlinkMode = MavlinkMode.SIMULATION
     mavlink_connection: str = "udp:127.0.0.1:14550"
+    mavlink_baud_rate: int = Field(
+        default=57600,
+        ge=1200,
+        le=4_000_000,
+        validation_alias=AliasChoices("MAVLINK_BAUD", "MAVLINK_BAUD_RATE"),
+    )
+    mavlink_source_system_id: int = Field(default=254, ge=1, le=255)
+    mavlink_target_system_id: int | None = Field(default=None, ge=1, le=255)
+    mavlink_target_component_id: int | None = Field(default=None, ge=0, le=255)
     real_hardware_confirmation_required: bool = True
     real_hardware_acknowledged: bool = False
     allow_mission_start: bool = False
@@ -50,6 +59,13 @@ class Settings(BaseSettings):
     required_start_flight_mode: str = "AUTO"
     mission_protocol_retries: int = Field(default=3, ge=1, le=10)
     gateway_journal_path: Path = Path(gettempdir()) / "devcore-drone-gateway-journal.json"
+
+    @field_validator("mavlink_target_system_id", "mavlink_target_component_id", mode="before")
+    @classmethod
+    def blank_target_id_is_auto(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_real_mode(self) -> "Settings":

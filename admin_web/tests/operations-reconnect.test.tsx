@@ -25,8 +25,11 @@ class FakeWebSocket {
     this.emit('close');
   }
 
-  emit(type: string) {
-    for (const listener of this.listeners.get(type) ?? []) listener(new Event(type));
+  emit(type: string, data?: string) {
+    const event = type === 'message'
+      ? new MessageEvent(type, { data })
+      : new Event(type);
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 }
 
@@ -50,18 +53,52 @@ describe('reconexão da operação ao vivo', () => {
     expect(FakeWebSocket.instances[0].url).not.toContain('token=');
 
     act(() => FakeWebSocket.instances[0].emit('open'));
-    expect(result.current).toBe('connected');
+    expect(result.current).toBe('authenticating');
     expect(JSON.parse(FakeWebSocket.instances[0].sent[0])).toEqual({
       type: 'AUTH',
       token: 'jwt-test',
     });
 
-    act(() => FakeWebSocket.instances[0].emit('message'));
+    act(() => FakeWebSocket.instances[0].emit('message', JSON.stringify({ type: 'operations.connected' })));
+    expect(result.current).toBe('connected');
+    act(() => vi.advanceTimersByTime(250));
     expect(onUpdate).toHaveBeenCalledTimes(1);
+    onUpdate.mockClear();
+
+    act(() => {
+      FakeWebSocket.instances[0].emit('message', JSON.stringify({ type: 'telemetry.updated' }));
+      FakeWebSocket.instances[0].emit('message', JSON.stringify({ type: 'mission.updated' }));
+      FakeWebSocket.instances[0].emit('message', JSON.stringify({ type: 'event.created' }));
+      vi.advanceTimersByTime(250);
+    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
     act(() => FakeWebSocket.instances[0].emit('close'));
     expect(result.current).toBe('reconnecting');
     act(() => vi.advanceTimersByTime(1000));
     expect(FakeWebSocket.instances).toHaveLength(2);
+    unmount();
+  });
+
+  it('não declara conexão sem ACK e limita tentativas consecutivas', () => {
+    sessionStorage.setItem('devcore.admin.token', 'jwt-test');
+    const { result, unmount } = renderHook(() => useOperationsStream(vi.fn()));
+
+    act(() => FakeWebSocket.instances[0].emit('open'));
+    expect(result.current).toBe('authenticating');
+
+    const delays = [1000, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000];
+    delays.forEach((delay, index) => {
+      act(() => FakeWebSocket.instances[index].emit('close'));
+      expect(result.current).toBe('reconnecting');
+      act(() => vi.advanceTimersByTime(delay));
+      expect(FakeWebSocket.instances).toHaveLength(index + 2);
+    });
+
+    act(() => FakeWebSocket.instances[8].emit('close'));
+    expect(result.current).toBe('disconnected');
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(FakeWebSocket.instances).toHaveLength(9);
     unmount();
   });
 });

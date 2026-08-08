@@ -1,29 +1,69 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.missions.models import Mission
 from app.modules.telemetry.models import TelemetryLog
-from app.modules.telemetry.schemas import TelemetryCreate
+from app.modules.telemetry.schemas import TelemetryCreate, TelemetryRead
 from app.modules.vehicles.models import Vehicle
 
 
+def telemetry_is_stale(telemetry: TelemetryLog, settings: Settings) -> bool:
+    received_at = telemetry.received_at
+    if received_at.tzinfo is None:
+        received_at = received_at.replace(tzinfo=UTC)
+    return telemetry.is_stale or received_at < datetime.now(UTC) - timedelta(
+        seconds=settings.heartbeat_timeout_seconds
+    )
+
+
+def telemetry_to_read(telemetry: TelemetryLog, settings: Settings) -> TelemetryRead:
+    return TelemetryRead(
+        id=telemetry.id,
+        event_id=telemetry.event_id,
+        mission_id=telemetry.mission_id,
+        vehicle_id=telemetry.vehicle_id,
+        source=telemetry.source,
+        latitude=telemetry.latitude,
+        longitude=telemetry.longitude,
+        relative_altitude_m=telemetry.relative_altitude_m,
+        ground_speed_m_s=telemetry.ground_speed_m_s,
+        battery_percent=telemetry.battery_percent,
+        gps_fix_type=telemetry.gps_fix_type,
+        satellites=telemetry.satellites,
+        flight_mode=telemetry.flight_mode,
+        armed=telemetry.armed,
+        recorded_at=telemetry.recorded_at,
+        received_at=telemetry.received_at,
+        is_stale=telemetry_is_stale(telemetry, settings),
+    )
+
+
 def record_telemetry(
-    session: Session, mission: Mission, payload: TelemetryCreate
+    session: Session, mission: Mission, payload: TelemetryCreate, settings: Settings
 ) -> tuple[TelemetryLog, bool]:
     existing = session.scalar(select(TelemetryLog).where(TelemetryLog.event_id == payload.event_id))
     if existing:
+        if existing.mission_id != mission.id or existing.vehicle_id != payload.vehicle_id:
+            raise ConflictError("event_id da telemetria já pertence a outra amostra")
         return existing, False
     vehicle = session.get(Vehicle, payload.vehicle_id)
     if not vehicle:
         raise NotFoundError("Veículo da telemetria não encontrado")
     if mission.vehicle_id != vehicle.id:
         raise ConflictError("O veículo não está associado à missão")
-    recorded_at = payload.recorded_at or datetime.now(UTC)
+    received_at = datetime.now(UTC)
+    recorded_at = payload.recorded_at or received_at
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=UTC)
+    if recorded_at > received_at + timedelta(seconds=settings.heartbeat_timeout_seconds):
+        raise ConflictError("Horário da telemetria está adiantado em relação ao servidor")
+    is_stale = recorded_at < received_at - timedelta(seconds=settings.heartbeat_timeout_seconds)
     latest = session.scalar(
         select(TelemetryLog)
         .where(TelemetryLog.mission_id == mission.id)
@@ -42,6 +82,7 @@ def record_telemetry(
         event_id=payload.event_id,
         mission_id=mission.id,
         vehicle_id=vehicle.id,
+        source=payload.source,
         latitude=payload.latitude,
         longitude=payload.longitude,
         relative_altitude_m=payload.relative_altitude_m,
@@ -52,6 +93,8 @@ def record_telemetry(
         flight_mode=payload.flight_mode,
         armed=payload.armed,
         recorded_at=recorded_at,
+        received_at=received_at,
+        is_stale=is_stale,
     )
     session.add(telemetry)
     session.commit()
