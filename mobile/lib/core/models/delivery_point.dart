@@ -41,6 +41,8 @@ class DeliveryPointDraft {
     required this.instructions,
     required this.safeAreaConfirmed,
     required this.mapProvider,
+    this.mapType = 'hybrid',
+    this.addressReference,
   }) : assert(
          approximatePlace.coordinate != null,
          'A região deve ser geocodificada antes de criar o ponto final.',
@@ -51,4 +53,51 @@ class DeliveryPointDraft {
   final String instructions;
   final bool safeAreaConfirmed;
   final String mapProvider;
+  final String mapType;
+  final String? addressReference;
+}
+
+class LocationSelectionResult {
+  const LocationSelectionResult({
+    required this.approximatePlace,
+    required this.finalCoordinate,
+    required this.instructions,
+    required this.safeAreaConfirmed,
+    required this.mapProvider,
+    required this.mapType,
+    required this.regionConfirmed,
+    required this.exactPointSelected,
+    required this.userConfirmed,
+    required this.wasAdjusted,
+    this.addressReference,
+    this.savedLocationId,
+  });
+
+  final PlaceSuggestion approximatePlace;
+  final GeoCoordinate finalCoordinate;
+  final String instructions;
+  final bool safeAreaConfirmed;
+  final String mapProvider;
+  final String mapType;
+  final bool regionConfirmed;
+  final bool exactPointSelected;
+  final bool userConfirmed;
+  final bool wasAdjusted;
+  final String? addressReference;
+  final String? savedLocationId;
+
+  bool get usesSavedLocationWithoutAdjustment =>
+      savedLocationId != null && !wasAdjusted;
+
+  DeliveryPointDraft toDeliveryPointDraft() {
+    return DeliveryPointDraft(
+      approximatePlace: approximatePlace,
+      finalCoordinate: finalCoordinate,
+      instructions: instructions,
+      safeAreaConfirmed: safeAreaConfirmed,
+      mapProvider: mapProvider,
+      mapType: mapType,
+      addressReference: addressReference,
+    );
+  }
 }

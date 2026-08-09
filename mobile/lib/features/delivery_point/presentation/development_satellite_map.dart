@@ -33,6 +33,15 @@ class DevelopmentSatelliteMap extends StatefulWidget {
 class _DevelopmentSatelliteMapState extends State<DevelopmentSatelliteMap> {
   Offset _normalized = Offset.zero;
 
+  @override
+  void didUpdateWidget(covariant DevelopmentSatelliteMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.center.latitude != widget.center.latitude ||
+        oldWidget.center.longitude != widget.center.longitude) {
+      _normalized = Offset.zero;
+    }
+  }
+
   void _move(Offset delta, Size size) {
     final double dx = (_normalized.dx - delta.dx / size.width).clamp(
       -0.46,

@@ -8,11 +8,15 @@ class ApiException implements Exception {
     this.message, {
     this.statusCode,
     this.isConnectivityFailure = false,
+    this.code,
+    this.fields = const <String, Object?>{},
   });
 
   final String message;
   final int? statusCode;
   final bool isConnectivityFailure;
+  final String? code;
+  final Map<String, Object?> fields;
 
   @override
   String toString() => message;
@@ -41,6 +45,18 @@ class ApiClient {
     Map<String, Object?>? body,
     Map<String, String>? headers,
   }) => _request('POST', path, body: body, headers: headers);
+
+  Future<Object?> patch(
+    String path, {
+    Map<String, Object?>? body,
+    Map<String, String>? headers,
+  }) => _request('PATCH', path, body: body, headers: headers);
+
+  Future<Object?> delete(
+    String path, {
+    Map<String, Object?>? body,
+    Map<String, String>? headers,
+  }) => _request('DELETE', path, body: body, headers: headers);
 
   Future<Object?> _request(
     String method,
@@ -78,9 +94,12 @@ class ApiClient {
         }
       }
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        final _ApiErrorDetails details = _extractError(decoded);
         throw ApiException(
-          _extractError(decoded),
+          details.message,
           statusCode: response.statusCode,
+          code: details.code,
+          fields: details.fields,
         );
       }
       return decoded;
@@ -101,19 +120,49 @@ class ApiClient {
     }
   }
 
-  String _extractError(Object? decoded) {
+  _ApiErrorDetails _extractError(Object? decoded) {
     if (decoded is Map<String, Object?>) {
-      return (decoded['detail'] ?? decoded['message'] ?? 'Falha na API')
-          .toString();
+      return _ApiErrorDetails.fromMap(decoded);
     }
     if (decoded is Map) {
-      return (decoded['detail'] ?? decoded['message'] ?? 'Falha na API')
-          .toString();
+      return _ApiErrorDetails.fromMap(
+        decoded.map<String, Object?>((Object? key, Object? value) {
+          return MapEntry<String, Object?>(key.toString(), value);
+        }),
+      );
     }
-    return 'Não foi possível concluir a comunicação com a API.';
+    return const _ApiErrorDetails(
+      message: 'Não foi possível concluir a comunicação com a API.',
+    );
   }
 
   void close() => _httpClient.close();
+}
+
+class _ApiErrorDetails {
+  const _ApiErrorDetails({
+    required this.message,
+    this.code,
+    this.fields = const <String, Object?>{},
+  });
+
+  factory _ApiErrorDetails.fromMap(Map<String, Object?> json) {
+    final Object? rawFields = json['fields'];
+    final Map<String, Object?> fields = rawFields is Map
+        ? rawFields.map<String, Object?>((Object? key, Object? value) {
+            return MapEntry<String, Object?>(key.toString(), value);
+          })
+        : const <String, Object?>{};
+    return _ApiErrorDetails(
+      message: (json['detail'] ?? json['message'] ?? 'Falha na API').toString(),
+      code: json['code']?.toString(),
+      fields: fields,
+    );
+  }
+
+  final String message;
+  final String? code;
+  final Map<String, Object?> fields;
 }
 
 Map<String, Object?> expectJsonMap(Object? value) {

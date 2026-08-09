@@ -11,11 +11,17 @@ class CheckoutRequest {
     required this.lines,
     required this.deliveryPoint,
     required this.paymentMethod,
+    this.savedLocationId,
+    this.savedLocationReviewConfirmed = false,
+    this.savedLocationSafeAreaConfirmed = false,
   });
 
   final List<CartLine> lines;
   final DeliveryPointDraft deliveryPoint;
   final SimulatedPaymentMethod paymentMethod;
+  final String? savedLocationId;
+  final bool savedLocationReviewConfirmed;
+  final bool savedLocationSafeAreaConfirmed;
 }
 
 abstract interface class CheckoutRepository {
@@ -94,17 +100,18 @@ class ApiCheckoutRepository implements CheckoutRepository {
     final DeliveryPointDraft point = request.deliveryPoint;
     final GeoCoordinate approximateCoordinate =
         point.approximatePlace.coordinate!;
-    final bool hasAddress =
-        point.approximatePlace.referenceAddress.trim().isNotEmpty &&
-        point.approximatePlace.referenceAddress !=
-            'Local sem endereço identificado';
+    final String searchedAddress = point.approximatePlace.referenceAddress;
+    final String? finalAddress = point.addressReference?.trim();
+    final bool hasSearchedAddress =
+        searchedAddress.trim().isNotEmpty &&
+        searchedAddress != 'Local sem endereço identificado';
+    final bool hasFinalAddress =
+        finalAddress != null &&
+        finalAddress.isNotEmpty &&
+        finalAddress != 'Local sem endereço identificado';
     final Map<String, Object?> pointPayload = <String, Object?>{
-      'searched_address': hasAddress
-          ? point.approximatePlace.referenceAddress
-          : null,
-      'address_reference': hasAddress
-          ? point.approximatePlace.referenceAddress
-          : null,
+      'searched_address': hasSearchedAddress ? searchedAddress : null,
+      'address_reference': hasFinalAddress ? finalAddress : null,
       'selection_source': 'MANUAL_MAP_SELECTION',
       'approximate_latitude': approximateCoordinate.latitude,
       'approximate_longitude': approximateCoordinate.longitude,
@@ -113,7 +120,7 @@ class ApiCheckoutRepository implements CheckoutRepository {
       'label': point.approximatePlace.label,
       'instructions': point.instructions,
       'map_provider': point.mapProvider,
-      'map_type': 'hybrid',
+      'map_type': point.mapType,
       'region_confirmed': true,
       'exact_point_selected': true,
       'user_confirmed': true,
@@ -134,32 +141,46 @@ class ApiCheckoutRepository implements CheckoutRepository {
     final String fingerprint = jsonEncode(<String, Object?>{
       'point': pointPayload,
       'order': orderPayload,
+      'saved_location_id': request.savedLocationId,
+      'saved_location_review_confirmed': request.savedLocationReviewConfirmed,
+      'saved_location_safe_area_confirmed':
+          request.savedLocationSafeAreaConfirmed,
     });
     if (_attemptFingerprint != fingerprint || _attemptKey == null) {
       _attemptFingerprint = fingerprint;
       _attemptKey = _newAttemptKey();
     }
     final String attemptKey = _attemptKey!;
-
-    await _client.post(
-      '/api/v1/delivery-points/validate',
-      body: pointPayload,
-      headers: <String, String>{'Idempotency-Key': '$attemptKey:validate'},
-    );
-    final Map<String, Object?> pointResponse = expectJsonMap(
+    String? deliveryPointId;
+    if (request.savedLocationId == null) {
       await _client.post(
-        '/api/v1/delivery-points',
+        '/api/v1/delivery-points/validate',
         body: pointPayload,
-        headers: <String, String>{'Idempotency-Key': '$attemptKey:point'},
-      ),
-    );
-    final String deliveryPointId = pointResponse['id'].toString();
+        headers: <String, String>{'Idempotency-Key': '$attemptKey:validate'},
+      );
+      final Map<String, Object?> pointResponse = expectJsonMap(
+        await _client.post(
+          '/api/v1/delivery-points',
+          body: pointPayload,
+          headers: <String, String>{'Idempotency-Key': '$attemptKey:point'},
+        ),
+      );
+      deliveryPointId = pointResponse['id'].toString();
+    }
 
     final Map<String, Object?> orderResponse = expectJsonMap(
       await _client.post(
         '/api/v1/orders',
         body: <String, Object?>{
-          'delivery_point_id': deliveryPointId,
+          if (request.savedLocationId
+              case final String savedLocationId) ...<String, Object?>{
+            'saved_location_id': savedLocationId,
+            'saved_location_review_confirmed':
+                request.savedLocationReviewConfirmed,
+            'saved_location_safe_area_confirmed':
+                request.savedLocationSafeAreaConfirmed,
+          } else
+            'delivery_point_id': deliveryPointId,
           ...orderPayload,
         },
         headers: <String, String>{'Idempotency-Key': '$attemptKey:order'},

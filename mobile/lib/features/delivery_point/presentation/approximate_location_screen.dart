@@ -7,6 +7,7 @@ import '../../../app/app_scope.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/models/delivery_point.dart';
+import '../../../core/models/saved_location.dart';
 import '../../../design_system/components/app_banner.dart';
 import '../../../design_system/components/app_button.dart';
 import '../../../design_system/components/app_text_field.dart';
@@ -15,10 +16,20 @@ import '../../../design_system/components/surface_card.dart';
 import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
+import '../../saved_locations/presentation/widgets/saved_location_widgets.dart';
 import 'exact_location_screen.dart';
 
 class ApproximateLocationScreen extends StatefulWidget {
-  const ApproximateLocationScreen({super.key});
+  const ApproximateLocationScreen({
+    this.showSavedLocations = false,
+    this.initialPlace,
+    this.initialInstructions = '',
+    super.key,
+  });
+
+  final bool showSavedLocations;
+  final PlaceSuggestion? initialPlace;
+  final String initialInstructions;
 
   @override
   State<ApproximateLocationScreen> createState() =>
@@ -43,10 +54,9 @@ class _ApproximateLocationScreenState extends State<ApproximateLocationScreen> {
     super.didChangeDependencies();
     if (_initialized) return;
     _initialized = true;
-    if (AppScope.of(context).mapProvider.isDevelopmentFallback) {
-      unawaited(_search(''));
-    } else {
-      unawaited(_useApproximateLocation());
+    _selected = widget.initialPlace;
+    if (widget.showSavedLocations) {
+      unawaited(AppScope.of(context).savedLocations.load());
     }
   }
 
@@ -168,9 +178,9 @@ class _ApproximateLocationScreenState extends State<ApproximateLocationScreen> {
   Future<void> _continue() async {
     final PlaceSuggestion? selected = _selected;
     if (selected == null || !selected.isResolved) return;
-    AppScope.of(context).selectApproximatePlace(selected);
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const ExactLocationScreen()),
+    await _openExactLocation(
+      place: selected,
+      initialInstructions: widget.initialInstructions,
     );
   }
 
@@ -184,10 +194,41 @@ class _ApproximateLocationScreenState extends State<ApproximateLocationScreen> {
         longitude: AppConfig.defaultMapLongitude,
       ),
     );
-    AppScope.of(context).selectApproximatePlace(manual);
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const ExactLocationScreen()),
+    await _openExactLocation(
+      place: manual,
+      initialInstructions: widget.initialInstructions,
     );
+  }
+
+  Future<void> _useSavedLocation(SavedLocation location) async {
+    await _openExactLocation(
+      place: location.asPlaceSuggestion,
+      initialInstructions: location.instructions ?? '',
+      savedLocationId: location.id,
+      requireManualMovement: false,
+    );
+  }
+
+  Future<void> _openExactLocation({
+    required PlaceSuggestion place,
+    required String initialInstructions,
+    String? savedLocationId,
+    bool requireManualMovement = true,
+  }) async {
+    final LocationSelectionResult? result = await Navigator.of(context)
+        .push<LocationSelectionResult>(
+          MaterialPageRoute<LocationSelectionResult>(
+            builder: (_) => ExactLocationScreen(
+              approximatePlace: place,
+              initialCoordinate: place.coordinate,
+              initialInstructions: initialInstructions,
+              savedLocationId: savedLocationId,
+              requireManualMovement: requireManualMovement,
+            ),
+          ),
+        );
+    if (!mounted || result == null) return;
+    Navigator.of(context).pop(result);
   }
 
   @override
@@ -212,6 +253,20 @@ class _ApproximateLocationScreenState extends State<ApproximateLocationScreen> {
                   title: 'Mapa online indisponível',
                   message: controller.mapInitializationMessage!,
                   tone: AppBannerTone.danger,
+                ),
+              ],
+              if (widget.showSavedLocations) ...<Widget>[
+                const SizedBox(height: AppSpacing.lg),
+                AnimatedBuilder(
+                  animation: controller.savedLocations,
+                  builder: (BuildContext context, _) {
+                    return SavedLocationPicker(
+                      controller: controller.savedLocations,
+                      onSelected: (SavedLocation location) {
+                        unawaited(_useSavedLocation(location));
+                      },
+                    );
+                  },
                 ),
               ],
               const SizedBox(height: AppSpacing.lg),

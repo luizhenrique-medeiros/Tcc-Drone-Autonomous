@@ -13,10 +13,13 @@
 - **RF-CLI-03:** criar carrinho com quantidade positiva e snapshot de preço.
 - **RF-CLI-04:** pesquisar uma região e, em etapa distinta, mover manualmente o marcador no mapa satélite.
 - **RF-CLI-05:** confirmar coordenadas finais, instruções e declaração de área segura.
-- **RF-CLI-06:** escolher `CREDIT_CARD_SIMULATED` ou `PIX_SIMULATED` sem informar dados bancários.
+- **RF-CLI-06:** escolher `CREDIT_CARD` ou `PIX` como forma simulada, sem informar dados bancários.
 - **RF-CLI-07:** submeter pedido e acompanhar todos os estados, inclusive rejeição e falha.
 - **RF-CLI-08:** visualizar somente os próprios pedidos, separados entre andamento e histórico, com ordenação recente, filtros e paginação.
 - **RF-CLI-09:** visualizar todas as informações de um pedido, inclusive itens, valores, forma de pagamento simulada, ponto exato, instruções, andamento e somente as datas realmente registradas.
+- **RF-CLI-10:** listar, cadastrar, editar e excluir de zero a três localizações salvas próprias pela aba `Conta`, com nome livre de 1 a 40 caracteres e endereço textual opcional; o atalho persiste `map_provider`, `map_type` (`hybrid` ou `satellite`) e as quatro confirmações reais produzidas pelo mesmo fluxo de mapa, e só pode ser criado com todas verdadeiras.
+- **RF-CLI-11:** escolher uma localização salva no checkout, abri-la no mesmo mapa MapLibre/MapTiler, revisar, ajustar opcionalmente apenas para aquele pedido e confirmar novamente o destino e a área segura; o caminho por `saved_location_id` envia `saved_location_review_confirmed=true` e `saved_location_safe_area_confirmed=true` somente depois dessa revisão atual.
+- **RF-CLI-12:** oferecer, quando houver vaga, o salvamento opcional de um novo ponto manual depois da criação do pedido, sem cancelar ou invalidar o pedido se o cliente recusar, estiver offline, atingir o limite ou se a chamada falhar.
 
 ### Administração
 
@@ -59,6 +62,8 @@
 - **RNF-08 Manutenibilidade:** monólito modular, tokens centrais, componentes reutilizáveis e contratos tipados.
 - **RNF-09 Testabilidade:** unitários sem rede/hardware; integração, SITL e hardware em camadas separadas.
 - **RNF-10 Segurança operacional:** nenhuma ação automática de armamento, alteração de parâmetro ou supressão de pre-arm.
+- **RNF-11 Concorrência:** a criação de localização salva bloqueia a linha do usuário com `FOR NO KEY UPDATE`, conta e insere na mesma transação, impedindo que requisições paralelas excedam três.
+- **RNF-12 Histórico e evidência:** cada pedido referencia seu próprio `DeliveryPoint`; uma `SavedLocation` é somente fonte para cópia transacional e nunca a fonte mutável do destino histórico. Provedor, tipo de mapa e confirmações vêm do fluxo realmente executado e não podem ser preenchidos por constantes para aparentar uma revisão inexistente.
 
 ## Critérios de aceite
 
@@ -79,6 +84,13 @@
 - **CA-15:** a listagem paginada e o detalhe do cliente nunca expõem pedido de outro usuário; tentativa direta usa a resposta não enumerável do projeto.
 - **CA-16:** pedidos ativos atualizam por WebSocket; queda conserva o último estado, indica degradação, tenta reconectar e permite atualização manual.
 - **CA-17:** autorização não possui campo de frase, exige exatamente três confirmações humanas e continua bloqueada por qualquer check técnico `BLOCKING`; `WARNING` permanece visível sem impedir a ação.
+- **CA-18:** a tela `Minhas localizações` mostra exatamente zero, uma, duas ou três localizações reais, contador correspondente e ação de adicionar indisponível no limite, sem cards fictícios.
+- **CA-19:** a quarta criação, inclusive sob concorrência, retorna `409/SAVED_LOCATION_LIMIT_REACHED`; criações simultâneas para o mesmo cliente nunca deixam mais de três registros.
+- **CA-20:** rotas de localização usam o cliente do JWT, nunca um `user_id` escolhido no corpo, e leitura/edição/exclusão de recurso alheio usam a resposta não enumerável do projeto.
+- **CA-21:** `OrderCreate` aceita exatamente um de `delivery_point_id` ou `saved_location_id`; o segundo também exige `saved_location_review_confirmed=true` e `saved_location_safe_area_confirmed=true` e cria, na mesma transação, um novo `DeliveryPoint` com origem interna `SAVED_POINT`, provedor/tipo copiados do atalho e confirmações da revisão atual, nunca sintetizadas.
+- **CA-22:** editar ou excluir uma localização salva depois de criar um pedido não altera coordenadas, endereço, instruções nem disponibilidade do destino histórico.
+- **CA-23:** mover o mapa após escolher uma localização salva altera somente o snapshot do novo pedido; atualizar o atalho exige ação explícita na tela de edição, e as duas confirmações atuais são solicitadas novamente depois da revisão.
+- **CA-24:** uma localização com nome e coordenadas válidas pode ser salva sem endereço textual, desde que `map_provider` seja o realmente usado, `map_type` seja `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` sejam verdadeiros; falha no salvamento opcional posterior não muda o resultado do pedido.
 
 ## Matriz de rastreabilidade
 
@@ -87,6 +99,8 @@
 | RF-CLI-01 | mobile, auth/users | `/auth/register`, `/auth/login` | backend + widget |
 | RF-CLI-04/05 | mobile, delivery_points, admin | `/delivery-points/validate` e `POST` | widget + domínio + admin |
 | RF-CLI-07/08/09 | mobile, orders, system_events | `/orders`, `/orders/{id}`, `/ws/orders/{id}` | ownership + paginação + widget + WebSocket |
+| RF-CLI-10 | mobile, saved_locations, users | `/saved-locations` e `/saved-locations/{id}` | CRUD + ownership + limite concorrente + evidência real + estados 0–3 |
+| RF-CLI-11/12 | mobile, saved_locations, delivery_points, orders | `/orders`, `/saved-locations` | picker/mapa + confirmação atual + snapshot fiel + salvamento posterior não bloqueante |
 | RF-ADM-03 | orders, approvals, admin | `/admin/orders/{id}/approve|reject` | RBAC/transição/auditoria |
 | RF-ADM-04/05 | missions, admin | prepare/review/download | exportador e componente |
 | RF-ADM-06/07 | vehicles, approvals, admin | health/authorize-flight | checks automáticos, três confirmações, TTL e idempotência |

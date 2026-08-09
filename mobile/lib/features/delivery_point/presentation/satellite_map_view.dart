@@ -6,6 +6,7 @@ import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:url_launcher/link.dart';
 
 import '../../../core/config/app_config.dart';
+import '../../../core/maps/latest_target_queue.dart';
 import '../../../core/maps/map_camera_readiness.dart';
 import '../../../core/maps/map_provider.dart';
 import '../../../core/models/delivery_point.dart';
@@ -86,6 +87,10 @@ class _MapTilerSatelliteMapState extends State<_MapTilerSatelliteMap> {
   Timer? _styleLoadTimer;
   final MapCameraReadiness _cameraReadiness = MapCameraReadiness();
   MapLibreMapController? _mapController;
+  late final LatestTargetQueue<LatLng> _cameraMoves = LatestTargetQueue<LatLng>(
+    equals: _sameTarget,
+  );
+  bool _cameraMoveInProgress = false;
   bool _styleReady = false;
   bool _failureReported = false;
 
@@ -96,8 +101,19 @@ class _MapTilerSatelliteMapState extends State<_MapTilerSatelliteMap> {
   }
 
   @override
+  void didUpdateWidget(covariant _MapTilerSatelliteMap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final LatLng requested = LatLng(
+      widget.center.latitude,
+      widget.center.longitude,
+    );
+    if (_styleReady) _queueCameraMove(requested);
+  }
+
+  @override
   void dispose() {
     _styleLoadTimer?.cancel();
+    _cameraMoves.clear();
     super.dispose();
   }
 
@@ -136,6 +152,42 @@ class _MapTilerSatelliteMapState extends State<_MapTilerSatelliteMap> {
         'O estilo MapTiler carregou, mas a câmera não pôde ser centralizada. '
         'Tente novamente e verifique a compatibilidade do navegador.',
       );
+    }
+  }
+
+  void _queueCameraMove(LatLng target) {
+    _cameraMoves.request(target, applied: _cameraTarget);
+    if (_cameraMoveInProgress) return;
+    unawaited(_drainCameraMoves());
+  }
+
+  Future<void> _drainCameraMoves() async {
+    _cameraMoveInProgress = true;
+    try {
+      while (mounted) {
+        final MapLibreMapController? controller = _mapController;
+        if (controller == null) break;
+        final LatLng? target = _cameraMoves.beginNext(applied: _cameraTarget);
+        if (target == null) break;
+        try {
+          await controller.moveCamera(CameraUpdate.newLatLng(target));
+          if (!mounted) return;
+          _cameraTarget = target;
+          _lastReportedTarget = target;
+        } on Object {
+          _cameraMoves.clear();
+          if (mounted) {
+            widget.onMapError?.call(
+              'O mapa não pôde acompanhar o ajuste acessível das coordenadas.',
+            );
+          }
+          break;
+        } finally {
+          _cameraMoves.completeActive();
+        }
+      }
+    } finally {
+      _cameraMoveInProgress = false;
     }
   }
 

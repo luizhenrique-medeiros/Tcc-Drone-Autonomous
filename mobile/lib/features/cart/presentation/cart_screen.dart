@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/app_controller.dart';
 import '../../../app/app_scope.dart';
+import '../../../core/models/delivery_point.dart';
 import '../../../core/models/order.dart';
 import '../../../core/models/product.dart';
 import '../../../design_system/components/app_button.dart';
@@ -15,6 +16,7 @@ import '../../../design_system/tokens/app_icon_sizes.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
 import '../../delivery_point/presentation/approximate_location_screen.dart';
+import '../../payment/presentation/payment_screen.dart';
 
 class CartScreen extends StatelessWidget {
   const CartScreen({super.key});
@@ -46,9 +48,21 @@ class CartScreen extends StatelessWidget {
                       variant: AppButtonVariant.accent,
                       icon: Icons.map_outlined,
                       onPressed: () async {
+                        final LocationSelectionResult? result =
+                            await Navigator.of(
+                              context,
+                            ).push<LocationSelectionResult>(
+                              MaterialPageRoute<LocationSelectionResult>(
+                                builder: (_) => const ApproximateLocationScreen(
+                                  showSavedLocations: true,
+                                ),
+                              ),
+                            );
+                        if (result == null || !context.mounted) return;
+                        controller.applyLocationSelection(result);
                         await Navigator.of(context).push<void>(
                           MaterialPageRoute<void>(
-                            builder: (_) => const ApproximateLocationScreen(),
+                            builder: (_) => const PaymentScreen(),
                           ),
                         );
                       },

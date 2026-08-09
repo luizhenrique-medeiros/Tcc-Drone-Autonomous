@@ -55,6 +55,18 @@ Fundo quase branco (`#FBFAFD` observado), cartões brancos, azul para navegaçã
 - resumo discrimina subtotal, entrega e desconto; CTA laranja em largura total;
 - o azul de seleção observado é `#387EDB` e o teal do PIX `#47C1D0`.
 
+### Localizações salvas
+
+- A aba `Conta` inclui `Minhas localizações` no mesmo padrão de item navegável das demais opções, com texto e ícone sem depender apenas de cor.
+- A tela lista somente os cards reais retornados pela API. Zero, uma, duas ou três localizações ocupam exatamente zero, uma, duas ou três superfícies; não existem cards vazios de preenchimento.
+- Cada card prioriza nome, referência textual quando existir e coordenadas como fallback. `Editar` e `Excluir` têm alvos de toque independentes; exclusão usa modal simples com `Cancelar` e ação destrutiva.
+- O contador textual usa `0 de 3` a `3 de 3 localizações salvas`. No limite, adicionar fica indisponível com explicação; a UI nunca escolhe uma localização para substituir automaticamente.
+- O formulário aceita nome livre de 1 a 40 caracteres; ícones como casa, trabalho ou escola são auxiliares opcionais, não dados obrigatórios.
+- Loading, success, empty, limit reached, error e offline possuem texto e ação coerentes. Erro de API não reutiliza fixture nem cache antigo como se fosse sucesso.
+- Criar e editar abrem o mesmo fluxo `SatelliteMapView`/MapLibre/MapTiler usado no checkout. A tela pode variar título e ação final por composição/callback, sem copiar o mapa. Além do gesto, os botões semânticos `Norte`, `Sul`, `Leste` e `Oeste` deslocam o mesmo pino e mantêm a etapa concluível por teclado, switch ou leitor de tela.
+- No checkout, os atalhos usam cards/chips compactos, mostram somente os registros existentes e sempre oferecem `Escolher outro local no mapa`. Tocar em um atalho abre o mapa para revisão e ajuste; não cria pedido instantaneamente.
+- A opção de salvar um novo ponto aparece somente após carregamento bem-sucedido da lista e abaixo do limite. Ela é disparada depois da criação do pedido, sem manter CTA ou navegação aguardando; falha ao criar o atalho informa o resultado sem trocar a tela do pedido por erro de checkout.
+
 ## Tokens de cor
 
 | Token | Valor | Uso |
@@ -124,6 +136,7 @@ Não é uma lista para gerar arquivos vazios. Um componente só existe quando é
 | avaliação | `RatingStars`, `RatingSummary`, `ReviewTile` | somente quando útil | dados demo |
 | pagamento | `PaymentMethodTile`, `PriceSummaryCard` | não aplicável | sem campos bancários |
 | localização | `LocationStepIndicator`, `SatelliteMapView`, `DeliveryPointSummaryCard` | `MapPanel`, `OrderSummaryCard` | regras ficam na feature |
+| locais salvos | `SavedLocationCard`, `SavedLocationsSection`, `SavedLocationForm`, `LocationUsageCounter`, `DeleteLocationDialog` | não aplicável | compõe mapa/campos existentes; lista 0–3; evidencia provider/tipo e confirmação real |
 | operação | `OrderItemTile`, `OrderPriceSummary`, `OrderDeliverySummary`, `OrderDateTimeline` | `MissionSummaryCard`, `VehicleHealthCard`, `AutomaticPreflightChecks`, `FlightAuthorizationPanel` | cliente detalhado; admin mais denso |
 | diagnóstico | linhas responsivas na `RuntimeDiagnosticsScreen` | ferramentas equivalentes somente quando necessárias | somente debug; nunca exibir chave ou token |
 
@@ -138,6 +151,7 @@ Flutter centraliza padrões em `AppColors`, `AppTypography`, `AppSpacing`, `AppR
 5. Componente novo ganha exemplo no catálogo e teste do comportamento relevante.
 6. `DesignCatalogScreen` e `/design-system` aparecem somente em desenvolvimento/proteção adequada.
 7. `RuntimeDiagnosticsScreen` e `/debug` aparecem somente em build debug e ambiente não hospedado; o diagnóstico segue tokens, quebra linhas longas e informa apenas presença de sessão.
+8. Os modos criar, editar, revisar ponto salvo e selecionar ponto manual parametrizam o mesmo fluxo de mapa; navegação ou callback define o destino sem duplicar provider, busca ou mapa. O formulário captura `map_provider`, `map_type` e as quatro confirmações reais, sem valores ocultos pré-marcados; no checkout salvo, revisão e área segura são confirmações novas emitidas somente depois de o mapa ser aberto.
 
 Exemplo conceitual:
 
@@ -168,9 +182,9 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 - ordem de foco previsível, `aria-label`/semantics, escape em modal e retorno do foco;
 - contraste AA para texto; estrelas e chips têm label textual;
 - mapa possui resumo textual de coordenadas e controles por teclado quando suportado;
-- mapa real usa MapLibre com o estilo híbrido MapTiler e pino fixo no centro; o mapa recebe o gesto e o pino visual usa `IgnorePointer`;
+- mapa real usa MapLibre com o estilo MapTiler híbrido ou satélite realmente declarado e pino fixo no centro; o mapa recebe o gesto e o pino visual usa `IgnorePointer`;
 - atribuição MapTiler/OpenStreetMap e logo oficial MapTiler permanecem visíveis/linkados, sem competir com o pino ou controles;
-- telas de autenticação limitam o formulário a 460; produto/pagamento a 760; localização e lista de pedidos a 960; detalhes de pedido a 1120; a Home limita o canvas a 1440;
+- telas de autenticação limitam o formulário a 460; produto/pagamento a 760; localização, locais salvos e lista de pedidos a 960; detalhes de pedido a 1120; a Home limita o canvas a 1440;
 - o mapa interativo mede 430 em larguras menores e 520 a partir do breakpoint expanded, sem impor largura fixa;
 - tabelas viram cartões/scroll controlado em tablet; grade mobile vira uma coluna se necessário;
 - loading, vazio, erro e retry não dependem de cor; animações respeitam preferência reduzida.
@@ -188,7 +202,12 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 - [ ] contraste e alvo de toque foram verificados;
 - [ ] produto/pagamento são identificados como demonstração;
 - [ ] confirmação laranja usa par de cores acessível;
-- [ ] mapa final está no estilo híbrido MapTiler, com alternativa textual, atribuição e logo visíveis;
+- [ ] mapa final está em `hybrid` ou `satellite`, coerente com o tipo enviado, com alternativa textual, atribuição e logo visíveis;
+- [ ] `Minhas localizações` foi verificada com 0, 1, 2 e 3 registros, contador correto e sem placeholders;
+- [ ] loading, empty, limit reached, error e offline não exibem dados inventados; adicionar fica indisponível no limite;
+- [ ] criação/edição salva provider, tipo e quatro confirmações produzidas pela tela, sem default silencioso;
+- [ ] picker salvo abre o mesmo mapa para revisão/ajuste, reinicia as confirmações atuais e só permite prosseguir depois de revisão e área segura; o modal de exclusão devolve foco e possui ação destrutiva identificada;
+- [ ] falha no salvamento opcional posterior não mascara nem bloqueia o pedido já criado;
 - [ ] golden/component test só muda após revisão consciente;
 - [ ] captura final foi comparada manualmente com hierarquia, ritmo e composição das referências.
 
