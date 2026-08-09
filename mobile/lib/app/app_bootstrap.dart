@@ -7,6 +7,7 @@ import '../core/repositories/auth_repository.dart';
 import '../core/repositories/checkout_repository.dart';
 import '../core/repositories/order_repository.dart';
 import '../core/repositories/product_repository.dart';
+import '../core/repositories/saved_location_repository.dart';
 import '../core/security/session_token_store.dart';
 import 'app_controller.dart';
 
@@ -22,6 +23,7 @@ abstract final class AppBootstrap {
         productRepository: DemoProductRepository(),
         checkoutRepository: DemoCheckoutRepository(orderStore: orderStore),
         orderRepository: DemoOrderRepository(orderStore),
+        savedLocationRepository: DemoSavedLocationRepository(),
         mapProvider: mapProvider,
         locationService: const DevelopmentLocationService(),
         isDemoMode: true,
@@ -38,6 +40,7 @@ abstract final class AppBootstrap {
       productRepository: ApiProductRepository(client),
       checkoutRepository: ApiCheckoutRepository(client),
       orderRepository: ApiOrderRepository(client),
+      savedLocationRepository: ApiSavedLocationRepository(client),
       mapProvider: mapProvider,
       locationService: PlatformLocationService(
         const GeolocatorDeviceLocationBridge(),

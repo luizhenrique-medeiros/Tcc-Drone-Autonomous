@@ -4,7 +4,7 @@
 
 1. Cadastro público cria apenas `CUSTOMER`.
 2. O primeiro `ADMIN` é criado por comando/seed controlado; sua senha nunca aparece no log.
-3. Cliente acessa apenas seus pontos e pedidos. Administrador acessa a fila operacional.
+3. Cliente acessa apenas seus pontos de pedido, localizações salvas e pedidos. Administrador acessa a fila operacional.
 4. O gateway possui chave própria e não usa JWT de usuário nem acessa o banco.
 
 ## Produtos, carrinho e pagamento
@@ -23,9 +23,26 @@
 - O backend calcula e registra a distância da base para auditoria, mas não limita a seleção ou a submissão do pedido por cobertura. O limite operacional de missão continua no gateway.
 - Após submissão, coordenadas não são alteradas silenciosamente. Um local inadequado causa rejeição ou solicitação de nova seleção.
 
+## Localizações salvas
+
+- `SavedLocation` é um atalho reutilizável e mutável do cliente; `DeliveryPoint` é o snapshot imutável do destino de um pedido. Eles não são a mesma entidade.
+- Cada cliente pode possuir de zero a três localizações salvas. O limite não restringe quantos destinos diferentes podem ser usados em pedidos.
+- O nome, após remover espaços externos, é obrigatório e possui de 1 a 40 caracteres. Latitude e longitude válidas são obrigatórias; endereço, instruções e precisão são opcionais. O atalho também persiste o `map_provider` realmente usado, `map_type` restrito a `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` produzidos pelo mesmo fluxo.
+- O proprietário vem exclusivamente do JWT. O corpo não escolhe `user_id`, e um cliente não lê, altera, exclui nem usa a localização de outro.
+- Para criar, a mesma transação executa `SELECT ... FOR NO KEY UPDATE` na linha do cliente, conta suas localizações e insere somente se o total for menor que três. O lock serializa criações concorrentes do mesmo cliente; um `SELECT count(...)` isolado não é suficiente.
+- Ao atingir o limite, a API retorna `409/SAVED_LOCATION_LIMIT_REACHED`; nenhuma localização existente é substituída automaticamente.
+- Criar e editar reutilizam o mesmo fluxo MapLibre/MapTiler de busca, mapa híbrido ou satélite e coordenada final. A criação só é aceita quando as quatro confirmações persistidas são verdadeiras; provider, tipo e flags descrevem o fluxo realmente concluído e nunca são preenchidos artificialmente pelo servidor. A edição é uma ação explícita e pode alterar nome, ponto e instruções.
+- Excluir exige confirmação simples na interface, sem frase digitada. A exclusão remove apenas o atalho e nunca percorre pedidos antigos.
+- A lista da conta exibe somente registros existentes, em quantidade dinâmica, com contador `0 de 3` a `3 de 3`; erro ou offline não gera dados fictícios.
+
 ## Pedido
 
 - Pedido sem item ou ponto confirmado não pode ser submetido.
+- A criação recebe exatamente um de `delivery_point_id` ou `saved_location_id`; enviar nenhum ou ambos é inválido. O segundo caminho exige ainda `saved_location_review_confirmed=true` e `saved_location_safe_area_confirmed=true`, informados somente após a revisão atual no mapa.
+- Com `delivery_point_id`, o backend valida que o ponto final confirmado pertence ao cliente. Com `saved_location_id`, valida a propriedade e copia coordenadas, dados auxiliares, `map_provider` e `map_type` persistidos para um novo `DeliveryPoint`, com origem interna `SAVED_POINT`, na mesma transação que cria o pedido. As confirmações do snapshot refletem a revisão atual recebida no request; o servidor não presume nem sintetiza evidência.
+- Escolher uma localização salva apenas centraliza o mesmo mapa do checkout. O cliente revisa e confirma novamente o ponto e a área segura; mover o ponto ou alterar as instruções para aquele pedido usa um novo `DeliveryPoint` manual e modifica somente o snapshot, nunca o atalho.
+- Editar ou excluir `SavedLocation` depois da criação não altera nem invalida o `DeliveryPoint` histórico.
+- Salvar um novo ponto manual como atalho é opcional e ocorre em chamada separada depois de o pedido ser criado. O aplicativo não aguarda essa chamada para concluir o checkout; recusa do cliente, latência, limite, ausência de endereço, offline ou falha não revertem nem bloqueiam o pedido e geram, no máximo, um aviso posterior sobre o atalho.
 - Submissão move `DRAFT` para `PENDING_ADMIN_APPROVAL`.
 - O cliente lista e detalha somente pedidos cujo `customer_id` vem da sessão autenticada; a API nunca aceita um `user_id` escolhido pelo cliente.
 - `DRAFT` é interno ao checkout e não aparece em `Meus pedidos`; após a submissão, `COMPLETED`, `CANCELLED`, `REJECTED` e `FAILED` formam o histórico e os demais estados formam o andamento. A interface mantém ativos em destaque e ordena cada grupo do mais recente para o mais antigo.

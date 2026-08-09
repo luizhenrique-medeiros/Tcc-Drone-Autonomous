@@ -14,28 +14,62 @@ import '../../../design_system/components/surface_card.dart';
 import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
-import '../../payment/presentation/payment_screen.dart';
 import 'satellite_map_view.dart';
 
 class ExactLocationScreen extends StatefulWidget {
-  const ExactLocationScreen({super.key});
+  const ExactLocationScreen({
+    this.approximatePlace,
+    this.initialCoordinate,
+    this.initialInstructions = '',
+    this.savedLocationId,
+    this.requireManualMovement = true,
+    this.requireSafeAreaConfirmation = true,
+    super.key,
+  });
+
+  final PlaceSuggestion? approximatePlace;
+  final GeoCoordinate? initialCoordinate;
+  final String initialInstructions;
+  final String? savedLocationId;
+  final bool requireManualMovement;
+  final bool requireSafeAreaConfirmation;
 
   @override
   State<ExactLocationScreen> createState() => _ExactLocationScreenState();
 }
 
 class _ExactLocationScreenState extends State<ExactLocationScreen> {
-  final TextEditingController _instructions = TextEditingController();
+  late final TextEditingController _instructions;
   GeoCoordinate? _coordinate;
   bool _markerMoved = false;
-  bool _safeArea = false;
+  late bool _safeArea;
   String? _addressReference;
   String? _reverseGeocodeError;
   bool _addressUnavailable = false;
+  bool _reverseGeocodePending = false;
   int _reverseGeocodeGeneration = 0;
   Timer? _reverseGeocodeDebounce;
   String? _mapsRuntimeError;
   bool _mapReady = false;
+  bool _hydratedFallbackInstructions = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _instructions = TextEditingController(text: widget.initialInstructions);
+    _coordinate = widget.initialCoordinate;
+    _safeArea = !widget.requireSafeAreaConfirmation;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_hydratedFallbackInstructions) return;
+    _hydratedFallbackInstructions = true;
+    if (_instructions.text.isEmpty && widget.approximatePlace == null) {
+      _instructions.text = AppScope.of(context).deliveryInstructions;
+    }
+  }
 
   @override
   void dispose() {
@@ -51,6 +85,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
       _markerMoved = true;
       _addressReference = null;
       _addressUnavailable = false;
+      _reverseGeocodePending = true;
       _reverseGeocodeError = null;
     });
     _reverseGeocodeDebounce?.cancel();
@@ -65,6 +100,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
           setState(() {
             _addressReference = reference;
             _addressUnavailable = false;
+            _reverseGeocodePending = false;
           });
         }
       } on ApiException catch (error) {
@@ -78,6 +114,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
               _reverseGeocodeError =
                   'Não foi possível consultar a referência textual. As coordenadas continuam válidas.';
             }
+            _reverseGeocodePending = false;
           });
         }
       } on Object {
@@ -87,10 +124,33 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
           setState(() {
             _reverseGeocodeError =
                 'Não foi possível consultar a referência textual. As coordenadas continuam válidas.';
+            _reverseGeocodePending = false;
           });
         }
       }
     });
+  }
+
+  void _nudgeCoordinate({required double latitude, required double longitude}) {
+    final GeoCoordinate? current =
+        _coordinate ??
+        widget.initialCoordinate ??
+        widget.approximatePlace?.coordinate ??
+        AppScope.of(context).approximatePlace?.coordinate;
+    if (current == null) return;
+    final double nextLatitude = (current.latitude + latitude)
+        .clamp(-90.0, 90.0)
+        .toDouble();
+    final double nextLongitude = (current.longitude + longitude)
+        .clamp(-180.0, 180.0)
+        .toDouble();
+    if (nextLatitude == current.latitude &&
+        nextLongitude == current.longitude) {
+      return;
+    }
+    _coordinateChanged(
+      GeoCoordinate(latitude: nextLatitude, longitude: nextLongitude),
+    );
   }
 
   void _mapStyleReady(AppController controller) {
@@ -131,7 +191,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                   const SectionHeader(
                     title: 'Confirme o ponto final',
                     subtitle:
-                        'Revise o mapa, as coordenadas e a declaração de segurança antes de salvar.',
+                        'Revise o mapa, as coordenadas e os detalhes antes de confirmar.',
                   ),
                   SatelliteMapView(
                     center: coordinate,
@@ -145,10 +205,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Text(
-                          _addressReference ??
-                              (_addressUnavailable
-                                  ? 'Local sem endereço identificado'
-                                  : place.referenceAddress),
+                          _displayAddress(place),
                           style: AppTypography.bodyStrong,
                         ),
                         const SizedBox(height: AppSpacing.xs),
@@ -163,15 +220,17 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: AppSpacing.md),
-                  const AppBanner(
-                    title: 'Área segura confirmada pelo cliente',
-                    message:
-                        'A análise administrativa e o checklist operacional continuam obrigatórios.',
-                  ),
+                  if (widget.requireSafeAreaConfirmation) ...<Widget>[
+                    const SizedBox(height: AppSpacing.md),
+                    const AppBanner(
+                      title: 'Área segura confirmada pelo cliente',
+                      message:
+                          'A análise administrativa e o checklist operacional continuam obrigatórios.',
+                    ),
+                  ],
                   const SizedBox(height: AppSpacing.lg),
                   AppButton(
-                    label: 'Salvar este ponto de entrega',
+                    label: 'Confirmar este ponto',
                     icon: Icons.check_circle,
                     onPressed: () => Navigator.of(sheetContext).pop(true),
                   ),
@@ -189,39 +248,77 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
         false;
   }
 
-  Future<void> _confirm() async {
+  Future<void> _confirm(PlaceSuggestion place) async {
     final AppController controller = AppScope.of(context);
-    final GeoCoordinate? coordinate = _coordinate;
+    final GeoCoordinate? coordinate =
+        _coordinate ?? widget.initialCoordinate ?? place.coordinate;
+    final bool movementSatisfied =
+        !widget.requireManualMovement || _markerMoved;
     if (coordinate == null ||
-        !_markerMoved ||
+        !movementSatisfied ||
         !_safeArea ||
         _mapsRuntimeError != null ||
         (!controller.mapProvider.isDevelopmentFallback && !_mapReady)) {
       return;
     }
-    final PlaceSuggestion? place = controller.approximatePlace;
-    if (place == null) return;
     final bool accepted = await _showConfirmation(
       controller,
       place,
       coordinate,
     );
     if (!accepted || !mounted) return;
-    controller.updateExactCoordinate(coordinate);
-    controller.updateDeliveryDetails(
-      instructions: _instructions.text,
-      safeArea: _safeArea,
+    final String instructions = _instructions.text.trim();
+    final bool savedContentAdjusted =
+        widget.savedLocationId != null &&
+        instructions != widget.initialInstructions.trim();
+    Navigator.of(context).pop(
+      LocationSelectionResult(
+        approximatePlace: place,
+        finalCoordinate: coordinate,
+        instructions: instructions,
+        safeAreaConfirmed: _safeArea,
+        mapProvider: controller.mapProvider.id,
+        mapType: 'hybrid',
+        regionConfirmed: true,
+        exactPointSelected: true,
+        userConfirmed: true,
+        wasAdjusted: _markerMoved || savedContentAdjusted,
+        addressReference: _normalizedAddress(place),
+        savedLocationId: widget.savedLocationId,
+      ),
     );
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const PaymentScreen()),
-    );
+  }
+
+  String _displayAddress(PlaceSuggestion place) {
+    if (_addressReference case final String reference) return reference;
+    if (_markerMoved) {
+      return _reverseGeocodePending
+          ? 'Atualizando referência textual…'
+          : 'Local sem endereço identificado';
+    }
+    return _addressUnavailable
+        ? 'Local sem endereço identificado'
+        : place.referenceAddress;
+  }
+
+  String? _normalizedAddress(PlaceSuggestion place) {
+    if (_markerMoved && _addressReference == null) return null;
+    final String value = _displayAddress(place).trim();
+    if (value.isEmpty ||
+        value == 'Local sem endereço identificado' ||
+        value.startsWith('Localização indisponível')) {
+      return null;
+    }
+    return value;
   }
 
   @override
   Widget build(BuildContext context) {
     final AppController controller = AppScope.of(context);
-    final PlaceSuggestion? place = controller.approximatePlace;
-    final GeoCoordinate? approximateCoordinate = place?.coordinate;
+    final PlaceSuggestion? place =
+        widget.approximatePlace ?? controller.approximatePlace;
+    final GeoCoordinate? approximateCoordinate =
+        widget.initialCoordinate ?? place?.coordinate;
     if (place == null || approximateCoordinate == null) {
       return Scaffold(
         appBar: AppBar(),
@@ -231,6 +328,8 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
     final GeoCoordinate shownCoordinate = _coordinate ?? approximateCoordinate;
     final bool mapOperational =
         controller.mapProvider.isDevelopmentFallback || _mapReady;
+    final bool movementSatisfied =
+        !widget.requireManualMovement || _markerMoved;
     return Scaffold(
       appBar: AppBar(title: const Text('Ponto exato · 2 de 2')),
       body: Center(
@@ -239,14 +338,19 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
           child: ListView(
             padding: const EdgeInsets.all(AppSpacing.screen),
             children: <Widget>[
-              const AppBanner(
-                title: 'Ajuste o ponto final',
-                message:
-                    'Na visão híbrida, mova o mapa sob o pino central. Você pode navegar, aplicar zoom, rotação e inclinação sem limite por cidade ou país.',
+              AppBanner(
+                title: widget.savedLocationId == null
+                    ? 'Ajuste o ponto final'
+                    : 'Revise a localização salva',
+                message: widget.savedLocationId == null
+                    ? 'Na visão híbrida, mova o mapa sob o pino central para definir o ponto exato.'
+                    : 'Confira o ponto salvo. Você pode mover o mapa para ajustá-lo somente para este uso.',
               ),
               const SizedBox(height: AppSpacing.lg),
-              const SectionHeader(
-                title: 'Mova o mapa sob o pino',
+              SectionHeader(
+                title: widget.requireManualMovement
+                    ? 'Mova o mapa sob o pino'
+                    : 'Confira ou ajuste o pino',
                 subtitle:
                     'As coordenadas são atualizadas quando a câmera para; o endereço é apenas uma referência opcional.',
               ),
@@ -267,7 +371,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                 const SizedBox(height: AppSpacing.md),
               ],
               SatelliteMapView(
-                center: approximateCoordinate,
+                center: shownCoordinate,
                 provider: controller.mapProvider,
                 onCoordinateChanged: _coordinateChanged,
                 onMapReady: () => _mapStyleReady(controller),
@@ -292,18 +396,80 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                             key: const Key('exact-coordinate-value'),
                             style: AppTypography.body,
                           ),
-                          if (_addressReference != null)
-                            Text(
-                              _addressReference!,
-                              style: AppTypography.caption,
-                            ),
-                          if (_addressUnavailable)
-                            const Text(
-                              'Local sem endereço identificado',
-                              style: AppTypography.caption,
-                            ),
+                          Text(
+                            _displayAddress(place),
+                            style: AppTypography.caption,
+                          ),
                         ],
                       ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              SurfaceCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Text(
+                      'Ajuste acessível do pino',
+                      style: AppTypography.label,
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    const Text(
+                      'Use estes controles pelo teclado ou leitor de tela quando não puder arrastar o mapa.',
+                      style: AppTypography.caption,
+                    ),
+                    const SizedBox(height: AppSpacing.sm),
+                    Wrap(
+                      spacing: AppSpacing.sm,
+                      runSpacing: AppSpacing.sm,
+                      children: <Widget>[
+                        OutlinedButton.icon(
+                          key: const Key('nudge-map-north'),
+                          onPressed: mapOperational
+                              ? () => _nudgeCoordinate(
+                                  latitude: 0.00001,
+                                  longitude: 0,
+                                )
+                              : null,
+                          icon: const Icon(Icons.arrow_upward),
+                          label: const Text('Norte'),
+                        ),
+                        OutlinedButton.icon(
+                          key: const Key('nudge-map-south'),
+                          onPressed: mapOperational
+                              ? () => _nudgeCoordinate(
+                                  latitude: -0.00001,
+                                  longitude: 0,
+                                )
+                              : null,
+                          icon: const Icon(Icons.arrow_downward),
+                          label: const Text('Sul'),
+                        ),
+                        OutlinedButton.icon(
+                          key: const Key('nudge-map-west'),
+                          onPressed: mapOperational
+                              ? () => _nudgeCoordinate(
+                                  latitude: 0,
+                                  longitude: -0.00001,
+                                )
+                              : null,
+                          icon: const Icon(Icons.arrow_back),
+                          label: const Text('Oeste'),
+                        ),
+                        OutlinedButton.icon(
+                          key: const Key('nudge-map-east'),
+                          onPressed: mapOperational
+                              ? () => _nudgeCoordinate(
+                                  latitude: 0,
+                                  longitude: 0.00001,
+                                )
+                              : null,
+                          icon: const Icon(Icons.arrow_forward),
+                          label: const Text('Leste'),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -316,7 +482,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                   tone: AppBannerTone.danger,
                 ),
               ],
-              if (!_markerMoved) ...<Widget>[
+              if (!movementSatisfied) ...<Widget>[
                 const SizedBox(height: AppSpacing.sm),
                 const AppBanner(
                   title: 'Mova o mapa para continuar',
@@ -332,36 +498,38 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                 icon: Icons.edit_location_alt_outlined,
                 maxLines: 3,
               ),
-              const SizedBox(height: AppSpacing.md),
-              SurfaceCard(
-                borderColor: _safeArea ? AppColors.success : AppColors.border,
-                child: CheckboxListTile(
-                  key: const Key('safe-area-confirmation'),
-                  contentPadding: EdgeInsets.zero,
-                  value: _safeArea,
-                  activeColor: AppColors.success,
-                  onChanged: (bool? value) =>
-                      setState(() => _safeArea = value ?? false),
-                  title: const Text(
-                    'Posicionei manualmente o pino em uma área aberta e adequada.',
+              if (widget.requireSafeAreaConfirmation) ...<Widget>[
+                const SizedBox(height: AppSpacing.md),
+                SurfaceCard(
+                  borderColor: _safeArea ? AppColors.success : AppColors.border,
+                  child: CheckboxListTile(
+                    key: const Key('safe-area-confirmation'),
+                    contentPadding: EdgeInsets.zero,
+                    value: _safeArea,
+                    activeColor: AppColors.success,
+                    onChanged: (bool? value) =>
+                        setState(() => _safeArea = value ?? false),
+                    title: const Text(
+                      'Posicionei ou revisei o pino em uma área aberta e adequada.',
+                    ),
+                    subtitle: const Text(
+                      'Esta confirmação não substitui a validação técnica e a aprovação administrativa.',
+                    ),
+                    controlAffinity: ListTileControlAffinity.leading,
                   ),
-                  subtitle: const Text(
-                    'Esta confirmação não substitui a validação técnica e a aprovação administrativa.',
-                  ),
-                  controlAffinity: ListTileControlAffinity.leading,
                 ),
-              ),
+              ],
               const SizedBox(height: AppSpacing.lg),
               AppButton(
                 key: const Key('confirm-exact-point'),
                 label: 'Confirmar ponto exato',
                 icon: Icons.check_circle_outline,
                 onPressed:
-                    _markerMoved &&
+                    movementSatisfied &&
                         _safeArea &&
                         _mapsRuntimeError == null &&
                         mapOperational
-                    ? _confirm
+                    ? () => _confirm(place)
                     : null,
               ),
             ],

@@ -25,6 +25,11 @@ Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como
 | `POST /delivery-points/validate` | cliente | faixa mundial, confirmações e distância informativa, sem persistir |
 | `POST /delivery-points` | cliente | ponto final confirmado |
 | `GET /delivery-points` | cliente | próprios pontos |
+| `GET /saved-locations` | cliente | zero a três atalhos próprios |
+| `POST /saved-locations` | cliente | novo atalho confirmado, sujeito ao limite transacional |
+| `GET /saved-locations/{id}` | proprietário | detalhe do atalho |
+| `PATCH /saved-locations/{id}` | proprietário | altera nome, ponto ou dados auxiliares |
+| `DELETE /saved-locations/{id}` | proprietário | remove somente o atalho |
 | `POST /orders` | cliente | rascunho e snapshots |
 | `GET /orders` | cliente | próprios pedidos com `limit`/`offset` e grupo opcional |
 | `GET /orders/{id}` | proprietário | detalhe com milestones sanitizados |
@@ -34,6 +39,45 @@ Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como
 As três rotas `/maps/*` são o proxy autenticado para a Geocoding API do MapTiler. Pesquisa exige pelo menos três caracteres e aplica autocomplete; geocode recebe exatamente um de `address` ou `place_id`; reverse geocode recebe latitude/longitude, mas o adaptador externo envia `longitude,latitude`. A resposta externa GeoJSON é convertida aos DTOs internos e nunca expõe `MAPTILER_SERVER_API_KEY`.
 
 Configuração ausente retorna `503/MAPS_NOT_CONFIGURED`; recusa, quota, timeout, rede ou resposta externa inválida retornam `502/MAPS_PROVIDER_ERROR`; consulta inválida retorna `422/MAPS_QUERY_INVALID`. Resultado vazio de geocode/reverse geocode retorna `404`, sem fabricar endereço.
+
+## Localizações salvas
+
+Todas as rotas `/saved-locations` exigem JWT de `CUSTOMER`. O servidor deriva o proprietário de `current_user.id`; os contratos de criação e atualização não aceitam `user_id` para definir propriedade. Buscar, editar ou excluir um identificador inexistente ou de outro cliente devolve o mesmo `404/NOT_FOUND`.
+
+O corpo de criação contém:
+
+```json
+{
+  "name": "Casa",
+  "final_latitude": -23.1175,
+  "final_longitude": -46.5502,
+  "address_reference": "Entrada pelo portão lateral",
+  "instructions": "Usar a área aberta sinalizada.",
+  "accuracy_meters": 5,
+  "map_provider": "maptiler",
+  "map_type": "hybrid",
+  "region_confirmed": true,
+  "exact_point_selected": true,
+  "user_confirmed": true,
+  "user_confirmed_safe_area": true
+}
+```
+
+`name` é obrigatório, aparado e possui de 1 a 40 caracteres. Latitude/longitude são obrigatórias e seguem a faixa mundial; `address_reference`, `instructions` e `accuracy_meters` são opcionais. `map_provider` identifica o provider realmente renderizado, e `map_type` aceita somente `hybrid` ou `satellite`. A criação exige `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` verdadeiros e provenientes do mesmo fluxo de mapa; o servidor não os preenche por default. A ausência de endereço textual não impede criação. A resposta inclui `id`, `user_id` derivado, coordenadas, provider/tipo, as quatro flags, dados opcionais e timestamps; o valor PostGIS permanece interno. `PATCH` recebe somente os campos editáveis. Nome, instruções e referência podem mudar isoladamente; alterar qualquer coordenada, provider, tipo ou confirmação exige reenviar o conjunto completo de coordenadas, mapa e quatro confirmações verdadeiras produzido pela nova revisão. `DELETE` retorna `204` e não altera `DeliveryPoint` nem pedido.
+
+`POST /saved-locations` bloqueia a linha do cliente com `SELECT ... FOR NO KEY UPDATE`, conta os atalhos e insere na mesma transação. Ao já existirem três, retorna:
+
+```json
+{
+  "code": "SAVED_LOCATION_LIMIT_REACHED",
+  "detail": "Você pode salvar no máximo 3 localizações.",
+  "fields": {}
+}
+```
+
+O status é `409`. Requisições concorrentes para o mesmo cliente passam pelo mesmo lock e não conseguem criar uma quarta localização. A criação aceita `Idempotency-Key`; repetir a mesma chave e corpo devolve o resultado original sem consumir outra vaga, enquanto reutilizar a chave com outro corpo retorna conflito.
+
+## Ponto de entrega e criação do pedido
 
 Exemplo mínimo de ponto:
 
@@ -57,7 +101,28 @@ Exemplo mínimo de ponto:
 }
 ```
 
-O request de pedido aceita apenas enum da forma simulada, `delivery_point_id` e itens. Não aceita dados de cartão.
+O request de pedido aceita apenas enum da forma simulada, itens e exatamente um de `delivery_point_id` ou `saved_location_id`. Não aceita dados de cartão. Informar ambos ou nenhum retorna erro de validação. No caminho salvo, o corpo é semelhante a:
+
+```json
+{
+  "payment_method": "PIX",
+  "items": [
+    {
+      "product_id": "11111111-1111-4111-8111-111111111111",
+      "quantity": 1
+    }
+  ],
+  "saved_location_id": "22222222-2222-4222-8222-222222222222",
+  "saved_location_review_confirmed": true,
+  "saved_location_safe_area_confirmed": true
+}
+```
+
+Quando `saved_location_id` é usado, os dois booleanos são obrigatórios e devem ser `true`, pois descrevem a revisão feita naquele checkout; a evidência antiga da criação do atalho não substitui essa confirmação atual.
+
+Com `delivery_point_id`, o ponto confirmado deve pertencer ao cliente. Com `saved_location_id`, o backend carrega o atalho próprio e, na mesma transação da criação do pedido, cria um novo `DeliveryPoint` com os valores copiados e `selection_source=SAVED_POINT`. O snapshot conserva `map_provider` e `map_type` do atalho e registra as confirmações da revisão atual recebidas no request; nenhuma flag ou proveniência é fabricada por constante. A resposta e todas as leituras posteriores usam essa cópia; editar ou excluir o atalho não muda o pedido.
+
+Se o cliente ajustou no mapa uma localização salva apenas para o pedido, o aplicativo persiste o ponto ajustado como `DeliveryPoint` e envia `delivery_point_id`; não atualiza `SavedLocation`. Se optar por transformar um novo ponto manual em atalho, chama `POST /saved-locations` somente depois de o pedido ser criado. Falha, offline ou `SAVED_LOCATION_LIMIT_REACHED` nessa chamada posterior não reverte o pedido e não impede sua submissão.
 
 `GET /orders` nunca aceita `user_id`: o proprietário vem do JWT. Rascunhos `DRAFT` ainda não submetidos são internos ao checkout e não entram na listagem. `group=all|active|history` permite paginação coerente; `all` prioriza estados ativos e, dentro de cada grupo, ordena por criação decrescente. A resposta conserva o padrão do projeto como lista e o cliente calcula `has_more` quando a página contém `limit` itens.
 
@@ -126,4 +191,4 @@ Repetir `claim`, `upload-status` ou evento com a mesma chave retorna resultado c
 
 ## Códigos relevantes
 
-`400` request inválido, `401` não autenticado, `403` papel/propriedade, `404` ausente, `409` estado/idempotência, `422` campos, `503` dependência ou veículo indisponível.
+`400` request inválido, `401` não autenticado, `403` papel, `404` ausente ou recurso alheio não enumerável, `409` estado/idempotência/`SAVED_LOCATION_LIMIT_REACHED`, `422` campos, `503` dependência ou veículo indisponível.

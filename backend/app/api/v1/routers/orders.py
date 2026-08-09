@@ -45,6 +45,7 @@ def create(
             customer,
             payload,
             Decimal(str(settings.delivery_fee)),
+            settings,
             commit=False,
         )
         return order_to_read(session, order).model_dump(mode="json")

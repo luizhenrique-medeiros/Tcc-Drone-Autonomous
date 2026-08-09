@@ -41,6 +41,7 @@ def import_models() -> None:
     from app.modules.missions import models as _missions  # noqa: F401
     from app.modules.orders import models as _orders  # noqa: F401
     from app.modules.products import models as _products  # noqa: F401
+    from app.modules.saved_locations import models as _saved_locations  # noqa: F401
     from app.modules.system_events import models as _events  # noqa: F401
     from app.modules.telemetry import models as _telemetry  # noqa: F401
     from app.modules.users import models as _users  # noqa: F401

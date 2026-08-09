@@ -38,7 +38,7 @@ def compare_column_types(
     metadata_type: object,
 ) -> bool | None:
     # The stock PostgreSQL dialect reflects PostGIS geography as an unknown type.
-    # Scope the exception to the three metadata columns that deliberately use it.
+    # Scope the exception to metadata columns that deliberately use it.
     if isinstance(metadata_type, GeographyPoint):
         return False
     # Revision 0002 stores operational provenance as VARCHAR(20). The domain

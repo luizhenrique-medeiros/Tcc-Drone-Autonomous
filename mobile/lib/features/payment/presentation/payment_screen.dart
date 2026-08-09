@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../app/app_controller.dart';
 import '../../../app/app_scope.dart';
 import '../../../core/models/order.dart';
 import '../../../design_system/components/app_button.dart';
+import '../../../design_system/components/app_text_field.dart';
 import '../../../design_system/components/product_card.dart';
 import '../../../design_system/components/section_header.dart';
 import '../../../design_system/components/surface_card.dart';
@@ -21,8 +24,18 @@ class PaymentScreen extends StatefulWidget {
 }
 
 class _PaymentScreenState extends State<PaymentScreen> {
+  final TextEditingController _savedLocationName = TextEditingController();
+  bool _saveLocation = false;
+
+  @override
+  void dispose() {
+    _savedLocationName.dispose();
+    super.dispose();
+  }
+
   Future<void> _submit() async {
     final AppController controller = AppScope.of(context);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
     final String? error = await controller.submitOrder();
     if (!mounted) return;
     if (error != null) {
@@ -30,6 +43,29 @@ class _PaymentScreenState extends State<PaymentScreen> {
         SnackBar(content: Text(error), backgroundColor: AppColors.danger),
       );
       return;
+    }
+    final String? immediateWarning = controller.savedLocationWarning;
+    final Future<void>? pendingSave = controller.pendingSavedLocationSave;
+    if (immediateWarning != null) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(immediateWarning),
+          backgroundColor: AppColors.warningText,
+        ),
+      );
+    } else if (pendingSave != null) {
+      unawaited(
+        pendingSave.whenComplete(() {
+          final String? warning = controller.savedLocationWarning;
+          if (!messenger.mounted || warning == null) return;
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(warning),
+              backgroundColor: AppColors.warningText,
+            ),
+          );
+        }),
+      );
     }
     await Navigator.of(context).pushAndRemoveUntil<void>(
       MaterialPageRoute<void>(
@@ -108,6 +144,54 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   ],
                 ),
               ),
+              if (controller.canOfferSaveCurrentLocation) ...<Widget>[
+                const SizedBox(height: AppSpacing.lg),
+                const SectionHeader(
+                  title: 'Salvar em Minhas localizações',
+                  subtitle:
+                      'Opcional. O pedido será criado mesmo que esse salvamento falhe.',
+                ),
+                SurfaceCard(
+                  child: Column(
+                    children: <Widget>[
+                      CheckboxListTile(
+                        key: const Key('save-current-location-toggle'),
+                        contentPadding: EdgeInsets.zero,
+                        value: _saveLocation,
+                        onChanged: (bool? value) {
+                          final bool enabled = value ?? false;
+                          setState(() => _saveLocation = enabled);
+                          controller.configureSavedLocation(
+                            enabled: enabled,
+                            name: _savedLocationName.text,
+                          );
+                        },
+                        title: const Text('Salvar esta localização'),
+                        subtitle: Text(
+                          '${controller.savedLocations.locations.length} de 3 localizações salvas',
+                        ),
+                        controlAffinity: ListTileControlAffinity.leading,
+                      ),
+                      if (_saveLocation) ...<Widget>[
+                        const SizedBox(height: AppSpacing.sm),
+                        AppTextField(
+                          controller: _savedLocationName,
+                          label: 'Nome da localização',
+                          hint: 'Ex.: Casa da vó',
+                          icon: Icons.bookmark_add_outlined,
+                          maxLength: 40,
+                          onChanged: (String value) {
+                            controller.configureSavedLocation(
+                              enabled: true,
+                              name: value,
+                            );
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: AppSpacing.lg),
               AppButton(
                 key: const Key('submit-simulated-order'),

@@ -7,11 +7,24 @@ from uuid import UUID
 from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
-from app.core.enums import AdminDecisionType, EventSeverity, OrderStatus, UserRole
-from app.core.exceptions import ConflictError, InvalidStateError, NotFoundError
+from app.core.config import Settings
+from app.core.enums import (
+    AdminDecisionType,
+    EventSeverity,
+    OrderStatus,
+    SelectionSource,
+    UserRole,
+)
+from app.core.exceptions import (
+    ConflictError,
+    InvalidCoordinatesError,
+    InvalidStateError,
+    NotFoundError,
+)
 from app.modules.approvals.models import AdminDecision
 from app.modules.delivery_points.models import DeliveryPoint
-from app.modules.delivery_points.schemas import DeliveryPointRead
+from app.modules.delivery_points.schemas import DeliveryPointInput, DeliveryPointRead
+from app.modules.delivery_points.service import create_delivery_point
 from app.modules.missions.models import Mission
 from app.modules.orders.admin_schemas import (
     AdminCustomerSummary,
@@ -31,6 +44,8 @@ from app.modules.orders.schemas import (
     OrderRead,
 )
 from app.modules.products.models import Product
+from app.modules.saved_locations.models import SavedLocation
+from app.modules.saved_locations.service import get_owned_saved_location
 from app.modules.system_events.models import SystemEvent
 from app.modules.system_events.service import record_event
 from app.modules.users.models import User
@@ -54,17 +69,81 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _snapshot_saved_location(
+    session: Session,
+    customer: User,
+    saved_location: SavedLocation,
+    order_payload: OrderCreate,
+    settings: Settings,
+) -> DeliveryPoint:
+    payload = DeliveryPointInput(
+        searched_address=None,
+        address_reference=saved_location.address_reference,
+        selection_source=SelectionSource.SAVED_POINT,
+        approximate_latitude=None,
+        approximate_longitude=None,
+        final_latitude=float(saved_location.final_latitude),
+        final_longitude=float(saved_location.final_longitude),
+        label=saved_location.name,
+        instructions=saved_location.instructions,
+        map_provider=saved_location.map_provider,
+        map_type=saved_location.map_type,
+        accuracy_meters=(
+            float(saved_location.accuracy_meters)
+            if saved_location.accuracy_meters is not None
+            else None
+        ),
+        region_confirmed=saved_location.region_confirmed,
+        exact_point_selected=saved_location.exact_point_selected,
+        user_confirmed=order_payload.saved_location_review_confirmed is True,
+        user_confirmed_safe_area=(order_payload.saved_location_safe_area_confirmed is True),
+    )
+    return create_delivery_point(session, customer.id, payload, settings, commit=False)
+
+
+def _resolve_order_delivery_point(
+    session: Session,
+    customer: User,
+    payload: OrderCreate,
+    settings: Settings,
+) -> DeliveryPoint:
+    if payload.delivery_point_id is not None:
+        point = session.get(DeliveryPoint, payload.delivery_point_id)
+        if not point or point.user_id != customer.id:
+            raise NotFoundError("Ponto de entrega não encontrado")
+        return point
+
+    if payload.saved_location_id is None:
+        raise ConflictError("Informe a origem do ponto de entrega")
+    if not (
+        payload.saved_location_review_confirmed is True
+        and payload.saved_location_safe_area_confirmed is True
+    ):
+        raise InvalidCoordinatesError("Revise a localização salva e confirme a segurança da área")
+    saved_location = get_owned_saved_location(
+        session,
+        payload.saved_location_id,
+        customer.id,
+    )
+    return _snapshot_saved_location(
+        session,
+        customer,
+        saved_location,
+        payload,
+        settings,
+    )
+
+
 def create_order(
     session: Session,
     customer: User,
     payload: OrderCreate,
     delivery_fee: Decimal,
+    settings: Settings,
     *,
     commit: bool = True,
 ) -> Order:
-    point = session.get(DeliveryPoint, payload.delivery_point_id)
-    if not point or point.user_id != customer.id:
-        raise NotFoundError("Ponto de entrega não encontrado")
+    point = _resolve_order_delivery_point(session, customer, payload, settings)
     if not (
         point.region_confirmed
         and point.exact_point_selected

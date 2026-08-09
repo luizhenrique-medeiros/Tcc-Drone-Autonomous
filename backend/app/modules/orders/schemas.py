@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.enums import OrderStatus, PaymentMethod
 from app.modules.delivery_points.schemas import DeliveryPointRead
@@ -43,9 +43,34 @@ class OrderItemCreate(BaseModel):
 
 
 class OrderCreate(BaseModel):
-    delivery_point_id: UUID
+    model_config = ConfigDict(extra="forbid")
+
+    delivery_point_id: UUID | None = None
+    saved_location_id: UUID | None = None
+    saved_location_review_confirmed: bool | None = None
+    saved_location_safe_area_confirmed: bool | None = None
     payment_method: PaymentMethod
     items: list[OrderItemCreate] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_delivery_source(self) -> OrderCreate:
+        sources = (self.delivery_point_id is not None, self.saved_location_id is not None)
+        if sum(sources) != 1:
+            raise ValueError("Informe exatamente um entre delivery_point_id e saved_location_id")
+        review_fields = {
+            "saved_location_review_confirmed",
+            "saved_location_safe_area_confirmed",
+        }
+        if self.delivery_point_id is not None:
+            if review_fields.intersection(self.model_fields_set):
+                raise ValueError("Confirmações de localização salva não se aplicam ao ponto manual")
+            return self
+        if not (
+            self.saved_location_review_confirmed is True
+            and self.saved_location_safe_area_confirmed is True
+        ):
+            raise ValueError("Revise a localização salva e confirme a segurança da área")
+        return self
 
 
 class OrderItemRead(BaseModel):

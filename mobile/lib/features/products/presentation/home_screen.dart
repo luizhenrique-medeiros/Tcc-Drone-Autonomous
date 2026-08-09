@@ -22,6 +22,7 @@ import '../../auth/presentation/login_screen.dart';
 import '../../cart/presentation/cart_screen.dart';
 import '../../diagnostics/presentation/runtime_diagnostics_screen.dart';
 import '../../orders/presentation/orders_screen.dart';
+import '../../saved_locations/presentation/saved_locations_screen.dart';
 import 'product_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -515,6 +516,20 @@ class _ProfileTab extends StatelessWidget {
               ),
             ),
             const SizedBox(height: AppSpacing.xl),
+            AppButton(
+              key: const Key('open-saved-locations'),
+              label: 'Minhas localizações',
+              variant: AppButtonVariant.secondary,
+              icon: Icons.bookmark_added_outlined,
+              onPressed: () async {
+                await Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const SavedLocationsScreen(),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: AppSpacing.sm),
             if (kDebugMode && AppConfig.diagnosticsEnabled) ...<Widget>[
               AppButton(
                 label: 'Diagnóstico de desenvolvimento',

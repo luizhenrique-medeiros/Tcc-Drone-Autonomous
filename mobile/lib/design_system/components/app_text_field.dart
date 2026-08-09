@@ -16,6 +16,7 @@ class AppTextField extends StatelessWidget {
     this.onChanged,
     this.onSubmitted,
     this.maxLines = 1,
+    this.maxLength,
     this.enabled = true,
     super.key,
   });
@@ -31,6 +32,7 @@ class AppTextField extends StatelessWidget {
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
   final int maxLines;
+  final int? maxLength;
   final bool enabled;
 
   @override
@@ -55,6 +57,7 @@ class AppTextField extends StatelessWidget {
       onChanged: onChanged,
       onFieldSubmitted: onSubmitted,
       maxLines: obscureText ? 1 : maxLines,
+      maxLength: maxLength,
       enabled: enabled,
     );
   }
