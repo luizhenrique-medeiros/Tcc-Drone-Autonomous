@@ -143,7 +143,13 @@ Um ensaio HTTP direto, usando a credencial temporária, confirmou:
 
 Esses resultados diretos foram complementados por smoke real no Chrome. O Flutter Web confirmou estilo/tiles/fontes/sprites, câmera inicial, pan, busca, reverse geocoding, atribuição/logo e checkout; o admin autenticado confirmou o ponto no mapa e headers CSP reais. Android, geolocalização concedida/timeout e origem/`User-Agent` restritos ainda não foram comprovados. A credencial usada continua exposta e precisa ser rotacionada.
 
-No admin, lint, 33 testes, build e smoke visual passaram. Durante o smoke, a prontidão foi corrigida para `style.load` e o worker do MapLibre passou a ser empacotado pelo Vite com `?worker&url`; o reteste obteve worker/tiles 200, exibiu o mapa e o marcador sem timeout ou erro novo no console. A futura chave restrita ainda exige novo smoke.
+No admin, lint, 33 testes, build e smoke visual passaram naquela bateria. Durante o smoke, a prontidão foi corrigida para `style.load` e o worker do MapLibre passou a ser empacotado pelo Vite com `?worker&url`; o reteste obteve worker/tiles 200, exibiu o mapa e o marcador sem timeout ou erro novo no console.
+
+Na bateria de 17 de agosto, o admin passou em 16 arquivos/67 testes, lint e build; root e worker responderam 200,
+o worker foi servido como `application/javascript` e os headers CSP, nosniff, DENY e
+Referrer-Policy foram conferidos. O navegador visual estava indisponível, portanto esses checks
+HTTP não repetem o smoke de mapa/tiles. A futura chave restrita ainda exige novo smoke Web e
+Android.
 
 ## Testes esperados
 

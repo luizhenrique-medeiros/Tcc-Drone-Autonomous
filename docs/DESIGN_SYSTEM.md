@@ -211,8 +211,15 @@ O mobile prioriza baixa densidade, gesto, bottom navigation e fluxo linear. O ad
 - [ ] golden/component test só muda após revisão consciente;
 - [ ] captura final foi comparada manualmente com hierarquia, ritmo e composição das referências.
 
-## Evidência visual desta rodada
+## Evidência visual
 
-A integração atual MapTiler/MapLibre ainda não recebeu revisão visual em browser ou Android. Os requests HTTP diretos de 2026-08-07 (estilo, pesquisa e reverse geocoding com HTTP 200) comprovam somente acesso aos endpoints, não layout, tiles, eventos, CORS/CSP, atribuição ou logo. A chave usada nesse ensaio foi exposta e deve ser rotacionada.
+Em 7 de agosto de 2026, um smoke real no Chrome confirmou Flutter Web e admin com estilo, tiles,
+fontes, sprites, pan, busca, reverse geocoding, atribuição/logo, checkout e ponto autenticado. A
+credencial temporária usada foi exposta e deve ser rotacionada; essa evidência não valida Android.
 
-O admin aprovou lint, 33 testes e build, incluindo estados e desenho do mapa, mas isso não fecha o checklist visual. Seleção/pedido pela UI e recebimento autenticado no admin continuam pendentes de smoke manual com credenciais restritas. O pedido controlado criado diretamente pela API permanece apenas como dado de integração e não deve ser despachado.
+Em 17 de agosto, o admin aprovou lint, 16 arquivos/67 testes e build, o Flutter aprovou 98 testes e build Web,
+e os endpoints/worker responderam 200 com headers/MIME esperados. O controlador visual do
+navegador estava indisponível, portanto essa bateria nova não é registrada como nova revisão
+visual. Após rotacionar a chave e resolver a credencial admin persistida, repita o checklist em
+browser e Android. Os pedidos controlados permanecem apenas como evidência e não devem ser
+aprovados ou despachados.

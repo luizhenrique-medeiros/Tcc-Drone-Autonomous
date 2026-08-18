@@ -1,5 +1,11 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$FlutterSdkRoot,
+    [switch]$AllowBundledFlutterSdk,
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterChannel = 'stable',
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterVersionPattern = '^3\.47\.\d+$',
+    [ValidateNotNullOrEmpty()][string]$ExpectedDartVersionPattern = '^3\.13\.\d+$'
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -48,16 +54,19 @@ try {
 finally { Pop-Location }
 
 $workspaceAlias = New-AsciiWorkspaceAlias $projectRoot
-$flutterSdkRoot = Join-Path $workspaceAlias.Root 'flutter'
-$flutterCommand = Join-Path $flutterSdkRoot 'bin\flutter.bat'
-if (-not (Test-Path $flutterCommand)) { $flutterCommand = (Get-Command flutter -ErrorAction Stop).Source }
+$flutterSdk = Resolve-ProjectFlutterSdk `
+    -ExplicitFlutterSdkRoot $FlutterSdkRoot `
+    -ProjectRoot $projectRoot `
+    -AllowBundledFlutterSdk:$AllowBundledFlutterSdk `
+    -ExpectedChannel $ExpectedFlutterChannel `
+    -ExpectedFlutterVersionPattern $ExpectedFlutterVersionPattern `
+    -ExpectedDartVersionPattern $ExpectedDartVersionPattern
+$flutterCommand = $flutterSdk.FlutterCommand
 Push-Location (Join-Path $workspaceAlias.Root 'mobile')
 try {
-    if (Test-Path (Join-Path $flutterSdkRoot 'bin\flutter.bat')) {
-        $env:GIT_CONFIG_COUNT = '1'
-        $env:GIT_CONFIG_KEY_0 = 'safe.directory'
-        $env:GIT_CONFIG_VALUE_0 = $flutterSdkRoot.Replace('\', '/')
-    }
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'safe.directory'
+    $env:GIT_CONFIG_VALUE_0 = $flutterSdk.Root.Replace('\', '/')
     $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
     $env:DART_SUPPRESS_ANALYTICS = 'true'
     & $flutterCommand pub get

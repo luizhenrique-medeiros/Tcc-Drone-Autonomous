@@ -141,7 +141,12 @@ class BackendClient:
         detail: str | None = None,
         event_id: UUID | None = None,
     ) -> UUID:
-        if status not in {MissionStatus.UPLOADING, MissionStatus.UPLOADED, MissionStatus.FAILED}:
+        if status not in {
+            MissionStatus.UPLOADING,
+            MissionStatus.UPLOADED,
+            MissionStatus.VERIFIED,
+            MissionStatus.FAILED,
+        }:
             raise BackendContractError(f"Status de upload inválido: {status}")
         identifier = event_id or uuid4()
         await self._request(

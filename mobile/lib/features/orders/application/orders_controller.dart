@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/models/mission_telemetry.dart';
 import '../../../core/models/order.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/repositories/order_repository.dart';
@@ -17,6 +18,10 @@ class OrdersController extends ChangeNotifier {
       <String, StreamSubscription<OrderWatchEvent>>{};
   final Map<String, OrderRealtimeState> _connectionStates =
       <String, OrderRealtimeState>{};
+  final Map<String, MissionStatusSnapshot> _missionStatuses =
+      <String, MissionStatusSnapshot>{};
+  final Map<String, MissionTelemetrySnapshot> _missionTelemetry =
+      <String, MissionTelemetrySnapshot>{};
   final Set<String> _detailLoading = <String>{};
   final Map<String, String> _detailErrors = <String, String>{};
 
@@ -90,6 +95,12 @@ class OrdersController extends ChangeNotifier {
   bool isDetailLoading(String orderId) => _detailLoading.contains(orderId);
 
   String? detailError(String orderId) => _detailErrors[orderId];
+
+  MissionStatusSnapshot? missionStatusFor(String orderId) =>
+      _missionStatuses[orderId];
+
+  MissionTelemetrySnapshot? telemetryFor(String orderId) =>
+      _missionTelemetry[orderId];
 
   Future<void> loadInitial({bool force = false}) {
     if (hasLoaded && !force) return Future<void>.value();
@@ -384,6 +395,21 @@ class OrdersController extends ChangeNotifier {
                 }
               case OrderConnectionEvent(:final state):
                 _connectionStates[order.id] = state;
+              case MissionStatusEvent(:final mission):
+                final MissionStatusSnapshot? current =
+                    _missionStatuses[order.id];
+                if (current == null ||
+                    mission.updatedAt == null ||
+                    current.updatedAt == null ||
+                    !mission.updatedAt!.isBefore(current.updatedAt!)) {
+                  _missionStatuses[order.id] = mission;
+                }
+              case MissionTelemetryEvent(:final telemetry):
+                final MissionTelemetrySnapshot? current =
+                    _missionTelemetry[order.id];
+                if (current == null || !telemetry.isOlderThan(current)) {
+                  _missionTelemetry[order.id] = telemetry;
+                }
             }
             _notify();
           },
@@ -412,6 +438,8 @@ class OrdersController extends ChangeNotifier {
     _orders.clear();
     _detailLoading.clear();
     _detailErrors.clear();
+    _missionStatuses.clear();
+    _missionTelemetry.clear();
     group = OrdersGroup.all;
     hasLoaded = false;
     isInitialLoading = false;

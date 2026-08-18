@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.enums import EventSeverity
+from app.core.exceptions import EventIdConflictError
 from app.modules.system_events.models import SystemEvent
 
 
@@ -26,6 +27,22 @@ def record_event(
     if event_id:
         existing = session.scalar(select(SystemEvent).where(SystemEvent.event_id == event_id))
         if existing:
+            expected_metadata = metadata or {}
+            is_compatible_replay = (
+                existing.actor_user_id == actor_user_id
+                and existing.actor_type == actor_type
+                and existing.order_id == order_id
+                and existing.mission_id == mission_id
+                and existing.vehicle_id == vehicle_id
+                and existing.event_type == event_type
+                and existing.severity == severity
+                and existing.message == message
+                and existing.event_metadata == expected_metadata
+            )
+            if not is_compatible_replay:
+                raise EventIdConflictError(
+                    "event_id já foi usado com missão, tipo, estado ou payload diferente"
+                )
             return existing, False
     event = SystemEvent(
         event_id=event_id,

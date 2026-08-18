@@ -7,6 +7,8 @@ O cliente não aprova pedidos, autoriza voo, envia MAVLink, define altitude nem 
 ## Recursos implementados
 
 - modo local demonstrativo e modo integrado por REST/WebSocket;
+- faixa persistente no perfil `demo`, identificando dados simulados e ausência
+  de hardware real;
 - sessão integrada restaurada por armazenamento seguro, sem token em texto puro;
 - layout responsivo para celular e desktop, com navegação lateral em telas amplas;
 - seleção do ponto em qualquer região do mundo, sem limite por cidade ou país;
@@ -17,6 +19,15 @@ O cliente não aprova pedidos, autoriza voo, envia MAVLink, define altitude nem 
 - confirmação manual de área aberta antes do checkout;
 - PIX/crédito apenas como opção nominal, sem cartão, CVV, titular ou chave PIX;
 - desconto de 20% calculado com arredondamento monetário igual ao backend.
+- acompanhamento integrado de `mission.telemetry`, sem interpolação local:
+  posição, altitude, bateria, satélites, modo, armamento, origem e horários são
+  exibidos somente quando recebidos; campos ausentes ficam `Indisponível` e
+  `is_stale=true` mantém o último dado visivelmente vencido;
+- estado de missão `VERIFIED` é apresentado como verificação do conteúdo
+  enviado, sem derivar ou antecipar o status do pedido;
+- estado `PAUSED` é exibido a partir do contrato real e volta a atualizar somente
+  quando o backend/gateway publica a continuação; o cliente não envia
+  `START`, `PAUSE` nem `CONTINUE`.
 
 ## Execução recomendada
 
@@ -103,22 +114,28 @@ Veja [MAPS_INTEGRATION.md](../docs/MAPS_INTEGRATION.md).
 
 O cliente HTTP usa `package:http`, portanto não importa `dart:io` no bundle Web. A sessão integrada é validada em `/api/v1/auth/me` na inicialização; token rejeitado é removido.
 
+No acompanhamento integrado, `mission.telemetry` atualiza apenas o snapshot de
+telemetria. Eventos `mission.status` continuam provocando a releitura REST do
+pedido, que permanece como fonte de verdade do estado exibido ao cliente. O app
+não usa relógio, animação ou gerador local para fabricar telemetria no modo
+integrado.
+
 `flutter_secure_storage` exige contexto seguro no navegador: HTTPS em hospedagem e `localhost` durante desenvolvimento. HTTP em LAN só é permitido por opção explícita e não deve ser usado em produção.
 
 ## Qualidade e builds
 
 ```powershell
 cd mobile
-..\flutter\bin\flutter.bat pub get
-..\flutter\bin\dart.bat format --output=none --set-exit-if-changed lib test
-..\flutter\bin\flutter.bat analyze
-..\flutter\bin\flutter.bat test
-..\flutter\bin\flutter.bat build web --release `
+flutter.bat pub get
+dart.bat format --output=none --set-exit-if-changed lib test
+flutter.bat analyze
+flutter.bat test
+flutter.bat build web --release `
   --dart-define=APP_ENVIRONMENT=demo `
   --dart-define=DEMO_MODE=true `
   --dart-define=MAP_PROVIDER=maptiler `
   --dart-define=MAPTILER_CONFIGURED=false
-..\flutter\bin\flutter.bat build apk --debug `
+flutter.bat build apk --debug `
   --dart-define=APP_ENVIRONMENT=demo `
   --dart-define=DEMO_MODE=true
 ```
@@ -127,6 +144,26 @@ Artefatos:
 
 - Web: `mobile/build/web`;
 - APK debug: `mobile/build/app/outputs/flutter-apk/app-debug.apk`.
+
+Evidência de 17 de agosto de 2026: com o SDK oficial global stable Flutter 3.47.0/Dart 3.13.0,
+`dart format` verificou 90 arquivos sem mudanças, `flutter analyze` terminou sem issues e
+**98/98 testes** Flutter foram aprovados no rerun orquestrado final. A bateria completa do
+repositório terminou com exit 0 em 107,5 s. O build Web release e o dry run Wasm
+concluíram, e o perfil integrado (`DEMO_MODE=false`, configuração MapTiler lida do `.env`
+ignorado) regenerou o Web e o APK debug. O APK tem 195.236.488 bytes e SHA-256
+`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`; o
+`main.dart.js` tem 3.592.450 bytes. Esses builds não expõem a chave no texto versionado.
+O build Android usa `compileSdk=37`, AGP 9.1.1 e Gradle 9.3.1. O SDK oficial global inclui
+DevTools 2.60.0. Os scripts resolvem o Flutter por `-FlutterSdkRoot`, depois `FLUTTER_ROOT` e
+então `PATH`, validando canal `stable`, Flutter 3.47.x e Dart 3.13.x. Um checkout em
+`./flutter` só é aceito com `-AllowBundledFlutterSdk` explícito e ainda precisa passar essas
+validações; o fork pré-release presente nesta máquina é rejeitado. Registre o caminho e
+`--version` do executável ao reproduzir a bateria.
+
+Durante esse fechamento, um teste de checkout falhou apenas na suíte paralela porque assumia
+ordem esquerda/direita incompatível com a ordenação por atualização mais recente. A asserção foi
+corrigida para verificar o requisito real — mesma linha, cards sem sobreposição e largura mínima —
+e passou três vezes isolada, 9/9 no arquivo e 98/98 na suíte completa.
 
 O caminho do repositório contém acento. Se o Analysis Server/Gradle falhar por isso, use os scripts da raiz; eles criam uma junção ASCII temporária validada.
 
@@ -152,4 +189,7 @@ lib/
 - o build Web e o APK debug podem ser validados sem chave, usando fallback honesto;
 - Maps/Places/GPS reais exigem credenciais, billing, rede e aparelho e não são comprovados pelo build;
 - APK release exige keystore privado externo;
+- o build Web respondeu por HTTP em `http://localhost:5174`, mas o controlador
+  visual do navegador estava indisponível nesta rodada; isso não comprova um
+  novo smoke de UI, console ou tiles;
 - nenhuma validação deste módulo comprova SITL, Mission Planner, Pixhawk ou voo físico.

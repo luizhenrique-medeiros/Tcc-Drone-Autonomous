@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, EventIdConflictError, NotFoundError
 from app.modules.missions.models import Mission
 from app.modules.telemetry.models import TelemetryLog
 from app.modules.telemetry.schemas import TelemetryCreate, TelemetryRead
 from app.modules.vehicles.models import Vehicle
+
+COORDINATE_QUANTUM = Decimal("0.0000001")
+
+
+def _normalize_coordinate(value: float | Decimal) -> Decimal:
+    return Decimal(str(value)).quantize(COORDINATE_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def telemetry_is_stale(telemetry: TelemetryLog, settings: Settings) -> bool:
@@ -47,16 +54,46 @@ def telemetry_to_read(telemetry: TelemetryLog, settings: Settings) -> TelemetryR
 def record_telemetry(
     session: Session, mission: Mission, payload: TelemetryCreate, settings: Settings
 ) -> tuple[TelemetryLog, bool]:
+    latitude = _normalize_coordinate(payload.latitude)
+    longitude = _normalize_coordinate(payload.longitude)
     existing = session.scalar(select(TelemetryLog).where(TelemetryLog.event_id == payload.event_id))
     if existing:
-        if existing.mission_id != mission.id or existing.vehicle_id != payload.vehicle_id:
-            raise ConflictError("event_id da telemetria já pertence a outra amostra")
+        replay_matches = (
+            existing.mission_id == mission.id
+            and existing.vehicle_id == payload.vehicle_id
+            and existing.source == payload.source
+            and existing.latitude == latitude
+            and existing.longitude == longitude
+            and existing.relative_altitude_m == payload.relative_altitude_m
+            and existing.ground_speed_m_s == payload.ground_speed_m_s
+            and existing.battery_percent == payload.battery_percent
+            and existing.gps_fix_type == payload.gps_fix_type
+            and existing.satellites == payload.satellites
+            and existing.flight_mode == payload.flight_mode
+            and existing.armed == payload.armed
+        )
+        if payload.recorded_at is not None:
+            expected_recorded_at = payload.recorded_at
+            if expected_recorded_at.tzinfo is None:
+                expected_recorded_at = expected_recorded_at.replace(tzinfo=UTC)
+            actual_recorded_at = existing.recorded_at
+            if actual_recorded_at.tzinfo is None:
+                actual_recorded_at = actual_recorded_at.replace(tzinfo=UTC)
+            replay_matches = replay_matches and actual_recorded_at == expected_recorded_at
+        if not replay_matches:
+            raise EventIdConflictError(
+                "event_id da telemetria já foi usado com missão ou payload diferente"
+            )
         return existing, False
     vehicle = session.get(Vehicle, payload.vehicle_id)
     if not vehicle:
         raise NotFoundError("Veículo da telemetria não encontrado")
     if mission.vehicle_id != vehicle.id:
         raise ConflictError("O veículo não está associado à missão")
+    if payload.source != vehicle.operational_source:
+        raise ConflictError(
+            "A origem da telemetria não corresponde à origem operacional publicada no heartbeat"
+        )
     received_at = datetime.now(UTC)
     recorded_at = payload.recorded_at or received_at
     if recorded_at.tzinfo is None:
@@ -83,8 +120,8 @@ def record_telemetry(
         mission_id=mission.id,
         vehicle_id=vehicle.id,
         source=payload.source,
-        latitude=payload.latitude,
-        longitude=payload.longitude,
+        latitude=latitude,
+        longitude=longitude,
         relative_altitude_m=payload.relative_altitude_m,
         ground_speed_m_s=payload.ground_speed_m_s,
         battery_percent=payload.battery_percent,

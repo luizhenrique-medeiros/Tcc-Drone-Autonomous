@@ -1,164 +1,152 @@
-# Mission Planner, Pixhawk e MAVLink
+# Mission Planner, Pixhawk e MAVLink no Windows
 
-Este guia prepara conexão; ele não registra nenhum heartbeat, upload, bancada ou voo como executado. Nunca tente abrir a mesma porta COM simultaneamente em dois programas.
+Este procedimento prepara a integração com a Pixhawk 6C sem armar, iniciar missão ou alterar parâmetros. O gateway é o único componente do projeto que usa Pymavlink. Backend, admin e Flutter recebem apenas contratos HTTP/WebSocket normalizados.
 
-## Topologia recomendada no Windows
+## Estado observado em 17 de agosto de 2026
 
-Para a primeira bancada em um único computador, use **Mission Planner como dono da COM e encaminhe MAVLink por UDP ao gateway**:
+- o Windows enumerou `COM7` como Silicon Labs CP210x, VID/PID `10C4:EA60`;
+- o Mission Planner 1.3.83 estava conectado em `COM7` a 57600 baud e mostrava Pixhawk 6C/ArduCopter 4.6.3;
+- uma primeira abertura passiva da `COM7` falhou com acesso negado porque a porta estava ocupada;
+- depois de liberar a serial, dois diagnósticos passivos receberam heartbeat real `sysid=1`, `compid=1`, modo `STABILIZE` e veículo desarmado;
+- um ciclo integrado limitado publicou sete heartbeats no backend, sem envio de missão/comando;
+- o Mission Planner mantinha UDP 14551 como **Inbound**, não como espelhamento da serial;
+- um TLOG anterior contém MAVLink real de system `1`, component `1`, mas não equivale a heartbeat ao vivo no gateway;
+- no estado final, a COM7 não está enumerada, o Mission Planner está fechado, não há listeners 14550/14551 e o diagnóstico retorna `VEHICLE_PORT_NOT_FOUND`/exit 2;
+- nenhum upload, armamento, motor ou voo foi executado.
 
-```text
-Pixhawk/radio → COM (Mission Planner) → UDP 127.0.0.1:14550
-                                      → drone_gateway → backend → admin
+## Baseline obrigatório
+
+Mantenha no `.env`:
+
+```env
+MAVLINK_BAUD=57600
+MAVLINK_SOURCE_SYSTEM_ID=254
+MAVLINK_SOURCE_COMPONENT_ID=190
+REAL_HARDWARE_ACKNOWLEDGED=false
+ALLOW_MISSION_UPLOAD=false
+ALLOW_FLIGHT_COMMANDS=false
+ALLOW_MISSION_START=false
 ```
 
-Motivos: Mission Planner já identifica firmware/COM/baud, mantém a GCS visível ao operador e evita disputa da serial. O gateway permanece responsável pelos comandos que o sistema autoriza e filtra o `sysid/compid` alvo. A documentação oficial do Mission Planner informa que o encaminhamento local pode distribuir o stream e que UDP é preferível a TCP para esse uso.
+Com `REAL_HARDWARE_ACKNOWLEDGED=false`, o modo físico fica somente em recepção. O diagnóstico também é sempre passivo por padrão. Nenhuma dessas etapas substitui bancada sem hélices e checklist.
 
-Se for necessário mais de um consumidor/saída ou isolamento maior, use a topologia com roteador:
+## Modo A — serial direta
 
-```text
-Pixhawk/radio → COM (MAVProxy/MAVLink Router)
-                 ├─ UDP 14550 → drone_gateway
-                 └─ UDP 14551 → Mission Planner
+Use somente quando o Mission Planner e qualquer outro consumidor estiverem completamente desconectados da COM7:
+
+```env
+MAVLINK_MODE=direct
+MAVLINK_CONNECTION=COM7
+MAVLINK_BAUD=57600
 ```
 
-A conexão direta do gateway à COM só deve ser usada quando Mission Planner estiver fechado ou receber uma saída de outro roteador; o gateway atual não atua como roteador MAVLink.
+```text
+Pixhawk 6C → COM7 → Pymavlink/drone_gateway → FastAPI → WebSocket → admin/cliente
+```
 
-Referências oficiais: [ferramenta de forwarding do Mission Planner](https://ardupilot.org/planner/docs/common-mp-tools.html), [opções do MAVProxy](https://ardupilot.org/mavproxy/docs/getting_started/starting.html) e [solicitação de mensagens ArduPilot](https://ardupilot.org/dev/docs/mavlink-requesting-data.html).
-
-## Dados que precisam ser fornecidos/observados
-
-Não adote valores de exemplo como se pertencessem ao equipamento:
-
-- modelo exato da controladora;
-- veículo/frame e firmware ArduPilot, com versão;
-- COM mostrada pelo Windows/Mission Planner;
-- baud do link USB ou rádio;
-- tipo/modelo do rádio;
-- conexão USB, rádio, TCP ou UDP;
-- `system id` e `component id` vistos no MAVLink Inspector;
-- endpoint UDP escolhido;
-- modo de voo e estado de armamento;
-- home, GPS, EKF, bateria e mensagens de pre-arm;
-- parâmetros `SERIALn_*` relevantes já existentes, apenas para registro;
-- logs TLOG/dataflash e mensagens de erro.
-
-O gateway não altera parâmetros para contornar pre-arm, EKF, GPS, bateria, geofence ou failsafes.
-
-## Descoberta assistida de portas
-
-Com o ambiente do gateway instalado, liste portas sem abri-las:
+Antes de iniciar, liste as portas e confirme que a COM7 continua presente:
 
 ```powershell
 cd drone_gateway
 .\.venv\Scripts\python.exe -m app.tools.list_ports
+.\.venv\Scripts\python.exe -m app.tools.mavlink_diagnose --connect --observe-seconds 5
 ```
 
-Compare o resultado antes/depois de conectar a controladora. A listagem é uma ajuda; VID/PID/nome não prova que a porta pertence à Pixhawk. Confirme no Gerenciador de Dispositivos e no Mission Planner.
+O diagnóstico deve diferenciar porta ausente, porta ocupada/acesso negado, serial aberta sem MAVLink e timeout de heartbeat. Campo não recebido aparece como indisponível; nunca é preenchido com exemplo.
 
-## Configuração por topologia
+## Modo B — Mission Planner aberto
 
-### B — Mission Planner encaminhando UDP (recomendada primeiro)
+Use quando o Mission Planner deve continuar como único dono da COM7:
 
-1. Mission Planner abre a COM/baud corretos.
-2. Pressione `Ctrl+F`, abra a ferramenta MAVLink/Forwarding.
-3. Escolha UDP para `127.0.0.1`, porta `14550`.
-4. Só permita controle remoto quando a sessão de teste exigir e o checklist estiver aprovado.
-5. Configure o gateway:
+```env
+MAVLINK_MODE=mission_planner_forward
+MAVLINK_CONNECTION=COM7
+MAVLINK_FORWARD_CONNECTION=udpin:127.0.0.1:14551
+MAVLINK_BAUD=57600
+```
+
+```text
+Pixhawk 6C → COM7 → Mission Planner → UDP Client 127.0.0.1:14551
+                                              ↓
+                                      Pymavlink/drone_gateway
+```
+
+### Evitar o listener Inbound na UDP 14551
+
+1. Quando reabrir o Mission Planner, localize o AutoConnect **Mavlink alt port** configurado como UDP 14551, direção **Inbound**, e desabilite-o. Esse listener recebe datagramas para o Mission Planner; ele não encaminha dados da COM7. No estado final da auditoria não havia listener, pois o Mission Planner estava fechado.
+2. Se a versão não expuser esse item na interface, feche o Mission Planner, faça backup de `Documents\Mission Planner\config.xml`, mude somente `Enabled` para `false` nessa entrada e reabra o programa.
+3. Confirme que nenhum processo está ouvindo na porta antes de iniciar o gateway:
 
 ```powershell
-$env:MAVLINK_MODE='real'
-$env:MAVLINK_CONNECTION='udpin:0.0.0.0:14550'
-$env:MAVLINK_TARGET_SYSTEM_ID='ID_OBSERVADO'
-$env:MAVLINK_TARGET_COMPONENT_ID='COMPONENTE_OBSERVADO'
-$env:REAL_HARDWARE_ACKNOWLEDGED='true'
-$env:ALLOW_MISSION_START='false'
-.\scripts\start_gateway.ps1
+Get-NetUDPEndpoint -LocalPort 14551 -ErrorAction SilentlyContinue
 ```
 
-Comece com `ALLOW_MISSION_START=false`: conexão, health e upload podem ser avaliados sem autorizar início automático. O processo nunca arma o veículo.
+4. No Mission Planner, selecione `COM7`, `57600` e clique em **CONNECT**.
+5. Abra `SETUP` → `Advanced` → `Mavlink Mirror` (em algumas versões, `Ctrl+F` → `MAVLink`).
+6. Selecione **UDP Client**, destino `127.0.0.1`, porta `14551`.
+7. Deixe **Write access** desmarcado no primeiro ensaio. Isso permite validar apenas recepção.
+8. Execute `scripts\start_gateway.ps1 -DiagnoseOnly` e confirme heartbeat, IDs, modo, armamento e telemetria.
 
-### C — MAVProxy como roteador
+A ferramenta oficial de forwarding do Mission Planner está descrita em [Advanced Tools](https://ardupilot.org/planner/docs/common-mp-tools.html).
 
-Exemplo estrutural (substitua COM/baud observados):
+## Subir a integração
+
+Para hardware no Windows, execute o gateway no host. O container Linux do profile `gateway` é destinado a simulação/SITL e não deve tentar abrir a COM7.
 
 ```powershell
-mavproxy.py --master=COM_REAL,BAUD_REAL `
-  --out=udp:127.0.0.1:14550 `
-  --out=udp:127.0.0.1:14551
+docker compose up -d db backend admin
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_gateway.ps1
 ```
 
-Configure gateway em `udpin:0.0.0.0:14550` e Mission Planner para receber UDP 14551. Não execute esse exemplo com placeholders.
+Abra:
 
-### A — Gateway direto à serial
+- admin: `http://localhost:5173`;
+- cliente Flutter Web: `http://localhost:5174`;
+- OpenAPI: `http://localhost:8000/docs`.
 
-Feche Mission Planner antes de abrir a porta:
+O painel deve mostrar a fonte `HARDWARE_REAL`, topologia, COM/endpoint, baud, system/component, idade do heartbeat, modo, armado, GPS, bateria, EKF, posição e motivo da falha. Ausência ou stale precisa bloquear prontidão.
 
-```powershell
-$env:MAVLINK_MODE='real'
-$env:MAVLINK_CONNECTION='COM_REAL'
-$env:MAVLINK_BAUD='BAUD_REAL'
-$env:MAVLINK_TARGET_SYSTEM_ID='ID_OBSERVADO'
-$env:MAVLINK_TARGET_COMPONENT_ID='COMPONENTE_OBSERVADO'
-$env:REAL_HARDWARE_ACKNOWLEDGED='true'
-$env:ALLOW_MISSION_START='false'
-.\scripts\start_gateway.ps1
-```
+No snapshot final desta rodada, o esperado é `ERROR`, modo `direct`, `COM7`/57600,
+`connected=false`, `heartbeat=false` e os três gates falsos, porque a porta está ausente. Não use
+o heartbeat anterior para tornar esse snapshot saudável.
 
-Para monitorar ao mesmo tempo, migre à topologia B/C; não tente a mesma COM em paralelo.
+## Liberar apenas upload em uma sessão posterior
 
-## Guia rápido de ligação
+Somente depois de heartbeat e telemetria ao vivo, SITL, revisão da rota e checklist de bancada:
 
-Cada passo deve ser marcado manualmente com data/operador/resultado:
+1. remova as hélices e confirme o veículo desarmado;
+2. registre a versão/hash autorizados;
+3. no modo encaminhado, habilite **Write access** no Mavlink Mirror;
+4. defina `REAL_HARDWARE_ACKNOWLEDGED=true` e `ALLOW_MISSION_UPLOAD=true`;
+5. mantenha `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false`;
+6. faça upload, aguarde `MISSION_ACK`, releia a missão e compare o conteúdo;
+7. reverta `ALLOW_MISSION_UPLOAD=false` ao terminar.
 
-1. remover hélices e isolar a bancada;
-2. conectar a Pixhawk por USB ou rádio conforme o procedimento do hardware;
-3. abrir Mission Planner;
-4. identificar COM e baud reais;
-5. verificar modelo, firmware e versão;
-6. conectar e confirmar heartbeat;
-7. abrir MAVLink Inspector e anotar `sysid/compid` e taxas;
-8. verificar GPS e satélites;
-9. verificar EKF e mensagens de pre-arm;
-10. verificar bateria/fonte e tensão;
-11. verificar home e posição;
-12. configurar forwarding/roteador, sem compartilhar COM;
-13. preencher `.env`/variáveis do gateway, ainda com início bloqueado;
-14. iniciar banco/backend/admin;
-15. iniciar gateway e validar badge `HARDWARE REAL`, versão e timestamps;
-16. gerar e baixar a missão `.waypoints`;
-17. abrir no Mission Planner, revisar rota/altitudes/comandos e registrar hash/versão;
-18. autorizar somente após checklist humano e autorização de voo ainda válida;
-19. executar upload e download/verificação da missão com hélices removidas;
-20. somente em procedimento separado e aprovado, realizar teste controlado e depois voo em área autorizada.
+`UPLOADED` registra o ACK; `VERIFIED` somente pode ser publicado após a releitura e comparação. Upload nunca significa início de voo.
 
-## Missão e evidência
+Não habilite início junto com upload. Em uma etapa posterior e distinta, `START` ainda exige
+`ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true`, missão `VERIFIED`, heartbeat/preflight
+atuais e armamento físico pelo operador. O gateway não envia armamento. `PAUSE` e `CONTINUE`
+exigem o gate geral de comandos e ACK do autopiloto.
 
-O backend gera QGC WPL 110, versão e SHA-256. O admin registra exportação, abertura/revisão e autorização; o gateway faz upload MAVLink, baixa a missão e compara contagem/conteúdo. Não há automação de cliques do Mission Planner.
+## MAVLink Inspector
 
-Preserve para cada ensaio:
+No Mission Planner, abra o MAVLink Inspector e compare `HEARTBEAT`, `GPS_RAW_INT`, `GLOBAL_POSITION_INT`, `SYS_STATUS`, `BATTERY_STATUS`, `EKF_STATUS_REPORT`, `HOME_POSITION`, `MISSION_CURRENT` e `STATUSTEXT` com os timestamps do admin. Uma mensagem vista apenas no Mission Planner não prova que chegou ao gateway.
 
-- commit do código;
-- `.waypoints`, versão e hash;
-- versão do firmware/autopiloto;
-- topologia, endpoint, COM/baud e IDs;
-- autorização/checklist;
-- logs backend/gateway;
-- TLOG/dataflash;
-- horário e resultado de upload/ACK/releitura/RTL;
-- distinção entre fake, SITL, bancada e voo.
+## MAVProxy como alternativa
 
-## Erros comuns
+MAVProxy é opcional e não está instalado neste computador. Ele pode ser o único dono da COM e criar saídas separadas, conforme [Telemetry Forwarding](https://ardupilot.org/mavproxy/docs/getting_started/forwarding.html). Não o adicione entre as camadas se serial direta ou Mavlink Mirror resolverem.
 
-| Sintoma | Causa provável | Ação segura |
+## Diagnóstico rápido
+
+| Resultado | Interpretação | Ação segura |
 |---|---|---|
-| acesso negado/porta ocupada | outro processo abriu a COM | feche o concorrente ou use forwarding/roteador |
-| sem heartbeat | COM/baud/endpoint incorreto, link sem energia ou forwarding ausente | verificar cada camada; não iniciar missão |
-| campos `--` | mensagem ainda não recebida/stream ausente | conferir MAVLink Inspector e logs; não preencher manualmente |
-| telemetria stale | link/forwarding parou | bloquear autorização e restabelecer conexão |
-| `sysid/compid` ignorado | stream pertence a outro sistema | configurar IDs observados; nunca desativar o filtro para “funcionar” |
-| upload diverge | missão relida não corresponde ao hash/conteúdo | abortar o fluxo, exportar/revisar novamente |
-| pre-arm/EKF/GPS falha | condição física/configuração do veículo | corrigir no procedimento oficial; o software não contorna |
+| COM7 ausente | porta/cabo/driver não enumerado | reconectar e confirmar no Gerenciador de Dispositivos |
+| acesso negado/ocupada | outro processo abriu a serial | fechar o concorrente ou usar o modo encaminhado |
+| UDP 14551 ocupada | listener Inbound ainda ativo | desabilitar o listener; não disputar a porta |
+| conexão aberta, sem heartbeat | endpoint/baud/forwarding/energia incorretos | conferir cada camada; não habilitar upload |
+| campo indisponível ou stale | mensagem não chegou dentro do prazo | comparar Inspector/logs; bloquear prontidão |
+| ACK rejeitado/timeout | comando ou protocolo não confirmado | interromper, preservar logs e investigar |
+| releitura divergente | missão armazenada não corresponde à aprovada | não iniciar; revisar/exportar novamente |
 
-## Estado atual
-
-Preparação em código e documentação não equivale a teste. Nesta revisão não houve Mission Planner aberto, heartbeat físico, Pixhawk, bancada ou voo observado.
+O protocolo oficial de conexão Python está em [Pymavlink](https://mavlink.io/en/mavgen_python/) e o upload/releitura em [Mission Protocol](https://mavlink.io/en/services/mission.html).

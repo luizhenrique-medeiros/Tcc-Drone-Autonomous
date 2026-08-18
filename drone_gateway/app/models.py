@@ -9,7 +9,9 @@ class MissionStatus(StrEnum):
     AUTHORIZED = "AUTHORIZED"
     UPLOADING = "UPLOADING"
     UPLOADED = "UPLOADED"
+    VERIFIED = "VERIFIED"
     EXECUTING = "EXECUTING"
+    PAUSED = "PAUSED"
     DESTINATION_REACHED = "DESTINATION_REACHED"
     DELIVERY_CONFIRMED = "DELIVERY_CONFIRMED"
     RETURNING = "RETURNING"
@@ -25,7 +27,20 @@ class OperationalSource(StrEnum):
     HARDWARE_REAL = "HARDWARE_REAL"
 
 
+class ConnectionState(StrEnum):
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTING = "CONNECTING"
+    WAITING_HEARTBEAT = "WAITING_HEARTBEAT"
+    CONNECTED = "CONNECTED"
+    STALE = "STALE"
+    RECONNECTING = "RECONNECTING"
+    ERROR = "ERROR"
+
+
 class GatewayCommandType(StrEnum):
+    START = "START"
+    PAUSE = "PAUSE"
+    CONTINUE = "CONTINUE"
     ABORT = "ABORT"
     RTL = "RTL"
 
@@ -136,6 +151,23 @@ class VehicleHealth(BaseModel):
     geofence_enabled: bool | None = None
     origin_latitude: float | None = Field(default=None, ge=-90, le=90)
     origin_longitude: float | None = Field(default=None, ge=-180, le=180)
+    connection_state: ConnectionState = ConnectionState.DISCONNECTED
+    connection_mode: str | None = Field(default=None, max_length=40)
+    connection_topology: str | None = Field(default=None, max_length=40)
+    connection_endpoint: str | None = Field(default=None, max_length=240)
+    serial_port: str | None = Field(default=None, max_length=100)
+    connection_baud: int | None = Field(default=None, ge=1200, le=4_000_000)
+    mavlink_system_id: int | None = Field(default=None, ge=1, le=255)
+    mavlink_component_id: int | None = Field(default=None, ge=0, le=255)
+    heartbeat_age_seconds: float | None = Field(default=None, ge=0)
+    last_heartbeat_at: datetime | None = None
+    current_latitude: float | None = Field(default=None, ge=-90, le=90)
+    current_longitude: float | None = Field(default=None, ge=-180, le=180)
+    current_altitude_m: float | None = Field(default=None, ge=-100, le=1000)
+    mission_upload_enabled: bool = False
+    flight_commands_enabled: bool = False
+    mission_start_enabled: bool = False
+    connection_error: str | None = Field(default=None, max_length=1000)
 
 
 class TelemetrySnapshot(BaseModel):
@@ -169,4 +201,10 @@ class VehiclePoll(BaseModel):
 class UploadResult(BaseModel):
     item_count: int = Field(ge=1)
     acknowledged: bool
+    detail: str
+
+
+class MissionVerificationResult(BaseModel):
+    item_count: int = Field(ge=1)
+    verified: bool
     detail: str

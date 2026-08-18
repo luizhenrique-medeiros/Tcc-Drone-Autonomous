@@ -10,19 +10,20 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
   "httpx>=0.28,<0.29",
   "pydantic>=2.11,<3",
-  "pydantic-settings>=2.9,<3",
+  "pydantic-settings>=2.15,<3",
   "pymavlink>=2.4.49,<3",
   "pyserial>=3.5,<4",
 ]
 
 [project.scripts]
 drone-gateway-list-ports = "app.tools.list_ports:main"
+drone-gateway-diagnose = "app.tools.mavlink_diagnose:main"
 
 [project.optional-dependencies]
 dev = [
   "pytest>=9.0.3,<10",
   "pytest-asyncio>=1.0,<2",
-  "ruff>=0.12,<0.13",
+  "ruff>=0.16.3,<1",
 ]
 
 [tool.hatch.build.targets.wheel]

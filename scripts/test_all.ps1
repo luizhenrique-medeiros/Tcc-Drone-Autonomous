@@ -2,7 +2,12 @@
 param(
     [switch]$SkipBuilds,
     [switch]$SkipWebBuild,
-    [switch]$BuildReleaseApk
+    [switch]$BuildReleaseApk,
+    [string]$FlutterSdkRoot,
+    [switch]$AllowBundledFlutterSdk,
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterChannel = 'stable',
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterVersionPattern = '^3\.47\.\d+$',
+    [ValidateNotNullOrEmpty()][string]$ExpectedDartVersionPattern = '^3\.13\.\d+$'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -41,18 +46,27 @@ Invoke-Checked 'admin test' (Join-Path $projectRoot 'admin_web') { & npm.cmd run
 if (-not $SkipBuilds) { Invoke-Checked 'admin build' (Join-Path $projectRoot 'admin_web') { & npm.cmd run build } }
 
 $workspaceAlias = New-AsciiWorkspaceAlias $projectRoot
-$flutterSdkRoot = Join-Path $workspaceAlias.Root 'flutter'
 $mobileRoot = Join-Path $workspaceAlias.Root 'mobile'
-$flutterCommand = Join-Path $flutterSdkRoot 'bin\flutter.bat'
-$dartCommand = Join-Path $flutterSdkRoot 'bin\dart.bat'
-if (-not $flutterCommand -or -not (Test-Path $flutterCommand)) { $flutterCommand = (Get-Command flutter -ErrorAction SilentlyContinue).Source }
-if (-not $dartCommand -or -not (Test-Path $dartCommand)) { $dartCommand = (Get-Command dart -ErrorAction SilentlyContinue).Source }
-if ($flutterCommand -and $dartCommand) {
-    if ($flutterSdkRoot) {
-        $env:GIT_CONFIG_COUNT = '1'
-        $env:GIT_CONFIG_KEY_0 = 'safe.directory'
-        $env:GIT_CONFIG_VALUE_0 = $flutterSdkRoot.Replace('\', '/')
-    }
+$flutterSdk = $null
+try {
+    $flutterSdk = Resolve-ProjectFlutterSdk `
+        -ExplicitFlutterSdkRoot $FlutterSdkRoot `
+        -ProjectRoot $projectRoot `
+        -AllowBundledFlutterSdk:$AllowBundledFlutterSdk `
+        -ExpectedChannel $ExpectedFlutterChannel `
+        -ExpectedFlutterVersionPattern $ExpectedFlutterVersionPattern `
+        -ExpectedDartVersionPattern $ExpectedDartVersionPattern
+}
+catch {
+    Write-Error $_
+    $failures.Add("Flutter SDK ($($_.Exception.Message))")
+}
+if ($flutterSdk) {
+    $flutterCommand = $flutterSdk.FlutterCommand
+    $dartCommand = $flutterSdk.DartCommand
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'safe.directory'
+    $env:GIT_CONFIG_VALUE_0 = $flutterSdk.Root.Replace('\', '/')
     $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
     $env:DART_SUPPRESS_ANALYTICS = 'true'
     Invoke-Checked 'flutter pub get' $mobileRoot { & $flutterCommand pub get }
@@ -74,8 +88,6 @@ if ($flutterCommand -and $dartCommand) {
             Invoke-Checked 'flutter apk release' $mobileRoot { & $flutterCommand build apk --release --dart-define=DEMO_MODE=true }
         }
     }
-} else {
-    $failures.Add('Flutter/Dart não encontrados')
 }
 Remove-AsciiWorkspaceAlias $workspaceAlias
 

@@ -31,7 +31,9 @@ const statusLabels: Record<Status, string> = {
   AUTHORIZED: 'Voo autorizado',
   UPLOADING: 'Upload em andamento',
   UPLOADED: 'Upload concluído',
+  VERIFIED: 'Missão verificada',
   EXECUTING: 'Executando',
+  PAUSED: 'Pausada',
   DESTINATION_REACHED: 'Destino alcançado',
   DELIVERY_CONFIRMED: 'Comando de entrega registrado',
   ABORTED: 'Abortada',
@@ -47,6 +49,7 @@ const warningStatuses: Status[] = [
   'UNDER_REVIEW',
   'READY_FOR_AUTHORIZATION',
   'DEGRADED',
+  'PAUSED',
   'CANCELLED',
 ];
 const successStatuses: Status[] = [

@@ -12,15 +12,22 @@ Isso altera apenas o processo iniciado; não muda a policy global da máquina.
 
 ## Pré-requisitos
 
-- Docker Desktop e Docker Compose;
-- Node.js 22+ (`npm.cmd` evita o wrapper `npm.ps1` quando a policy bloqueia scripts);
-- Python 3.13 nos ambientes virtuais ou containers;
-- Flutter/Dart compatíveis com `mobile/pubspec.yaml`;
+- Docker Desktop 4.86.0 e Docker Engine/Compose 29.7.2;
+- Node.js 24.19.0 e npm 11.17.0 (`npm.cmd` evita o wrapper `npm.ps1` quando a policy bloqueia scripts);
+- Python 3.13.15 nos ambientes virtuais ou containers;
+- Flutter 3.47/Dart 3.13 compatíveis com `mobile/pubspec.yaml`;
 - Chrome ou Edge para Flutter Web;
-- Android SDK e JDK 17 para APK;
+- Android SDK API 37, JDK 17+, AGP 9.1.1 e Gradle 9.3.1 para APK;
 - `.env` local criado a partir de `.env.example`, sem segredos versionados.
 
 O caminho do projeto possui caracteres acentuados. Os scripts Flutter usam a junção ASCII temporária fornecida pelo repositório.
+
+O computador possui o SDK oficial global estável Flutter 3.47.0/Dart 3.13.0. Os scripts resolvem
+o SDK na ordem `-FlutterSdkRoot`, `FLUTTER_ROOT` e `PATH`; `./flutter` só entra na seleção com
+`-AllowBundledFlutterSdk` explícito. Antes de executar, eles validam o canal `stable`, Flutter
+3.47.x, Dart 3.13.x e que `flutter`/`dart` pertencem ao mesmo SDK. O fork local pré-release desta
+máquina é rejeitado por essas regras. A atualização do Android Studio permanece manual pelo
+próprio editor; não aceite licenças automaticamente em nome do usuário.
 
 ## URLs locais
 
@@ -42,13 +49,15 @@ docker compose ps
 docker compose logs --tail=200 backend admin
 ```
 
-Antes de qualquer fluxo administrativo completo, confirme que o `.env` local não contém placeholders. A rodada de 2026-08-07 regenerou os segredos e reconciliou a senha administrativa; não copie os valores para documentação ou terminal.
+Antes de qualquer fluxo administrativo completo, confirme que o `.env` local não contém placeholders. No estado atual, a senha inicial do `.env` não corresponde ao hash do administrador persistido e o login retorna `401`. Não redefina a conta sem autorização e não copie credenciais para documentação ou terminal.
 
 O gateway não sobe no perfil padrão. Para `simulation`:
 
 ```powershell
 docker compose --profile gateway up -d --build
 ```
+
+Não use o container do gateway para abrir `COM7` no Windows. Em `direct` ou `mission_planner_forward`, mantenha banco/backend/admin no Docker e execute o gateway no host com o script da seção 9.
 
 ## 2. Flutter Web — modo recomendado
 
@@ -98,8 +107,8 @@ Para desenvolvimento sem o wrapper:
 
 ```powershell
 cd mobile
-..\flutter\bin\flutter.bat pub get
-..\flutter\bin\flutter.bat run -d chrome `
+flutter.bat pub get
+flutter.bat run -d chrome `
   --web-port 5174 `
   --dart-define=APP_ENVIRONMENT=local_web `
   --dart-define=DEMO_MODE=false `
@@ -115,8 +124,8 @@ Não cole o valor da chave na linha de comando. Defina-a no ambiente ou use o wr
 O build estático não possui hot reload e precisa ser servido por HTTP; abrir `index.html` diretamente não é suportado:
 
 ```powershell
-..\flutter\bin\flutter.bat build web --release
-..\flutter\bin\flutter.bat build web --wasm --dry-run
+flutter.bat build web --release
+flutter.bat build web --wasm --dry-run
 ```
 
 Build integrado não-debug exige perfil hospedado e API HTTPS; use `flutter run` para desenvolvimento local HTTP.
@@ -156,11 +165,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ```powershell
 cd mobile
-..\flutter\bin\flutter.bat pub get
-..\flutter\bin\dart.bat format --output=none --set-exit-if-changed lib test
-..\flutter\bin\flutter.bat analyze
-..\flutter\bin\flutter.bat test
-..\flutter\bin\flutter.bat build apk --debug --dart-define=DEMO_MODE=true
+flutter.bat pub get
+dart.bat format --output=none --set-exit-if-changed lib test
+flutter.bat analyze
+flutter.bat test
+flutter.bat build apk --debug --dart-define=DEMO_MODE=true
 ```
 
 Artefato debug esperado:
@@ -172,10 +181,17 @@ mobile/build/app/outputs/flutter-apk/app-debug.apk
 O build release pode verificar compilação, mas distribuição/instalação exige keystore externo e credenciais do ambiente:
 
 ```powershell
-..\flutter\bin\flutter.bat build apk --release
+flutter.bat build apk --release
 ```
 
-O APK debug atual foi recompilado depois da migração, com MapTiler e perfil `android_emulator`: 190.538.195 bytes, SHA-256 `AF1328CB60E74CFF0D3A5CDE5A8527618F79FB2D55A9E1778061BE221285BE25` e assinatura Android Debug v2 verificada. Ele ainda precisa ser instalado e executado em emulador/aparelho. Não há um APK release atual nem keystore privada configurada para distribuição.
+O APK debug atual foi recompilado no perfil integrado (`DEMO_MODE=false`, configuração
+MapTiler obtida do `.env` ignorado) com `compileSdk=37`, AGP 9.1.1 e Gradle 9.3.1:
+195.236.488 bytes, SHA-256
+`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`. Ele ainda precisa ser
+instalado e executado em emulador/aparelho. Não há APK release atual nem keystore privada
+configurada para distribuição. O pacote `maplibre_gl` ainda produz aviso de compatibilidade futura
+com o Kotlin Gradle Plugin; o build atual termina com sucesso, mas a dependência precisa ser
+reavaliada quando publicar uma correção.
 
 Não use a chave debug como assinatura de distribuição e não versione APK ou keystore.
 
@@ -223,10 +239,13 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pytest
 cd ..
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\start_gateway.ps1 `
+  -DiagnoseOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\start_gateway.ps1
 ```
 
-O padrão é `MAVLINK_MODE=simulation`. Para SITL/hardware, siga [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md); mudar apenas a variável de modo não configura topologia, IDs ou checklist.
+O primeiro comando é diagnóstico passivo e termina; o segundo mantém o processo integrado ao backend. O padrão versionado é `simulation`, enquanto o `.env` local pode escolher `direct` ou `mission_planner_forward`. Em hardware, mantenha `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false` até concluir cada gate. Siga [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md); mudar apenas o modo não configura a topologia nem substitui checklist.
 
 ## 10. Smoke integrado mutante
 
@@ -252,14 +271,45 @@ O smoke cria dados e altera estados. `COMPLETED` em `simulation` não prova entr
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\test_all.ps1
+  -File .\scripts\test_all.ps1 `
+  -FlutterSdkRoot '<CAMINHO_SDK_FLUTTER_OFICIAL>'
 ```
 
-Use `-SkipBuilds` para ciclo rápido. Registre exit code, contagens, artefatos e hashes em [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md). Não reutilize contagens/hashes de uma bateria anterior depois de alterar código.
+Acrescente `-SkipBuilds` para ciclo rápido. Não invoque `./scripts/test_all.ps1` diretamente se a
+ExecutionPolicy bloquear scripts locais: essa tentativa termina antes da bateria. Registre exit code,
+contagens, artefatos e hashes em [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md). Não reutilize
+contagens/hashes de uma bateria anterior depois de alterar código.
 
-## Evidência confirmada após a migração de mapas
+## Evidência atual — 17 de agosto de 2026
 
-Em 2026-08-07:
+- backend: Ruff/format e 53 testes aprovados, com 1 opt-in ignorado;
+- gateway: Ruff/format e 57 testes aprovados;
+- admin: ESLint, 16 arquivos/67 testes, build Vite e imagem Docker aprovados;
+- Flutter: no SDK oficial global estável 3.47.0/Dart 3.13.0, format verificou 90 arquivos sem
+  mudanças, analyze terminou sem issues e 98/98 testes passaram; Web release, dry run
+  Wasm e APK debug integrado (`DEMO_MODE=false`) também foram aprovados; `main.dart.js` tem
+  3.592.450 bytes e o servidor em 5174 respondeu 200;
+- orquestração: `test_all.ps1 -SkipBuilds` terminou com exit 0 em 107,5 s usando a seleção por
+  parâmetro do SDK oficial stable, revisão `4cf24164269a`; a chamada direta bloqueada pela
+  ExecutionPolicy não executou a bateria e não entra como resultado;
+- Docker: banco, API e admin healthy; gateway físico parado deliberadamente;
+- HTTP: `/health`, `/ready`, `/docs`, admin 5173 e Flutter Web 5174 responderam 200;
+- admin: CSP, `nosniff`, `DENY` e `Referrer-Policy` presentes; worker MapLibre respondeu 200 com
+  `application/javascript`;
+- migração: `0006_mission_start_health` aplicada; head único e roundtrip SQLite aprovados;
+- navegador: controlador visual indisponível; não houve novo smoke visual, console ou tiles;
+- login admin: credenciais atuais do `.env` retornaram 401; não resetar sem autorização.
+- auditorias: `pip-audit` de backend/gateway e `npm audit` completo/produção retornaram zero
+  vulnerabilidades conhecidas; use UTF-8 explícito no subprocesso Python se o caminho acentuado
+  causar erro de decodificação.
+
+Imagens usadas: `postgis/postgis:17-3.5`, `python:3.13-slim`, `node:24-alpine` e
+`nginx:1.28.3-alpine`. Digests e matriz completa estão em
+[INTEGRATION_STATUS.md](INTEGRATION_STATUS.md).
+
+## Evidência histórica após a migração de mapas
+
+Em 2026-08-07, antes da bateria atual:
 
 - backend aprovou Ruff/formatação e 28 testes; gateway aprovou Ruff/formatação e 31 testes;
 - o admin aprovou lint, 33 testes, build Vite e smoke visual autenticado com MapLibre GL JS;
@@ -270,4 +320,7 @@ Em 2026-08-07:
 
 O smoke Flutter Web confirmou estilo/tiles/fontes/sprites, câmera inicial, arraste, busca, reverse geocoding, CORS/CSP, atribuição/logo e checkout. O admin confirmou o mesmo ponto no mapa híbrido. Android, origem/`User-Agent`, geolocalização concedida/timeout e chave substituta restrita ainda não foram validados. A chave usada foi exposta e deve ser rotacionada.
 
-O smoke Web criou o pedido `92198217-c06b-41f5-b91e-61b985b86803`, `PENDING_ADMIN_APPROVAL`, nas coordenadas `-23.117843,-46.554947`, e o painel autenticado o exibiu sem alterar o ponto. O pedido controlado anterior `27207fa7-df70-45b5-bb2f-d9279a0347f8` também permanece pendente. **Não aprovar, autorizar nem despachar nenhum deles.**
+O smoke Web criou um pedido `PENDING_ADMIN_APPROVAL` e o painel autenticado o exibiu sem alterar
+o ponto. Outro pedido controlado anterior também permanece pendente. **Não aprovar, preparar,
+autorizar, reivindicar nem despachar nenhum deles.** IDs, coordenadas e credenciais de evidência
+não precisam ser reproduzidos para executar o ambiente.

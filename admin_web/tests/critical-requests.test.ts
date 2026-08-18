@@ -4,7 +4,7 @@ import { realApi } from '../src/services/real-api';
 describe('requisições administrativas críticas', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('envia justificativa e uma chave de idempotência em abortamento e RTL', async () => {
+  it('envia justificativa e idempotência em abortamento, RTL e comandos de voo', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -14,18 +14,30 @@ describe('requisições administrativas críticas', () => {
 
     await expect(realApi.abortMission('mission-1', 'Risco na área controlada')).rejects.toThrow();
     await expect(realApi.requestRtl('mission-1', 'Retorno preventivo solicitado')).rejects.toThrow();
+    await expect(
+      realApi.requestMissionCommand('mission-1', 'START', 'Início explícito pelo operador'),
+    ).rejects.toThrow();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const abortInit = fetchMock.mock.calls[0][1] as RequestInit;
     const rtlInit = fetchMock.mock.calls[1][1] as RequestInit;
+    const startInit = fetchMock.mock.calls[2][1] as RequestInit;
     expect(JSON.parse(String(abortInit.body))).toEqual({ reason: 'Risco na área controlada' });
     expect(JSON.parse(String(rtlInit.body))).toEqual({ reason: 'Retorno preventivo solicitado' });
+    expect(JSON.parse(String(startInit.body))).toEqual({
+      reason: 'Início explícito pelo operador',
+    });
+    expect(String(fetchMock.mock.calls[2][0])).toContain(
+      '/admin/missions/mission-1/commands/START',
+    );
 
     const abortHeaders = abortInit.headers as Record<string, string>;
     const rtlHeaders = rtlInit.headers as Record<string, string>;
     expect(abortHeaders['Idempotency-Key'].length).toBeGreaterThanOrEqual(8);
     expect(rtlHeaders['Idempotency-Key'].length).toBeGreaterThanOrEqual(8);
     expect(rtlHeaders['Idempotency-Key']).not.toBe(abortHeaders['Idempotency-Key']);
+    const startHeaders = startInit.headers as Record<string, string>;
+    expect(startHeaders['Idempotency-Key'].length).toBeGreaterThanOrEqual(8);
   });
 
   it('envia exatamente as três confirmações humanas auditáveis', async () => {

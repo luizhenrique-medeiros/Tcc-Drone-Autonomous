@@ -6,6 +6,8 @@ import {
   FileCheck2,
   MapPin,
   Navigation,
+  Pause,
+  Play,
   Radio,
   RefreshCw,
   RotateCcw,
@@ -27,6 +29,7 @@ import {
   StatusBadge,
 } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { useOperationsStream } from '../../hooks/useOperationsStream';
 import {
   adminApi,
   getErrorMessage,
@@ -62,11 +65,16 @@ const flowStages = [
   { label: 'Gerada', statuses: ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'] },
   { label: 'Revisão', statuses: ['UNDER_REVIEW'] },
   { label: 'Pronta', statuses: ['READY_FOR_AUTHORIZATION'] },
-  { label: 'Autorizada', statuses: ['AUTHORIZED', 'UPLOADING', 'UPLOADED'] },
+  {
+    label: 'Autorizada',
+    statuses: ['AUTHORIZED', 'UPLOADING', 'UPLOADED'],
+  },
+  { label: 'Verificada', statuses: ['VERIFIED'] },
   {
     label: 'Execução',
     statuses: [
       'EXECUTING',
+      'PAUSED',
       'DESTINATION_REACHED',
       'DELIVERY_CONFIRMED',
       'RETURNING',
@@ -102,11 +110,14 @@ export function MissionPage() {
     return { mission, order, vehicle, health, healthError };
   }, [missionId]);
   const { data, isLoading, error, reload, setData } = useAsyncData(loader);
+  useOperationsStream(() => void reload());
   const [isActing, setIsActing] = useState(false);
   const [actionError, setActionError] = useState('');
   const [success, setSuccess] = useState('');
   const [authorizationOpen, setAuthorizationOpen] = useState(false);
-  const [criticalAction, setCriticalAction] = useState<'rtl' | 'abort' | null>(null);
+  const [criticalAction, setCriticalAction] = useState<
+    'start' | 'pause' | 'continue' | 'rtl' | 'abort' | null
+  >(null);
   const [criticalReason, setCriticalReason] = useState('');
 
   if (isLoading && !data) return <StateView state="loading" />;
@@ -130,9 +141,56 @@ export function MissionPage() {
   );
   const canFinishReview = mission.status === 'UNDER_REVIEW';
   const canAuthorize = mission.status === 'READY_FOR_AUTHORIZATION';
-  const canIntervene = ['AUTHORIZED', 'UPLOADING', 'UPLOADED', 'EXECUTING'].includes(
-    mission.status,
-  );
+  const canAbort = [
+    'UPLOADING',
+    'UPLOADED',
+    'VERIFIED',
+    'EXECUTING',
+    'PAUSED',
+    'DESTINATION_REACHED',
+    'DELIVERY_CONFIRMED',
+    'RETURNING',
+  ].includes(mission.status);
+  const canRequestRtl = [
+    'EXECUTING',
+    'PAUSED',
+    'DESTINATION_REACHED',
+    'DELIVERY_CONFIRMED',
+    'RETURNING',
+  ].includes(mission.status);
+  const canRequestStart = mission.status === 'VERIFIED';
+  const canRequestPause = [
+    'EXECUTING',
+    'DESTINATION_REACHED',
+    'DELIVERY_CONFIRMED',
+    'RETURNING',
+  ].includes(mission.status);
+  const canRequestContinue = mission.status === 'PAUSED';
+  const canIntervene =
+    canAbort ||
+    canRequestRtl ||
+    canRequestStart ||
+    canRequestPause ||
+    canRequestContinue;
+  const flightCommandsEnabled = health?.flight_commands_enabled === true;
+  const missionStartEnabled = health?.mission_start_enabled === true;
+  const missionVehicleMatchesHealth =
+    mission.vehicle_id !== undefined &&
+    vehicle?.id === mission.vehicle_id &&
+    health?.vehicle_id === mission.vehicle_id;
+  const startCommandBlockedReason = !flightCommandsEnabled
+    ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.'
+    : !missionStartEnabled
+      ? 'ALLOW_MISSION_START está desabilitado no gateway.'
+      : !missionVehicleMatchesHealth
+        ? 'A leitura de saúde não pertence ao veículo vinculado à missão.'
+        : health?.is_stale
+          ? 'A leitura de saúde está vencida; atualize o gateway antes de solicitar START.'
+          : health?.connected !== true || health.heartbeat_ok !== true
+            ? 'Gateway/Pixhawk está sem conexão ou heartbeat atual.'
+            : health.armed !== true
+              ? 'O operador ainda não confirmou armamento físico.'
+              : null;
 
   const updateMission = (next: Mission) => setData({ ...data, mission: next });
 
@@ -212,14 +270,29 @@ export function MissionPage() {
   const handleCriticalAction = async () => {
     if (!criticalAction) return;
     const action = criticalAction;
+    const successMessages = {
+      start:
+        'Solicitação START registrada. O gateway ainda revalida armamento, preflight e flags locais.',
+      pause: 'Solicitação de pausa registrada; aguarde o COMMAND_ACK do ArduPilot.',
+      continue: 'Solicitação de continuação registrada; aguarde o COMMAND_ACK do ArduPilot.',
+      rtl: 'Solicitação de RTL registrada. A execução depende da validação do gateway e do estado físico do veículo.',
+      abort: 'Solicitação de abortamento registrada na missão.',
+    } as const;
     await runMissionAction(
-      () =>
-        action === 'rtl'
-          ? adminApi.requestRtl(mission.id, criticalReason)
-          : adminApi.abortMission(mission.id, criticalReason),
-      action === 'rtl'
-        ? 'Solicitação de RTL registrada. A execução depende da validação do gateway e do estado físico do veículo.'
-        : 'Solicitação de abortamento registrada na missão.',
+      () => {
+        if (action === 'rtl') {
+          return adminApi.requestRtl(mission.id, criticalReason);
+        }
+        if (action === 'abort') {
+          return adminApi.abortMission(mission.id, criticalReason);
+        }
+        return adminApi.requestMissionCommand(
+          mission.id,
+          action.toUpperCase() as 'START' | 'PAUSE' | 'CONTINUE',
+          criticalReason,
+        );
+      },
+      successMessages[action],
     );
     setCriticalAction(null);
   };
@@ -414,8 +487,11 @@ export function MissionPage() {
                 <>
                   <Link className="button button--secondary" to={`/operations?mission=${mission.id}`}><Radio size={17} /> Abrir telemetria</Link>
                   <div className="critical-actions">
-                    <Button variant="secondary" onClick={() => { setCriticalReason(''); setCriticalAction('rtl'); }}><RotateCcw size={17} /> Solicitar RTL</Button>
-                    <Button variant="danger" onClick={() => { setCriticalReason(''); setCriticalAction('abort'); }}><AlertOctagon size={17} /> Abortar missão</Button>
+                    {canRequestStart ? <Button variant="primary" disabled={startCommandBlockedReason !== null} title={startCommandBlockedReason ?? undefined} onClick={() => { setCriticalReason(''); setCriticalAction('start'); }}><Play size={17} /> Solicitar START</Button> : null}
+                    {canRequestPause ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('pause'); }}><Pause size={17} /> Pausar missão</Button> : null}
+                    {canRequestContinue ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('continue'); }}><Play size={17} /> Continuar missão</Button> : null}
+                    {canRequestRtl ? <Button variant="secondary" onClick={() => { setCriticalReason(''); setCriticalAction('rtl'); }}><RotateCcw size={17} /> Solicitar RTL</Button> : null}
+                    {canAbort ? <Button variant="danger" onClick={() => { setCriticalReason(''); setCriticalAction('abort'); }}><AlertOctagon size={17} /> Abortar missão</Button> : null}
                   </div>
                 </>
               ) : null}
@@ -457,7 +533,15 @@ export function MissionPage() {
 
       <Modal
         open={criticalAction !== null}
-        title={criticalAction === 'rtl' ? 'Solicitar retorno ao ponto de origem' : 'Abortar missão'}
+        title={
+          {
+            start: 'Solicitar início explícito da missão',
+            pause: 'Solicitar pausa da missão',
+            continue: 'Solicitar continuação da missão',
+            rtl: 'Solicitar retorno ao ponto de origem',
+            abort: 'Abortar missão',
+          }[criticalAction ?? 'abort']
+        }
         onClose={() => setCriticalAction(null)}
         closeDisabled={isActing}
         footer={

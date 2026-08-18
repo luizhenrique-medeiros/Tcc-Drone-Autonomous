@@ -240,6 +240,14 @@ class _OrderDetailsScreenState extends State<OrderDetailsScreen> {
       ),
       const SizedBox(height: AppSpacing.md),
       _DetailSection(
+        title: 'Telemetria da missão',
+        child: MissionTelemetryPanel(
+          telemetry: widget.controller.telemetryFor(order.id),
+          missionStatus: widget.controller.missionStatusFor(order.id),
+        ),
+      ),
+      const SizedBox(height: AppSpacing.md),
+      _DetailSection(
         title: 'Local de entrega',
         child: order.deliveryPoint == null
             ? const AppBanner(

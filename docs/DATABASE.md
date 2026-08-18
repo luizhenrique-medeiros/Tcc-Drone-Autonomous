@@ -19,7 +19,8 @@ PostgreSQL + PostGIS, tabelas/colunas `snake_case`, UUID para entidades principa
 | `mission_waypoints` | sequence, command, lat/lon/alt, params | sequência única por missão |
 | `flight_authorizations` | mission/version, admin, status, expiry, used_at, checklist | uso único e expiração |
 | `vehicles` | identifier, name, autopilot, status, last_seen | identificador único |
-| `vehicle_health_snapshots` | source, received_at, heartbeat, GPS, satellites, EKF, battery, mode, armed | campos físicos nulos quando desconhecidos; frescor derivado |
+| `vehicle_health_snapshots` | source, heartbeat, GPS/bateria/modo/armed, diagnóstico de conexão e três gates | campos físicos nulos quando desconhecidos; frescor derivado |
+| `gateway_commands` | mission, action, requester, gateway, status, timestamps e resultado | `START`, `PAUSE`, `CONTINUE`, RTL e ABORT persistidos/ACK-aware |
 | `telemetry_logs` | mission/vehicle, source, received_at, point, altitude, speed, battery, GPS, mode, armed | retenção/amostragem configurável; campos físicos anuláveis |
 | `system_events` | actor/order/mission/vehicle, type, severity, message, metadata | event_id único para deduplicação |
 
@@ -64,6 +65,8 @@ Longitude vem primeiro no construtor PostGIS tanto em `saved_locations` quanto e
 
 O JSON auditável de `flight_authorizations.checklist` persiste exatamente `area_and_conditions_clear`, `aircraft_and_payload_inspected` e `operator_ready`. Expiração ou revogação atualiza o registro e cria `FLIGHT_AUTHORIZATION_EXPIRED` ou `FLIGHT_AUTHORIZATION_REVOKED` em `system_events`; nenhuma tabela adicional de autorização foi necessária.
 
+`vehicle_health_snapshots` também conserva `connection_state`, modo/topologia, endpoint, porta/baud upstream, system/component alvo, idade e instante do último heartbeat, posição disponível, erro e os booleanos independentes `mission_upload_enabled`, `flight_commands_enabled` e `mission_start_enabled`. O último deles nunca é inferido do gate geral de comandos.
+
 ## Migrações e seed
 
 ```powershell
@@ -75,6 +78,8 @@ python scripts/seed.py
 O seed é idempotente e cria produtos de demonstração e, somente quando variáveis explícitas existem, o primeiro administrador. Nunca usa uma senha fixa silenciosa. Downgrade não apaga evidência em ambiente real sem backup e procedimento aprovado.
 
 `0004_saved_locations` cria `saved_locations`, sua FK, índice por `user_id`, constraints geográficas, provider/tipo de mapa, quatro flags de confirmação e timestamps. Ela não converte automaticamente `delivery_points` antigos em atalhos: pontos existentes continuam snapshots/auditoria, e nenhum dado fictício ou confirmação presumida é criado para preencher o limite.
+
+`0005_vehicle_integration_health` adiciona os diagnósticos de conexão, posição e os gates de upload/comandos ao snapshot do veículo. `0006_mission_start_health`, head aplicado em 17 de agosto de 2026, adiciona `mission_start_enabled` como gate independente. O downgrade de cada revisão remove apenas suas próprias colunas; em ambiente real, faça backup antes de qualquer downgrade.
 
 `0003_schema_names` normaliza, de forma idempotente, nomes de índices e constraints encontrados em volumes antigos criados antes da cadeia Alembic atual. Em banco novo ela não altera a estrutura funcional. Valide com `alembic check`; os três tipos `geography` e os enums operacionais não nativos possuem comparação explícita para evitar falsos drifts.
 

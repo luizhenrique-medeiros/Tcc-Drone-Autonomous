@@ -2,6 +2,7 @@
 
 - Auditoria original: 6 de agosto de 2026
 - Atualização de arquitetura e segurança: 7 de agosto de 2026
+- Integração final e hardware passivo: 17 de agosto de 2026
 - Branch inspecionada: `review-and-upgrade`
 
 > **Status histórico:** as conclusões originais sobre o provedor de mapas foram superadas pela migração MapTiler/MapLibre. Este documento separa requests HTTP diretos do smoke visual Web realizado depois deles. O resumo legado do provedor anterior permanece apenas em [GOOGLE_MAPS_SETUP.md](GOOGLE_MAPS_SETUP.md).
@@ -23,7 +24,40 @@ As conclusões distinguem:
 
 Um nível não comprova o seguinte. Em particular, HTTP 200 de estilo/geocoding não comprova tiles completos, MapLibre no cliente, origem/`User-Agent`, CORS/CSP, geolocalização ou seleção final.
 
-## Resultado executivo atualizado
+## Atualização executiva — 17 de agosto de 2026
+
+- backend: Ruff/format e 53 testes aprovados, com 1 opt-in ignorado;
+- gateway: Ruff/format e 57 testes aprovados;
+- admin: ESLint, 16 arquivos/67 testes, build Vite e imagem Docker aprovados;
+- Flutter: no SDK oficial global stable Flutter 3.47.0/Dart 3.13.0, format verificou 90 arquivos
+  sem mudanças, analyze terminou sem issues e 98/98 testes passaram no rerun final; Web release,
+  dry run Wasm e APK debug aprovados;
+- migração `0006_mission_start_health` aplicada ao PostgreSQL real; head único e roundtrip SQLite
+  aprovados;
+- `pip-audit` do backend/gateway e `npm audit` do admin retornaram zero vulnerabilidades
+  conhecidas; os pacotes Python locais foram ignorados pela ferramenta;
+- DB/API/admin healthy e Flutter Web servido; `/health`, `/ready`, `/docs`, 5173 e 5174
+  responderam 200;
+- headers CSP, nosniff, DENY e Referrer-Policy do admin conferidos; worker MapLibre respondeu 200
+  como `application/javascript`;
+- controlador visual do navegador indisponível; nenhum novo smoke visual/console/tiles foi inferido;
+- login admin com a credencial atual do `.env` retornou 401 porque ela diverge do hash persistido;
+  a conta não foi redefinida;
+- dois diagnósticos passivos diretos receberam heartbeat real da Pixhawk em COM7/57600,
+  system/component 1/1, `STABILIZE`, `armed=false`; um ciclo limitado publicou sete heartbeats no
+  backend sem escrita MAVLink;
+- no estado final a COM7 está ausente, Mission Planner está fechado, não há listeners 14550/14551
+  e o snapshot é `HARDWARE_REAL`/`ERROR`/`direct`, com os três gates falsos;
+- forwarding, SITL, GPS/bateria/EKF/home ao vivo pelo gateway, upload, armamento, motores e voo não
+  foram validados.
+
+Total atual: **275 testes aprovados**, mais 1 opt-in ignorado; a bateria orquestrada terminou com
+exit 0 em 107,5 s. O APK debug integrado atual,
+regenerado com `DEMO_MODE=false` e a configuração MapTiler do `.env` ignorado, tem 195.236.488
+bytes e SHA-256 `202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`.
+As evidências de 6–9 de agosto abaixo são históricas e não substituem essa fotografia.
+
+## Resultado executivo histórico — 7 de agosto de 2026
 
 A base funcional preserva autenticação e papéis, PostGIS, pedidos persistidos, separação entre aprovação comercial e autorização de voo, missão versionada, WebSocket autenticado e gateway isolado. O modo `simulation` continua sendo evidência lógica, não evidência de voo.
 
@@ -84,7 +118,9 @@ Depois de rotacionar e reconciliar a credencial local, o login administrativo, d
 
 O smoke Web criou também o pedido `92198217-c06b-41f5-b91e-61b985b86803`, em `PENDING_ADMIN_APPROVAL`, com coordenadas `-23.117843,-46.554947` e preferência PIX simulada. **Não aprovar, preparar, autorizar ou despachar nenhum pedido de teste.**
 
-O release Web foi recompilado no estado final. O APK debug configurado possui 190.538.195 bytes, SHA-256 `AF1328CB60E74CFF0D3A5CDE5A8527618F79FB2D55A9E1778061BE221285BE25` e assinatura debug v2 verificada. Ele não foi instalado; não há keystore privada nem release distribuível atual.
+Naquela rodada, o release Web foi recompilado e o APK debug tinha 190.538.195 bytes e o hash então
+registrado. Esse artefato foi superado pelo APK da atualização executiva acima. Ainda não há
+keystore privada nem release distribuível atual.
 
 ## Pendências críticas
 
@@ -101,7 +137,8 @@ O release Web foi recompilado no estado final. O APK debug configurado possui 19
 
 - nenhuma chave ou senha foi copiada para documentação, log ou Git;
 - nenhum sucesso de browser/Android foi inferido dos requests HTTP diretos;
-- nenhuma porta COM, firmware ou parâmetro da Pixhawk foi presumido;
+- porta, firmware e IDs só foram registrados quando observados; nenhum parâmetro da Pixhawk foi
+  alterado ou presumido;
 - nenhum comando de armamento real foi executado;
 - nenhum resultado de SITL, hardware ou voo foi inferido de doubles;
 - nenhum pagamento real foi implementado.

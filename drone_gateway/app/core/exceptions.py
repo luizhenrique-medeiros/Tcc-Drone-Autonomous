@@ -20,6 +20,18 @@ class VehicleConnectionError(GatewayError):
     code = "VEHICLE_CONNECTION_ERROR"
 
 
+class VehiclePortNotFoundError(VehicleConnectionError):
+    code = "VEHICLE_PORT_NOT_FOUND"
+
+
+class VehiclePortBusyError(VehicleConnectionError):
+    code = "VEHICLE_PORT_BUSY"
+
+
+class VehiclePortAccessError(VehicleConnectionError):
+    code = "VEHICLE_PORT_ACCESS_DENIED"
+
+
 class VehicleTimeoutError(GatewayError):
     code = "VEHICLE_TIMEOUT"
 

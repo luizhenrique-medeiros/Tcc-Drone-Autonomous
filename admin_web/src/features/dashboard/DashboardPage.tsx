@@ -23,6 +23,7 @@ import {
   StatusBadge,
 } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { useOperationsStream } from '../../hooks/useOperationsStream';
 import {
   adminApi,
   generateOperationalAlerts,
@@ -92,6 +93,7 @@ export function DashboardPage() {
     };
   }, []);
   const { data, isLoading, error, reload } = useAsyncData(loader);
+  useOperationsStream(() => void reload());
 
   if (isLoading && !data) return <StateView state="loading" />;
   if (error && !data) {
@@ -200,13 +202,23 @@ export function DashboardPage() {
                   icon={<BatteryCharging size={20} />}
                   label="Bateria"
                   value={formatPercent(data.health.battery_percent)}
-                  ok={data.health.battery_percent !== null && data.health.battery_percent >= 40}
+                  ok={
+                    data.health.battery_percent !== null &&
+                    data.health.authorization_limits !== null &&
+                    data.health.battery_percent >=
+                      data.health.authorization_limits.min_battery_percent
+                  }
                 />
                 <HealthMetric
                   icon={<Satellite size={20} />}
                   label="GPS"
                   value={`${formatOptionalNumber(data.health.satellites)} sat. · ${formatNullableText(data.health.gps_fix)}`}
-                  ok={data.health.satellites !== null && data.health.satellites >= 10}
+                  ok={
+                    data.health.satellites !== null &&
+                    data.health.authorization_limits !== null &&
+                    data.health.satellites >=
+                      data.health.authorization_limits.min_gps_satellites
+                  }
                 />
                 <HealthMetric
                   icon={<Navigation size={20} />}

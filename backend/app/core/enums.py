@@ -41,7 +41,9 @@ class MissionStatus(StrEnum):
     AUTHORIZED = "AUTHORIZED"
     UPLOADING = "UPLOADING"
     UPLOADED = "UPLOADED"
+    VERIFIED = "VERIFIED"
     EXECUTING = "EXECUTING"
+    PAUSED = "PAUSED"
     DESTINATION_REACHED = "DESTINATION_REACHED"
     DELIVERY_CONFIRMED = "DELIVERY_CONFIRMED"
     RETURNING = "RETURNING"
@@ -90,6 +92,9 @@ class PaymentMethod(StrEnum):
 
 
 class GatewayCommandType(StrEnum):
+    START = "START"
+    PAUSE = "PAUSE"
+    CONTINUE = "CONTINUE"
     ABORT = "ABORT"
     RTL = "RTL"
 

@@ -10,7 +10,8 @@ Por padrão, Docker publica banco, API e admin somente em `127.0.0.1`. Isso redu
 | admin React | 5173 | navegador do operador |
 | Flutter Web | 5174 | navegador do cliente |
 | PostgreSQL | 5432 | backend; não exponha ao celular |
-| MAVLink UDP | 14550/UDP | gateway em SITL/forwarding |
+| MAVLink SITL | 14550/UDP | gateway em regressão SITL |
+| MAVLink Mirror local | 14551/UDP | Mission Planner → gateway no mesmo Windows; não expor na LAN |
 
 Android e Web compartilham o mesmo código Flutter em `mobile/`. Somente a URL da API muda por plataforma:
 
@@ -115,7 +116,7 @@ Adicione também a origem `http://192.168.X.Y:5174` à lista de origens permitid
 
 ```powershell
 cd mobile
-..\flutter\bin\flutter.bat run -d web-server `
+flutter.bat run -d web-server `
   --web-hostname 0.0.0.0 `
   --web-port 5174 `
   --dart-define=APP_ENVIRONMENT=demo_network `

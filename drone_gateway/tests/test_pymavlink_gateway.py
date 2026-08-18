@@ -6,10 +6,16 @@ from uuid import uuid4
 
 import pytest
 
-from app.core.config import Settings
-from app.core.exceptions import MissionUploadError, VehicleTimeoutError
+from app.core.config import MavlinkMode, Settings
+from app.core.exceptions import (
+    MissionUploadError,
+    UnsafeOperationError,
+    VehiclePortBusyError,
+    VehiclePortNotFoundError,
+    VehicleTimeoutError,
+)
 from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
-from app.models import AuthorizedMission, MissionStatus, MissionWaypoint
+from app.models import AuthorizedMission, ConnectionState, MissionStatus, MissionWaypoint
 
 
 class FakeMessage:
@@ -55,12 +61,24 @@ class FakeConnection:
         self.target_system = 1
         self.target_component = 1
         self.source_system = 254
+        self.source_component = 190
         self.mav = MavRecorder()
         self.messages = deque(messages or [])
+        self.closed = False
 
     def recv_match(self, **kwargs: object) -> FakeMessage | None:
         del kwargs
         return self.messages.popleft() if self.messages else None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class AckAfterCommandConnection(FakeConnection):
+    def recv_match(self, **kwargs: object) -> FakeMessage | None:
+        if kwargs.get("blocking") is False:
+            return None
+        return super().recv_match(**kwargs)
 
 
 def fake_mavutil() -> SimpleNamespace:
@@ -72,6 +90,24 @@ def fake_mavutil() -> SimpleNamespace:
         MAV_FRAME_GLOBAL_RELATIVE_ALT_INT=6,
         MAV_FRAME_GLOBAL_TERRAIN_ALT=10,
         MAV_FRAME_GLOBAL_TERRAIN_ALT_INT=11,
+        MAV_AUTOPILOT_INVALID=8,
+        MAV_AUTOPILOT_ARDUPILOTMEGA=3,
+        MAV_MODE_FLAG_SAFETY_ARMED=128,
+        MAV_TYPE_GCS=6,
+        MAV_STATE_ACTIVE=4,
+        MAV_CMD_SET_MESSAGE_INTERVAL=511,
+        MAV_CMD_MISSION_START=300,
+        MAV_CMD_DO_PAUSE_CONTINUE=193,
+        MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+        MAV_RESULT_ACCEPTED=0,
+        MAV_RESULT_IN_PROGRESS=5,
+        MAVLINK_MSG_ID_SYS_STATUS=1,
+        MAVLINK_MSG_ID_BATTERY_STATUS=147,
+        MAVLINK_MSG_ID_GPS_RAW_INT=24,
+        MAVLINK_MSG_ID_GLOBAL_POSITION_INT=33,
+        MAVLINK_MSG_ID_EKF_STATUS_REPORT=193,
+        MAVLINK_MSG_ID_HOME_POSITION=242,
+        MAVLINK_MSG_ID_MISSION_CURRENT=42,
     )
     return SimpleNamespace(mavlink=constants, mode_string_v10=lambda message: "AUTO")
 
@@ -203,12 +239,214 @@ def configured_gateway(
             mission_command_timeout_seconds=0.1,
             heartbeat_timeout_seconds=0.1,
             mission_protocol_retries=1,
+            allow_mission_upload=True,
         )
     )
     connection = FakeConnection(messages)
     gateway._connection = connection
     gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
     return gateway, connection
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_endpoint"),
+    [
+        (MavlinkMode.DIRECT, "COM42"),
+        (MavlinkMode.MISSION_PLANNER_FORWARD, "udpin:127.0.0.1:14551"),
+    ],
+)
+async def test_unacknowledged_hardware_connect_is_receive_only_and_reports_topology(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: MavlinkMode,
+    expected_endpoint: str,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=mode,
+        mavlink_connection="COM42",
+        mavlink_forward_connection="udpin:127.0.0.1:14551",
+        heartbeat_timeout_seconds=0.1,
+    )
+    gateway = PymavlinkVehicleGateway(settings)
+    connection = FakeConnection(
+        [
+            FakeMessage(
+                "HEARTBEAT",
+                autopilot=3,
+                base_mode=0,
+            )
+        ]
+    )
+    module = fake_mavutil()
+    open_calls: list[tuple[str, dict[str, object]]] = []
+
+    def open_connection(endpoint: str, **kwargs: object) -> FakeConnection:
+        open_calls.append((endpoint, kwargs))
+        return connection
+
+    module.mavlink_connection = open_connection
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
+    monkeypatch.setattr(gateway, "_validate_serial_port_exists", lambda: None)
+
+    await gateway.connect()
+    health = await gateway.read_health()
+
+    assert open_calls[0][0] == expected_endpoint
+    assert open_calls[0][1]["source_component"] == 190
+    assert open_calls[0][1]["dialect"] == "ardupilotmega"
+    assert connection.mav.calls == []
+    assert health.connection_state is ConnectionState.CONNECTED
+    assert health.connection_endpoint == expected_endpoint
+    assert health.serial_port == "COM42"
+    assert health.connection_baud == 57600
+    assert health.connection_topology == mode.value
+    assert not health.mission_upload_enabled
+    assert not health.flight_commands_enabled
+    assert not health.mission_start_enabled
+    await gateway.close()
+    assert connection.closed
+
+
+def test_serial_errors_keep_missing_and_busy_cases_distinct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=MavlinkMode.DIRECT,
+        mavlink_connection="COM42",
+    )
+    gateway = PymavlinkVehicleGateway(settings)
+    monkeypatch.setattr("app.mavlink.pymavlink_gateway.list_serial_ports", lambda: [])
+
+    with pytest.raises(VehiclePortNotFoundError, match="COM42"):
+        gateway._validate_serial_port_exists()
+
+    translated = gateway._translate_connection_error(PermissionError(13, "Access is denied"))
+    assert isinstance(translated, VehiclePortBusyError)
+    assert "ocupada ou com acesso negado" in str(translated)
+    assert "mission_planner_forward" in str(translated)
+
+
+@pytest.mark.asyncio
+async def test_open_without_heartbeat_closes_resource_and_sets_error_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=MavlinkMode.DIRECT,
+        mavlink_connection="COM42",
+        heartbeat_timeout_seconds=0.01,
+    )
+    gateway = PymavlinkVehicleGateway(settings)
+    connection = FakeConnection()
+    module = fake_mavutil()
+    module.mavlink_connection = lambda *args, **kwargs: connection
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
+    monkeypatch.setattr(gateway, "_validate_serial_port_exists", lambda: None)
+
+    with pytest.raises(VehicleTimeoutError, match="nenhum heartbeat ArduPilot"):
+        await gateway.connect()
+
+    assert connection.closed
+    assert gateway._connection is None
+    assert gateway.connection_state is ConnectionState.ERROR
+    assert gateway.connection_error is not None
+    health = await gateway.read_health()
+    assert health.connected is False
+    assert health.heartbeat is False
+    assert health.connection_state is ConnectionState.ERROR
+    assert health.connection_error == gateway.connection_error
+
+
+def test_set_message_interval_waits_through_in_progress_ack() -> None:
+    acknowledgements = [
+        FakeMessage("COMMAND_ACK", source_system=99, command=511, result=0),
+        FakeMessage("COMMAND_ACK", command=511, result=5),
+        FakeMessage("COMMAND_ACK", command=511, result=0),
+        *[FakeMessage("COMMAND_ACK", command=511, result=0) for _ in range(6)],
+    ]
+    gateway, connection = configured_gateway(acknowledgements)
+
+    assert gateway._request_message_intervals()
+    interval_calls = [call for call in connection.mav.calls if call[0] == "command_long_send"]
+    assert len(interval_calls) == 7
+
+
+def test_legacy_mission_request_is_answered_with_item_int() -> None:
+    gateway, connection = configured_gateway(
+        [
+            FakeMessage("MISSION_REQUEST", seq=0),
+            FakeMessage("MISSION_ACK", type=0),
+        ]
+    )
+
+    gateway._upload_sync(mission_with_one_waypoint())
+
+    call_names = [name for name, _arguments in connection.mav.calls]
+    assert "mission_item_int_send" in call_names
+    assert "mission_item_send" not in call_names
+
+
+def test_upload_retries_each_protocol_step_before_timeout() -> None:
+    gateway, connection = configured_gateway()
+
+    with pytest.raises(VehicleTimeoutError, match="retries da etapa esgotados"):
+        gateway._upload_sync(mission_with_one_waypoint())
+
+    call_names = [name for name, _arguments in connection.mav.calls]
+    assert call_names.count("mission_count_send") == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_and_flight_commands_require_flags_and_live_heartbeat() -> None:
+    mission = mission_with_one_waypoint()
+    gateway = PymavlinkVehicleGateway(Settings(_env_file=None))
+    gateway._connection = FakeConnection()
+    gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
+    gateway._last_heartbeat_monotonic = time.monotonic()
+
+    with pytest.raises(UnsafeOperationError, match="ALLOW_MISSION_UPLOAD"):
+        await gateway.upload_mission(mission, "unused")
+    with pytest.raises(UnsafeOperationError, match="ALLOW_FLIGHT_COMMANDS"):
+        await gateway.request_rtl()
+    with pytest.raises(UnsafeOperationError, match="ALLOW_FLIGHT_COMMANDS"):
+        await gateway.pause_mission()
+    with pytest.raises(UnsafeOperationError, match="ALLOW_FLIGHT_COMMANDS"):
+        await gateway.continue_mission()
+    with pytest.raises(UnsafeOperationError, match="ALLOW_FLIGHT_COMMANDS"):
+        await gateway.start_mission(mission)
+
+    stale_gateway = PymavlinkVehicleGateway(Settings(_env_file=None, allow_mission_upload=True))
+    stale_gateway._connection = FakeConnection()
+    stale_gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
+    with pytest.raises(VehicleTimeoutError, match="heartbeat"):
+        await stale_gateway.upload_mission(mission, "unused")
+
+
+@pytest.mark.asyncio
+async def test_pause_and_continue_use_command_long_and_require_ack() -> None:
+    settings = Settings(_env_file=None, allow_flight_commands=True)
+    gateway = PymavlinkVehicleGateway(settings)
+    connection = AckAfterCommandConnection(
+        [
+            FakeMessage("COMMAND_ACK", command=193, result=0),
+            FakeMessage("COMMAND_ACK", command=193, result=0),
+        ]
+    )
+    gateway._connection = connection
+    gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
+    gateway._last_heartbeat_monotonic = time.monotonic()
+
+    await gateway.pause_mission()
+    await gateway.continue_mission()
+
+    command_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 193
+    ]
+    assert [arguments[4] for arguments in command_calls] == [0, 1]
 
 
 def test_upload_rejects_early_ack_and_never_clears_existing_mission() -> None:
@@ -218,7 +456,7 @@ def test_upload_rejects_early_ack_and_never_clears_existing_mission() -> None:
         gateway._upload_sync(mission_with_one_waypoint())
 
     call_names = [name for name, _arguments in connection.mav.calls]
-    assert call_names == ["mission_count_send"]
+    assert call_names == ["mission_count_send", "heartbeat_send"]
     assert "mission_clear_all_send" not in call_names
 
 
@@ -254,6 +492,7 @@ def test_upload_filters_source_and_verifies_downloaded_content() -> None:
     call_names = [name for name, _arguments in connection.mav.calls]
     assert call_names == [
         "mission_count_send",
+        "heartbeat_send",
         "mission_item_int_send",
         "mission_request_list_send",
         "mission_request_int_send",
@@ -293,6 +532,30 @@ async def test_health_keeps_unreceived_mavlink_values_null_and_filters_other_veh
     assert health.battery_percent is None
     assert health.flight_mode is None
     assert health.armed is None
+
+
+@pytest.mark.asyncio
+async def test_battery_status_is_normalized_then_becomes_stale() -> None:
+    gateway, _connection = configured_gateway()
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(
+        FakeMessage(
+            "BATTERY_STATUS",
+            battery_remaining=73,
+            voltages=[4100, 4090, 0xFFFF],
+        )
+    )
+
+    fresh = await gateway.read_health()
+    assert fresh.battery_percent == 73
+    assert fresh.battery_voltage == pytest.approx(8.19)
+
+    gateway._last_message_monotonic["BATTERY"] = (
+        time.monotonic() - gateway._settings.mavlink_telemetry_stale_seconds - 0.1
+    )
+    stale = await gateway.read_health()
+    assert stale.battery_percent is None
+    assert stale.battery_voltage is None
 
 
 @pytest.mark.asyncio

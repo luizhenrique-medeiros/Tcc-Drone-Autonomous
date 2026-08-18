@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   adaptMission,
   adaptTelemetryPoint,
+  adaptVehicle,
   adaptVehicleHealth,
   type BackendTelemetry,
   type BackendVehicleHealth,
@@ -36,7 +37,79 @@ describe('adaptação de dados operacionais', () => {
       battery_percent: null,
       origin_known: null,
       measured_at: null,
+      connection_state: null,
+      connection_endpoint: null,
+      serial_port: null,
+      heartbeat_age_seconds: null,
+      current_latitude: null,
+      mission_upload_enabled: null,
+      mission_start_enabled: null,
       authorization_limits: null,
+    });
+  });
+
+  it('preserva identidade de gateway, autopiloto e origem no veículo', () => {
+    expect(
+      adaptVehicle({
+        id: 'vehicle-1',
+        identifier: 'pixhawk-6c-1',
+        name: 'Drone real',
+        autopilot_system: 'ArduPilot',
+        autopilot_version: 'ArduCopter 4.6',
+        operational_source: 'HARDWARE_REAL',
+        gateway_id: 'gateway-real-1',
+        status: 'ONLINE',
+        last_communication_at: '2026-08-17T12:00:00Z',
+      }),
+    ).toMatchObject({
+      identifier: 'pixhawk-6c-1',
+      autopilot_system: 'ArduPilot',
+      autopilot_version: 'ArduCopter 4.6',
+      operational_source: 'HARDWARE_REAL',
+      gateway_id: 'gateway-real-1',
+      connected: true,
+    });
+  });
+
+  it('adapta diagnósticos reais sem preencher campos ausentes', () => {
+    expect(
+      adaptVehicleHealth({
+        ...nullHealth,
+        connection_state: 'CONNECTED',
+        connection_mode: 'DIRECT',
+        connection_topology: 'PIXHAWK_USB_SERIAL',
+        connection_endpoint: 'COM7',
+        serial_port: 'COM7',
+        connection_baud: 57600,
+        mavlink_system_id: 1,
+        mavlink_component_id: 1,
+        heartbeat_age_seconds: 0.4,
+        last_heartbeat_at: '2026-08-17T12:00:00Z',
+        current_latitude: '-23.11872',
+        current_longitude: '-46.58131',
+        current_altitude_m: 12.5,
+        mission_upload_enabled: false,
+        flight_commands_enabled: false,
+        mission_start_enabled: false,
+        connection_error: null,
+      }),
+    ).toMatchObject({
+      connection_state: 'CONNECTED',
+      connection_mode: 'DIRECT',
+      connection_topology: 'PIXHAWK_USB_SERIAL',
+      connection_endpoint: 'COM7',
+      serial_port: 'COM7',
+      connection_baud: 57600,
+      mavlink_system_id: 1,
+      mavlink_component_id: 1,
+      heartbeat_age_seconds: 0.4,
+      current_latitude: -23.11872,
+      current_longitude: -46.58131,
+      current_altitude_m: 12.5,
+      mission_upload_enabled: false,
+      flight_commands_enabled: false,
+      mission_start_enabled: false,
+      connection_error: null,
     });
   });
 

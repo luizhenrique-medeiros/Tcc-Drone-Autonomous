@@ -9,7 +9,12 @@ param(
     [string]$Device,
     [int]$WebPort = 5174,
     [switch]$AllowInsecureLanHttp,
-    [switch]$SkipPubGet
+    [switch]$SkipPubGet,
+    [string]$FlutterSdkRoot,
+    [switch]$AllowBundledFlutterSdk,
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterChannel = 'stable',
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterVersionPattern = '^3\.47\.\d+$',
+    [ValidateNotNullOrEmpty()][string]$ExpectedDartVersionPattern = '^3\.13\.\d+$'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -129,12 +134,14 @@ if ($isWebTarget) {
 }
 
 $workspaceAlias = New-AsciiWorkspaceAlias $projectRoot
-$flutterSdkRoot = Join-Path $workspaceAlias.Root 'flutter'
-$flutterCommand = Join-Path $flutterSdkRoot 'bin\flutter.bat'
-if (-not (Test-Path $flutterCommand)) {
-    $flutterCommand = (Get-Command flutter -ErrorAction Stop).Source
-    $flutterSdkRoot = $null
-}
+$flutterSdk = Resolve-ProjectFlutterSdk `
+    -ExplicitFlutterSdkRoot $FlutterSdkRoot `
+    -ProjectRoot $projectRoot `
+    -AllowBundledFlutterSdk:$AllowBundledFlutterSdk `
+    -ExpectedChannel $ExpectedFlutterChannel `
+    -ExpectedFlutterVersionPattern $ExpectedFlutterVersionPattern `
+    -ExpectedDartVersionPattern $ExpectedDartVersionPattern
+$flutterCommand = $flutterSdk.FlutterCommand
 Push-Location (Join-Path $workspaceAlias.Root 'mobile')
 $debugVariableWasPresent = Test-Path Env:DEBUG
 $previousDebugValue = $env:DEBUG
@@ -143,11 +150,9 @@ $previousDebugValue = $env:DEBUG
 # públicas no bundle, mas não devem aparecer desnecessariamente no terminal.
 $env:DEBUG = ''
 try {
-    if ($flutterSdkRoot) {
-        $env:GIT_CONFIG_COUNT = '1'
-        $env:GIT_CONFIG_KEY_0 = 'safe.directory'
-        $env:GIT_CONFIG_VALUE_0 = $flutterSdkRoot.Replace('\', '/')
-    }
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'safe.directory'
+    $env:GIT_CONFIG_VALUE_0 = $flutterSdk.Root.Replace('\', '/')
     $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
     $env:DART_SUPPRESS_ANALYTICS = 'true'
     $packageConfig = Join-Path (Get-Location) '.dart_tool\package_config.json'

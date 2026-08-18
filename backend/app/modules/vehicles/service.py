@@ -37,6 +37,18 @@ def _critical_hash(payload: VehicleHealthInput) -> str:
         "geofence_enabled": payload.geofence_enabled,
         "origin_latitude": payload.origin_latitude,
         "origin_longitude": payload.origin_longitude,
+        "connection_state": payload.connection_state,
+        "connection_mode": payload.connection_mode,
+        "connection_topology": payload.connection_topology,
+        "connection_endpoint": payload.connection_endpoint,
+        "serial_port": payload.serial_port,
+        "connection_baud": payload.connection_baud,
+        "mavlink_system_id": payload.mavlink_system_id,
+        "mavlink_component_id": payload.mavlink_component_id,
+        "mission_upload_enabled": payload.mission_upload_enabled,
+        "flight_commands_enabled": payload.flight_commands_enabled,
+        "mission_start_enabled": payload.mission_start_enabled,
+        "connection_error": payload.connection_error,
     }
     return hashlib.sha256(json.dumps(critical, sort_keys=True).encode()).hexdigest()
 
@@ -88,7 +100,28 @@ def health_is_stale(snapshot: VehicleHealthSnapshot, settings: Settings) -> bool
     received_at = snapshot.received_at
     if received_at.tzinfo is None:
         received_at = received_at.replace(tzinfo=UTC)
-    return received_at < datetime.now(UTC) - timedelta(seconds=settings.heartbeat_timeout_seconds)
+    if received_at < datetime.now(UTC) - timedelta(seconds=settings.heartbeat_timeout_seconds):
+        return True
+    heartbeat_age = _heartbeat_age_seconds(snapshot)
+    return heartbeat_age is not None and heartbeat_age > settings.heartbeat_timeout_seconds
+
+
+def _heartbeat_age_seconds(snapshot: VehicleHealthSnapshot) -> float | None:
+    now = datetime.now(UTC)
+    candidates: list[float] = []
+    if snapshot.last_heartbeat_at is not None:
+        last_heartbeat_at = snapshot.last_heartbeat_at
+        if last_heartbeat_at.tzinfo is None:
+            last_heartbeat_at = last_heartbeat_at.replace(tzinfo=UTC)
+        candidates.append(max(0.0, (now - last_heartbeat_at).total_seconds()))
+    if snapshot.heartbeat_age_seconds is not None:
+        received_at = snapshot.received_at
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=UTC)
+        candidates.append(
+            max(0.0, snapshot.heartbeat_age_seconds + (now - received_at).total_seconds())
+        )
+    return max(candidates) if candidates else None
 
 
 def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> VehicleHealthRead:
@@ -110,6 +143,23 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         geofence_enabled=snapshot.geofence_enabled,
         origin_latitude=snapshot.origin_latitude,
         origin_longitude=snapshot.origin_longitude,
+        connection_state=snapshot.connection_state,
+        connection_mode=snapshot.connection_mode,
+        connection_topology=snapshot.connection_topology,
+        connection_endpoint=snapshot.connection_endpoint,
+        serial_port=snapshot.serial_port,
+        connection_baud=snapshot.connection_baud,
+        mavlink_system_id=snapshot.mavlink_system_id,
+        mavlink_component_id=snapshot.mavlink_component_id,
+        heartbeat_age_seconds=_heartbeat_age_seconds(snapshot),
+        last_heartbeat_at=snapshot.last_heartbeat_at,
+        current_latitude=snapshot.current_latitude,
+        current_longitude=snapshot.current_longitude,
+        current_altitude_m=snapshot.current_altitude_m,
+        mission_upload_enabled=snapshot.mission_upload_enabled,
+        flight_commands_enabled=snapshot.flight_commands_enabled,
+        mission_start_enabled=snapshot.mission_start_enabled,
+        connection_error=snapshot.connection_error,
         critical_state_hash=snapshot.critical_state_hash,
         captured_at=snapshot.captured_at,
         received_at=snapshot.received_at,
@@ -145,9 +195,6 @@ def record_heartbeat(
     vehicle.autopilot_version = payload.autopilot_version
     vehicle.operational_source = payload.source
     vehicle.last_communication_at = now
-    vehicle.status = (
-        VehicleStatus.ONLINE if payload.connected and payload.heartbeat else VehicleStatus.OFFLINE
-    )
     snapshot = VehicleHealthSnapshot(
         vehicle_id=vehicle.id,
         connected=payload.connected,
@@ -165,9 +212,31 @@ def record_heartbeat(
         geofence_enabled=payload.geofence_enabled,
         origin_latitude=payload.origin_latitude,
         origin_longitude=payload.origin_longitude,
+        connection_state=payload.connection_state,
+        connection_mode=payload.connection_mode,
+        connection_topology=payload.connection_topology,
+        connection_endpoint=payload.connection_endpoint,
+        serial_port=payload.serial_port,
+        connection_baud=payload.connection_baud,
+        mavlink_system_id=payload.mavlink_system_id,
+        mavlink_component_id=payload.mavlink_component_id,
+        heartbeat_age_seconds=payload.heartbeat_age_seconds,
+        last_heartbeat_at=payload.last_heartbeat_at,
+        current_latitude=payload.current_latitude,
+        current_longitude=payload.current_longitude,
+        current_altitude_m=payload.current_altitude_m,
+        mission_upload_enabled=payload.mission_upload_enabled,
+        flight_commands_enabled=payload.flight_commands_enabled,
+        mission_start_enabled=payload.mission_start_enabled,
+        connection_error=payload.connection_error,
         critical_state_hash=_critical_hash(payload),
         captured_at=now,
         received_at=now,
+    )
+    vehicle.status = (
+        VehicleStatus.ONLINE
+        if payload.connected and payload.heartbeat and not health_is_stale(snapshot, settings)
+        else VehicleStatus.OFFLINE
     )
     session.add(snapshot)
     session.commit()

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:drone_delivery_mobile/core/models/mission_telemetry.dart';
 import 'package:drone_delivery_mobile/core/models/order.dart';
 import 'package:drone_delivery_mobile/core/network/api_client.dart';
 import 'package:drone_delivery_mobile/core/repositories/order_repository.dart';
@@ -73,6 +74,77 @@ void main() {
     );
     expect(socket.closed, isTrue);
   });
+
+  test(
+    'WebSocket entrega telemetria e VERIFIED sem derivar status do pedido',
+    () async {
+      int detailRequests = 0;
+      final ApiClient client = ApiClient(
+        baseUrl: 'https://api.example.test',
+        httpClient: MockClient((http.Request request) async {
+          detailRequests++;
+          expect(request.url.path, '/api/v1/orders/pedido-1');
+          return http.Response(
+            jsonEncode(<String, Object?>{
+              ..._orderJson(id: 'pedido-1', status: 'COMPLETED'),
+              'milestones': <Object?>[],
+            }),
+            200,
+          );
+        }),
+      )..accessToken = 'token-de-teste';
+      addTearDown(client.close);
+      final _FakeOrderSocket socket = _FakeOrderSocket(<Object?>[
+        jsonEncode(<String, Object?>{
+          'type': 'mission.telemetry',
+          'data': <String, Object?>{
+            'mission_id': 'mission-1',
+            'latitude': -23.11872,
+            'longitude': -46.58131,
+            'source': 'HARDWARE_REAL',
+            'recorded_at': '2026-08-17T10:00:00Z',
+            'received_at': '2026-08-17T10:00:01Z',
+            'is_stale': false,
+          },
+        }),
+        jsonEncode(<String, Object?>{
+          'type': 'mission.status',
+          'data': <String, Object?>{
+            'id': 'mission-1',
+            'order_id': 'pedido-1',
+            'status': 'VERIFIED',
+            'updated_at': '2026-08-17T10:00:02Z',
+          },
+        }),
+      ]);
+      final ApiOrderRepository repository = ApiOrderRepository(
+        client,
+        socketConnector: (_) => socket,
+        heartbeatInterval: const Duration(days: 1),
+      );
+
+      final List<OrderWatchEvent> events = await repository
+          .watchOrder('pedido-1')
+          .toList();
+
+      final MissionTelemetrySnapshot telemetry = events
+          .whereType<MissionTelemetryEvent>()
+          .single
+          .telemetry;
+      expect(telemetry.latitude, -23.11872);
+      expect(telemetry.source, TelemetrySource.hardwareReal);
+      expect(
+        events.whereType<MissionStatusEvent>().single.mission.status,
+        MissionStatus.verified,
+      );
+      expect(
+        events.whereType<OrderSnapshotEvent>().single.order.status,
+        OrderStatus.completed,
+      );
+      expect(detailRequests, 1);
+      expect(socket.closed, isTrue);
+    },
+  );
 
   test(
     'falha do WebSocket usa polling e preserva pedido até recuperar',

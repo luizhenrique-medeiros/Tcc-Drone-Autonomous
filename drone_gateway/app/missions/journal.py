@@ -17,6 +17,8 @@ class JournalRecord(BaseModel):
     phase: str
     pending_event_id: UUID | None = None
     upload_detail: str | None = None
+    upload_uncertain_reported: bool = False
+    verification_failure_reported: bool = False
     link_loss_reported: bool = False
     telemetry_stale_reported: bool = False
     start_uncertain_reported: bool = False

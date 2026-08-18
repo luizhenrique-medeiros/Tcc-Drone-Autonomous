@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/mission_telemetry.dart';
 import '../models/order.dart';
 import '../network/api_client.dart';
 
@@ -35,6 +36,18 @@ class OrderConnectionEvent extends OrderWatchEvent {
   const OrderConnectionEvent(this.state);
 
   final OrderRealtimeState state;
+}
+
+class MissionStatusEvent extends OrderWatchEvent {
+  const MissionStatusEvent(this.mission);
+
+  final MissionStatusSnapshot mission;
+}
+
+class MissionTelemetryEvent extends OrderWatchEvent {
+  const MissionTelemetryEvent(this.telemetry);
+
+  final MissionTelemetrySnapshot telemetry;
 }
 
 abstract interface class OrderRepository {
@@ -229,7 +242,17 @@ class ApiOrderRepository implements OrderRepository {
             OrderSnapshot.fromJson(expectJsonMap(message['data'])),
           );
         } else if (type == 'mission.status') {
+          yield MissionStatusEvent(
+            MissionStatusSnapshot.fromJson(expectJsonMap(message['data'])),
+          );
+          // The order remains the customer-facing source of truth. A mission
+          // event therefore refreshes it instead of deriving an order state in
+          // the app.
           yield OrderSnapshotEvent(await getOrder(orderId));
+        } else if (type == 'mission.telemetry') {
+          yield MissionTelemetryEvent(
+            MissionTelemetrySnapshot.fromJson(expectJsonMap(message['data'])),
+          );
         }
       }
     } finally {
