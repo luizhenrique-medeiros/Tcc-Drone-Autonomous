@@ -149,6 +149,7 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `POST /admin/missions/{id}/authorize-flight` | revisada + checklist + saúde |
 | `POST /admin/missions/{id}/abort` | estado abortável |
 | `POST /admin/missions/{id}/request-rtl` | execução/condição válida |
+| `POST /admin/missions/{id}/commands/{action}` | `action=START|PAUSE|CONTINUE|RTL|ABORT`, estado compatível |
 | `GET /admin/vehicles` | `ADMIN` |
 | `GET /admin/vehicles/{id}/health` | `ADMIN` |
 | `GET /admin/events` | `ADMIN` e paginação |
@@ -166,6 +167,8 @@ As respostas administrativas de missão incluem `authorization` com o último re
 
 No `claim`, o gateway precisa corresponder ao veículo autorizado. Mudanças saudáveis de telemetria, como pequenas variações de bateria ou satélites, não revogam a autorização por igualdade exata de amostra; qualquer falha atual nos limites técnicos, expiração ou alteração de versão/hash revoga a autorização, retorna a missão para nova autorização e registra o motivo em `SystemEvent`.
 
+O endpoint de comando aceita `SafetyActionRequest` opcional e `Idempotency-Key`. `START` só é criado em `VERIFIED`; `PAUSE`, durante estados físicos permitidos; `CONTINUE`, somente em `PAUSED`. O `202` significa que o pedido foi persistido, não que o autopiloto executou. O gateway ainda rejeita comando vencido, identidade de veículo divergente, snapshot/heartbeat/preflight inválido ou gate local fechado. Em especial, `START` requer `flight_commands_enabled=true`, `mission_start_enabled=true` e veículo já armado pelo operador; o software não envia armamento.
+
 ## Gateway
 
 | Método e rota | Semântica |
@@ -177,10 +180,12 @@ No `claim`, o gateway precisa corresponder ao veículo autorizado. Mudanças sau
 | `POST /gateway/missions/{id}/status` | transição física validada |
 | `POST /gateway/missions/{id}/telemetry` | amostra normalizada com origem; desconhecidos permanecem nulos |
 | `POST /gateway/missions/{id}/events` | evento com UUID deduplicável |
-| `GET /gateway/commands/pending` | comandos RTL/ABORT destinados ao gateway |
+| `GET /gateway/commands/pending` | comandos `START`/`PAUSE`/`CONTINUE`/RTL/ABORT destinados ao gateway |
 | `POST /gateway/commands/{id}/ack` | ACK/resultado idempotente do comando |
 
 Repetir `claim`, `upload-status` ou evento com a mesma chave retorna resultado consistente ou `409`; nunca inicia novamente.
+
+O heartbeat/health do gateway persiste diagnóstico de conexão, topologia, endpoint/serial/baud, `sysid`/`compid`, idade/horário do heartbeat, posição disponível, erro e três flags independentes: `mission_upload_enabled`, `flight_commands_enabled` e `mission_start_enabled`. Campo não observado continua `null`.
 
 ## WebSocket
 

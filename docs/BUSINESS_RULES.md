@@ -75,7 +75,9 @@
 
 - Heartbeat, GPS, EKF, bateria, origem, distância, geofence e RTL são verificados antes do upload.
 - Startup e health check nunca armam. O gateway não corrige pre-arm mudando parâmetros.
-- Upload, confirmação e início são etapas separadas.
+- Upload, ACK, releitura/verificação e início são etapas separadas. `UPLOADED` não equivale a `VERIFIED`; apenas a comparação integral do conteúdo relido permite `VERIFIED`.
+- `VERIFIED` aguarda ação humana: `START` exige comando administrativo explícito, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true`, veículo já armado pelo operador e preflight/heartbeat ainda válidos. O gateway nunca arma.
+- `PAUSE` só é aceita durante execução/retorno permitido; `CONTINUE` só é aceita em `PAUSED`. Ambas exigem `ALLOW_FLIGHT_COMMANDS=true`, comando fresco, ACK MAVLink e auditoria.
 - Após início, ArduPilot/telemetria comandam o estado físico; cliente e painel não inventam progresso por relógio local.
 - `DELIVERY_CONFIRMED` registra que a etapa/comando do mecanismo foi alcançada; não prova saída, recebimento ou integridade física do pacote. Missão conclui somente após retorno/pouso conforme evidência, e a entrega real continua exigindo registro operacional.
 - Abortamento/RTL registram ator, motivo, resultado e estado do veículo. Uma falha continua visível.

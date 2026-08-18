@@ -5,7 +5,12 @@ param(
     [int]$Port = 0,
     [string]$ApiBaseUrl = 'http://localhost:8000',
     [switch]$WithoutMapTiler,
-    [switch]$SkipPubGet
+    [switch]$SkipPubGet,
+    [string]$FlutterSdkRoot,
+    [switch]$AllowBundledFlutterSdk,
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterChannel = 'stable',
+    [ValidateNotNullOrEmpty()][string]$ExpectedFlutterVersionPattern = '^3\.47\.\d+$',
+    [ValidateNotNullOrEmpty()][string]$ExpectedDartVersionPattern = '^3\.13\.\d+$'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,6 +67,11 @@ $startParameters = @{
     Device = $Device
     WebPort = $Port
     SkipPubGet = $SkipPubGet
+    FlutterSdkRoot = $FlutterSdkRoot
+    AllowBundledFlutterSdk = $AllowBundledFlutterSdk
+    ExpectedFlutterChannel = $ExpectedFlutterChannel
+    ExpectedFlutterVersionPattern = $ExpectedFlutterVersionPattern
+    ExpectedDartVersionPattern = $ExpectedDartVersionPattern
 }
 if ($mapsConfigured) {
     $startParameters.MapTilerConfigured = $true

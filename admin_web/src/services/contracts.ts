@@ -39,7 +39,9 @@ export type MissionStatus =
   | 'AUTHORIZED'
   | 'UPLOADING'
   | 'UPLOADED'
+  | 'VERIFIED'
   | 'EXECUTING'
+  | 'PAUSED'
   | 'DESTINATION_REACHED'
   | 'DELIVERY_CONFIRMED'
   | 'RETURNING'
@@ -166,8 +168,13 @@ export interface Mission {
 
 export interface Vehicle {
   id: string;
+  identifier: string;
   name: string;
   system: string;
+  autopilot_system: string;
+  autopilot_version: string | null;
+  gateway_id: string;
+  operational_source: OperationalSource;
   connected: boolean;
   status: 'ONLINE' | 'OFFLINE' | 'DEGRADED';
   last_seen_at: string;
@@ -191,11 +198,28 @@ export interface VehicleHealth extends OperationalMetadata {
   battery_percent: number | null;
   battery_voltage: number | null;
   origin_known: boolean | null;
+  current_latitude: number | null;
+  current_longitude: number | null;
+  current_altitude_m: number | null;
   geofence_enabled: boolean | null;
   rtl_configured: boolean | null;
   preflight_ok: boolean | null;
   preflight_messages: string[];
   measured_at: string | null;
+  connection_state: string | null;
+  connection_mode: string | null;
+  connection_topology: string | null;
+  connection_endpoint: string | null;
+  serial_port: string | null;
+  connection_baud: number | null;
+  mavlink_system_id: number | null;
+  mavlink_component_id: number | null;
+  heartbeat_age_seconds: number | null;
+  last_heartbeat_at: string | null;
+  mission_upload_enabled: boolean | null;
+  flight_commands_enabled: boolean | null;
+  mission_start_enabled: boolean | null;
+  connection_error: string | null;
   authorization_limits: VehicleAuthorizationLimits | null;
 }
 
@@ -254,6 +278,11 @@ export interface AdminApi {
   authorizeFlight(id: string, input: FlightAuthorizationInput): Promise<Mission>;
   abortMission(id: string, reason: string): Promise<Mission>;
   requestRtl(id: string, reason: string): Promise<Mission>;
+  requestMissionCommand(
+    id: string,
+    action: 'START' | 'PAUSE' | 'CONTINUE',
+    reason: string,
+  ): Promise<Mission>;
   exportMission(id: string): Promise<void>;
   listVehicles(): Promise<Vehicle[]>;
   getVehicleHealth(id: string): Promise<VehicleHealth>;

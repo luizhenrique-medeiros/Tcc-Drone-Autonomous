@@ -137,6 +137,7 @@ async def upload_status(
     if payload.status not in {
         MissionStatus.UPLOADING,
         MissionStatus.UPLOADED,
+        MissionStatus.VERIFIED,
         MissionStatus.FAILED,
     }:
         raise InvalidStateError("Estado inválido para o endpoint de upload")

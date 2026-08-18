@@ -34,7 +34,9 @@ O operador confirma somente três grupos que dependem de inspeção humana:
 
 ## Acompanhamento e incidentes
 
-WebSocket só fica visualmente conectado depois do evento de confirmação do servidor, agrupa rajadas de atualização e, após desconexão, marca dados vencidos e refaz o snapshot canônico. Abortamento e RTL são botões separados, vermelhos somente quando destrutivos, com motivo obrigatório, chave de idempotência, modal e resultado. O operador continua usando Mission Planner como estação de segurança.
+Após o upload, o painel diferencia `UPLOADED` (ACK recebido) de `VERIFIED` (conteúdo relido e comparado). `VERIFIED` não inicia nada. O botão `Solicitar START` só fica disponível quando o snapshot pertence ao mesmo veículo da missão, está fresco, conectado, com heartbeat atual e informa simultaneamente `flight_commands_enabled=true`, `mission_start_enabled=true` e `armed=true`; o backend e o gateway repetem as validações, portanto o estado visual não é autorização. `PAUSE` é oferecido apenas nos estados executáveis e `CONTINUE` somente em `PAUSED`. Todas as ações usam endpoint, motivo quando aplicável, chave de idempotência, comando persistido e ACK do gateway.
+
+WebSocket só fica visualmente conectado depois do evento de confirmação do servidor, agrupa rajadas de atualização e, após desconexão, marca dados vencidos e refaz o snapshot canônico. `START`, `PAUSE`, `CONTINUE`, abortamento e RTL são ações separadas; ações destrutivas usam confirmação e motivo. O operador continua usando Mission Planner como estação de segurança.
 
 Alertas operacionais são derivados dos snapshots canônicos e informam o que ocorreu, impacto, última evidência e ação sugerida. A combinação de tipo/veículo/missão é deduplicada e respeita cooldown; alertas não transformam valor ausente em falha física nem inventam diagnóstico.
 

@@ -62,7 +62,9 @@ python -m venv .venv
 .\.venv\Scripts\python -m app.main
 ```
 
-`simulation` é padrão. `sitl` usa conexão UDP configurada, mas só inicia uma missão quando o operador define explicitamente `ALLOW_MISSION_START=true`. `real` exige também confirmação de ambiente, checklist e operador; nenhum modo arma no startup.
+`simulation` é o padrão. `sitl` usa UDP. No Windows, `direct` abre a porta configurada em `MAVLINK_CONNECTION`; `mission_planner_forward` recebe o mirror configurado em `MAVLINK_FORWARD_CONNECTION`. O valor legado `real` continua aceito, mas as duas topologias explícitas são preferidas.
+
+Hardware inicia somente em recepção com `REAL_HARDWARE_ACKNOWLEDGED=false`. Upload, comandos e start são gates separados por `ALLOW_MISSION_UPLOAD`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, todos falsos por padrão. `ALLOW_MISSION_START=true` também exige o gate geral de comandos. O gateway nunca arma: `START` requer veículo já armado pelo operador; `PAUSE`/`CONTINUE` exigem ACK e estado compatível. Consulte [setup Mission Planner/Pixhawk](MISSION_PLANNER_SETUP.md).
 
 ## Compose
 
@@ -72,4 +74,4 @@ python -m venv .venv
 docker compose --profile gateway up --build
 ```
 
-Não use o profile real durante testes automatizados.
+O profile Docker é adequado a `simulation`/SITL. Para `COM7` ou forwarding local no Windows, execute `scripts/start_gateway.ps1` no host; o container Linux não deve disputar a serial do Mission Planner. Testes automatizados nunca abrem hardware.

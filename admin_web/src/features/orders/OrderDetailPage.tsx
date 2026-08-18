@@ -25,6 +25,7 @@ import {
   StatusBadge,
 } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { useOperationsStream } from '../../hooks/useOperationsStream';
 import { adminApi, getErrorMessage } from '../../services';
 import {
   formatCoordinate,
@@ -39,6 +40,7 @@ export function OrderDetailPage() {
   const navigate = useNavigate();
   const loader = useCallback(() => adminApi.getOrder(orderId), [orderId]);
   const { data: order, isLoading, error, reload, setData } = useAsyncData(loader);
+  useOperationsStream(() => void reload());
   const [decisionModal, setDecisionModal] = useState<'approve' | 'reject' | null>(
     null,
   );

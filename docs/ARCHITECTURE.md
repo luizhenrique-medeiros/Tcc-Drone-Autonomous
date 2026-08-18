@@ -27,7 +27,7 @@ O Flutter roda em Android e Web, autentica clientes, apresenta o catálogo acad�
 
 ### Painel administrativo
 
-O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checks automáticos, três confirmações humanas, autorização de voo, telemetria e eventos. Checks usam `PASS`, `WARNING` e `BLOCKING`; a frase digitada não faz parte da autorização. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar RTL/abortamento, mas o backend e o gateway ainda validam estado e segurança.
+O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checks automáticos, três confirmações humanas, autorização de voo, telemetria e eventos. Checks usam `PASS`, `WARNING` e `BLOCKING`; a frase digitada não faz parte da autorização. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar `START`, `PAUSE`, `CONTINUE`, RTL ou abortamento, mas o backend e o gateway ainda validam estado, idade do comando e gates locais; nenhum botão arma o veículo.
 
 ### Backend
 
@@ -71,9 +71,10 @@ A Pixhawk/ArduPilot é a fonte de verdade física durante execução. O software
 9. O administrador registra abertura/revisão no Mission Planner.
 10. Um snapshot recente, não nulo e com origem conhecida alimenta checks automáticos; o operador confirma somente área/condições, inspeção física do drone/carga e sua prontidão.
 11. A autorização fica ligada à versão, expira e é de uso único.
-12. O gateway reivindica a missão de forma idempotente, valida novamente, envia e confirma o upload.
-13. Telemetria e eventos atualizam backend, painel e `Meus pedidos`; uma desconexão conserva o último snapshot e aciona reconexão/refetch.
-14. Após o comando do mecanismo ser registrado — sem presumir entrega física — a missão retorna à origem e só conclui com a evidência operacional prevista; falhas permanecem falhas.
+12. O gateway reivindica a missão de forma idempotente, valida novamente, envia, recebe o ACK e relê o conteúdo. Só a comparação completa publica `VERIFIED`.
+13. `VERIFIED` aguarda o armamento físico pelo operador e uma solicitação administrativa `START`; o gateway exige separadamente os gates de comandos e de início. `PAUSE` e `CONTINUE` também são comandos auditados e ACK-aware.
+14. Telemetria e eventos atualizam backend, painel e `Meus pedidos`; uma desconexão conserva o último snapshot e aciona reconexão/refetch.
+15. Após o comando do mecanismo ser registrado — sem presumir entrega física — a missão retorna à origem e só conclui com a evidência operacional prevista; falhas permanecem falhas.
 
 ## Autoridade em duas etapas
 
@@ -91,7 +92,7 @@ Nenhuma transação, botão ou endpoint reúne as duas setas. Alterar a missão 
 
 Pedido: `DRAFT`, `PENDING_ADMIN_APPROVAL`, `APPROVED`, `REJECTED`, `MISSION_PREPARING`, `MISSION_READY`, `WAITING_FLIGHT_AUTHORIZATION`, `MISSION_UPLOADING`, `IN_TRANSIT`, `AT_DESTINATION`, `DELIVERED`, `RETURNING`, `COMPLETED`, `CANCELLED`, `FAILED`. `DRAFT` é interno ao checkout e só passa a integrar `Meus pedidos` depois da submissão.
 
-Missão: `DRAFT`, `PENDING_VALIDATION`, `GENERATED`, `EXPORTED_TO_MISSION_PLANNER`, `UNDER_REVIEW`, `READY_FOR_AUTHORIZATION`, `AUTHORIZED`, `UPLOADING`, `UPLOADED`, `EXECUTING`, `DESTINATION_REACHED`, `DELIVERY_CONFIRMED`, `RETURNING`, `COMPLETED`, `ABORTED`, `FAILED`.
+Missão: `DRAFT`, `PENDING_VALIDATION`, `GENERATED`, `EXPORTED_TO_MISSION_PLANNER`, `UNDER_REVIEW`, `READY_FOR_AUTHORIZATION`, `AUTHORIZED`, `UPLOADING`, `UPLOADED`, `VERIFIED`, `EXECUTING`, `PAUSED`, `DESTINATION_REACHED`, `DELIVERY_CONFIRMED`, `RETURNING`, `COMPLETED`, `ABORTED`, `FAILED`.
 
 As transições válidas ficam no domínio, não nos routers ou componentes visuais.
 

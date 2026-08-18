@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:drone_delivery_mobile/core/models/delivery_point.dart';
+import 'package:drone_delivery_mobile/core/models/mission_telemetry.dart';
 import 'package:drone_delivery_mobile/core/models/order.dart';
 import 'package:drone_delivery_mobile/core/network/api_client.dart';
 import 'package:drone_delivery_mobile/core/repositories/order_repository.dart';
@@ -213,6 +214,67 @@ void main() {
       expect(merged.status, OrderStatus.inTransit);
       expect(merged.detailLoaded, isTrue);
       expect(merged.milestones.single.eventType, 'ORDER_SUBMITTED');
+    },
+  );
+
+  test(
+    'mantém última telemetria e estado de missão sem alterar o pedido',
+    () async {
+      final _FakeOrderRepository repository = _FakeOrderRepository(
+        orders: <OrderSnapshot>[
+          _order('pedido-ativo', OrderStatus.missionUploading, hour: 15),
+        ],
+      );
+      final OrdersController controller = OrdersController(
+        repository: repository,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await repository.close();
+      });
+      await controller.loadInitial();
+
+      repository.emit(
+        'pedido-ativo',
+        MissionStatusEvent(
+          MissionStatusSnapshot.fromJson(<String, Object?>{
+            'id': 'mission-1',
+            'status': 'VERIFIED',
+            'updated_at': '2026-08-17T10:00:00Z',
+          }),
+        ),
+      );
+      repository.emit(
+        'pedido-ativo',
+        MissionTelemetryEvent(
+          MissionTelemetrySnapshot.fromJson(<String, Object?>{
+            'battery_percent': 82,
+            'recorded_at': '2026-08-17T10:00:05Z',
+            'is_stale': false,
+          }),
+        ),
+      );
+      repository.emit(
+        'pedido-ativo',
+        MissionTelemetryEvent(
+          MissionTelemetrySnapshot.fromJson(<String, Object?>{
+            'battery_percent': 99,
+            'recorded_at': '2026-08-17T10:00:04Z',
+            'is_stale': false,
+          }),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        controller.missionStatusFor('pedido-ativo')?.status,
+        MissionStatus.verified,
+      );
+      expect(controller.telemetryFor('pedido-ativo')?.batteryPercent, 82);
+      expect(
+        controller.orderById('pedido-ativo')?.status,
+        OrderStatus.missionUploading,
+      );
     },
   );
 

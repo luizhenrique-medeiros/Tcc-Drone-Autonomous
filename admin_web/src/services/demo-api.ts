@@ -305,6 +305,19 @@ export const demoApi: AdminApi = {
     });
     return copy(current);
   },
+  async requestMissionCommand(id, action, reason) {
+    await wait();
+    const current = findMission(id);
+    addEvent({
+      type: `${action}_REQUESTED`,
+      severity: 'CRITICAL',
+      message: `${action} solicitado no modo demo; nenhum veículo foi acionado. ${reason.trim()}`,
+      actor: demoUser.name,
+      mission_id: id,
+      vehicle_id: current.vehicle_id,
+    });
+    return copy(current);
+  },
   async exportMission(id) {
     await wait();
     const mission = findMission(id);

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.core.config import MavlinkMode, Settings
-from app.core.exceptions import BackendContractError, BackendUnavailableError
+from app.core.exceptions import BackendContractError, BackendUnavailableError, VehicleTimeoutError
 from app.mavlink.fake_gateway import FakeVehicleGateway
 from app.mission_planner.waypoint import mission_sha256, render_qgc_wpl
 from app.missions.executor import MissionExecutor
@@ -14,6 +14,7 @@ from app.models import (
     ClaimResponse,
     GatewayCommand,
     GatewayCommandStatus,
+    GatewayCommandType,
     HeartbeatResponse,
     HeartbeatVehicle,
     MissionStatus,
@@ -32,6 +33,8 @@ class RecordingBackend:
         self.status_details: list[tuple[MissionStatus, str | None]] = []
         self.telemetry: list[TelemetrySnapshot] = []
         self.events: list[str] = []
+        self.commands: list[GatewayCommand] = []
+        self.command_acks: list[tuple[UUID, GatewayCommandStatus, str | None]] = []
 
     async def heartbeat(self, health: VehicleHealth) -> HeartbeatResponse:
         vehicle_id = self.claim_response.mission.vehicle_id
@@ -62,7 +65,23 @@ class RecordingBackend:
         return self.claim_response
 
     async def pending_commands(self, limit: int = 20) -> list[GatewayCommand]:
-        return []
+        return self.commands[:limit]
+
+    def queue_command(
+        self,
+        command: GatewayCommandType,
+        *,
+        requested_at: datetime | None = None,
+    ) -> GatewayCommand:
+        queued = GatewayCommand(
+            id=uuid4(),
+            mission_id=self.claim_response.mission.id,
+            command=command,
+            status=GatewayCommandStatus.PENDING,
+            requested_at=requested_at or datetime.now(UTC),
+        )
+        self.commands.append(queued)
+        return queued
 
     async def acknowledge_command(
         self,
@@ -72,6 +91,15 @@ class RecordingBackend:
         detail: str | None = None,
         event_id: UUID | None = None,
     ) -> UUID:
+        self.command_acks.append((command_id, status, detail))
+        for index, command in enumerate(self.commands):
+            if command.id != command_id:
+                continue
+            if status in {GatewayCommandStatus.COMPLETED, GatewayCommandStatus.FAILED}:
+                self.commands.pop(index)
+            else:
+                self.commands[index] = command.model_copy(update={"status": status})
+            break
         return event_id or uuid4()
 
     async def report_upload(
@@ -147,6 +175,25 @@ class ControllableFakeGateway(FakeVehicleGateway):
         await super().start_mission(mission)
 
 
+class UncertainUploadGateway(FakeVehicleGateway):
+    def __init__(self, settings: Settings, *, persisted_before_timeout: bool = True) -> None:
+        super().__init__(settings)
+        self.upload_attempts = 0
+        self.verify_attempts = 0
+        self.persisted_before_timeout = persisted_before_timeout
+
+    async def upload_mission(self, mission: AuthorizedMission, mission_file: str):  # type: ignore[no-untyped-def]
+        del mission_file
+        self.upload_attempts += 1
+        if self.persisted_before_timeout:
+            self._uploaded[str(mission.id)] = mission.mission_sha256
+        raise VehicleTimeoutError("MISSION_ACK não chegou")
+
+    async def verify_mission(self, mission: AuthorizedMission):  # type: ignore[no-untyped-def]
+        self.verify_attempts += 1
+        return await super().verify_mission(mission)
+
+
 class FlakyExecutingBackend(RecordingBackend):
     def __init__(self, claim: ClaimResponse) -> None:
         super().__init__(claim)
@@ -168,6 +215,41 @@ class FlakyExecutingBackend(RecordingBackend):
                 raise BackendUnavailableError("outage after MISSION_START")
         return await super().report_status(
             mission_id,
+            status,
+            detail=detail,
+            event_id=event_id,
+        )
+
+
+class FlakyCommandCompletionBackend(RecordingBackend):
+    def __init__(
+        self,
+        claim: ClaimResponse,
+        fail_command: GatewayCommandType = GatewayCommandType.PAUSE,
+    ) -> None:
+        super().__init__(claim)
+        self.fail_command = fail_command
+        self.fail_completion_once = True
+
+    async def acknowledge_command(
+        self,
+        command_id: UUID,
+        status: GatewayCommandStatus,
+        *,
+        detail: str | None = None,
+        event_id: UUID | None = None,
+    ) -> UUID:
+        command = next((item for item in self.commands if item.id == command_id), None)
+        if (
+            status is GatewayCommandStatus.COMPLETED
+            and command is not None
+            and command.command is self.fail_command
+            and self.fail_completion_once
+        ):
+            self.fail_completion_once = False
+            raise BackendUnavailableError("command completion outage")
+        return await super().acknowledge_command(
+            command_id,
             status,
             detail=detail,
             event_id=event_id,
@@ -339,22 +421,46 @@ def build_claim() -> ClaimResponse:
     )
 
 
+def enabled_settings(
+    journal_path: Path,
+    *,
+    mavlink_mode: MavlinkMode = MavlinkMode.SIMULATION,
+) -> Settings:
+    return Settings(
+        _env_file=None,
+        mavlink_mode=mavlink_mode,
+        allow_mission_upload=True,
+        allow_flight_commands=True,
+        allow_mission_start=True,
+        gateway_journal_path=journal_path,
+    )
+
+
 @pytest.mark.asyncio
 async def test_simulation_runs_one_claim_through_return_and_completion(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, gateway_journal_path=tmp_path / "executor-journal.json")
+    settings = enabled_settings(tmp_path / "executor-journal.json")
     claim = build_claim()
     backend = RecordingBackend(claim)
-    vehicle = FakeVehicleGateway(settings)
+    vehicle = ControllableFakeGateway(settings)
     await vehicle.connect()
     current_time = [datetime.now(UTC)]
     executor = MissionExecutor(settings, backend, vehicle, now=lambda: current_time[0])
 
-    for _ in range(6):
+    await executor.run_cycle()
+    current_time[0] += timedelta(seconds=settings.telemetry_persist_interval_seconds)
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START, requested_at=current_time[0])
+    for _ in range(5):
         await executor.run_cycle()
         current_time[0] += timedelta(seconds=settings.telemetry_persist_interval_seconds)
 
     assert backend.claim_count == 1
-    assert backend.upload_statuses == [MissionStatus.UPLOADING, MissionStatus.UPLOADED]
+    assert backend.upload_statuses == [
+        MissionStatus.UPLOADING,
+        MissionStatus.UPLOADED,
+        MissionStatus.VERIFIED,
+    ]
     assert backend.statuses == [
         MissionStatus.EXECUTING,
         MissionStatus.DESTINATION_REACHED,
@@ -374,15 +480,76 @@ async def test_simulation_runs_one_claim_through_return_and_completion(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_progress_journal_ignores_duplicate_after_executor_restart(tmp_path: Path) -> None:
-    journal_path = tmp_path / "progress.json"
-    settings = Settings(_env_file=None, gateway_journal_path=journal_path)
+async def test_read_only_default_never_claims_or_uploads_authorized_mission(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, gateway_journal_path=tmp_path / "read-only.json")
     claim = build_claim()
     backend = RecordingBackend(claim)
     vehicle = FakeVehicleGateway(settings)
     await vehicle.connect()
+
+    await MissionExecutor(settings, backend, vehicle).run_cycle()
+
+    assert backend.claim_count == 0
+    assert backend.upload_statuses == []
+
+
+@pytest.mark.asyncio
+async def test_uncertain_upload_is_not_repeated_after_restart(tmp_path: Path) -> None:
+    journal_path = tmp_path / "uncertain-upload.json"
+    settings = enabled_settings(journal_path)
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = UncertainUploadGateway(settings)
+    await vehicle.connect()
+
+    await MissionExecutor(settings, backend, vehicle).run_cycle()
+    restored = MissionExecutor(settings, backend, vehicle)
+    await restored.run_cycle()
+
+    assert vehicle.upload_attempts == 1
+    assert vehicle.verify_attempts == 1
+    assert backend.upload_statuses == [
+        MissionStatus.UPLOADING,
+        MissionStatus.UPLOADED,
+        MissionStatus.VERIFIED,
+    ]
+    assert "MISSION_UPLOAD_RESULT_UNCERTAIN" in backend.events
+
+
+@pytest.mark.asyncio
+async def test_uncertain_upload_mismatch_blocks_without_reupload(tmp_path: Path) -> None:
+    journal_path = tmp_path / "uncertain-upload-mismatch.json"
+    settings = enabled_settings(journal_path)
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = UncertainUploadGateway(settings, persisted_before_timeout=False)
+    await vehicle.connect()
+
+    await MissionExecutor(settings, backend, vehicle).run_cycle()
+    restored = MissionExecutor(settings, backend, vehicle)
+    await restored.run_cycle()
+    await restored.run_cycle()
+
+    assert vehicle.upload_attempts == 1
+    assert vehicle.verify_attempts == 1
+    assert backend.upload_statuses == [MissionStatus.UPLOADING]
+    assert "MISSION_UPLOAD_RECOVERY_BLOCKED" in backend.events
+
+
+@pytest.mark.asyncio
+async def test_progress_journal_ignores_duplicate_after_executor_restart(tmp_path: Path) -> None:
+    journal_path = tmp_path / "progress.json"
+    settings = enabled_settings(journal_path)
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
     executor = MissionExecutor(settings, backend, vehicle)
 
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
     await executor.run_cycle()
     await executor.run_cycle()
     assert backend.statuses == [
@@ -409,12 +576,16 @@ async def test_progress_journal_ignores_duplicate_after_executor_restart(tmp_pat
 @pytest.mark.asyncio
 async def test_progress_outbox_retries_same_event_id_after_restart(tmp_path: Path) -> None:
     journal_path = tmp_path / "progress-outbox.json"
-    settings = Settings(_env_file=None, gateway_journal_path=journal_path)
+    settings = enabled_settings(journal_path)
     claim = build_claim()
     backend = FlakyDestinationBackend(claim)
-    vehicle = FakeVehicleGateway(settings)
+    vehicle = ControllableFakeGateway(settings)
     await vehicle.connect()
     executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
     await executor.run_cycle()
 
     with pytest.raises(BackendUnavailableError, match="destination report outage"):
@@ -434,7 +605,7 @@ async def test_progress_outbox_retries_same_event_id_after_restart(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_executor_only_claims_mission_bound_to_heartbeat_vehicle(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, gateway_journal_path=tmp_path / "binding.json")
+    settings = enabled_settings(tmp_path / "binding.json")
     claim = build_claim()
     backend = MismatchedHeartbeatBackend(claim)
     vehicle = FakeVehicleGateway(settings)
@@ -448,7 +619,7 @@ async def test_executor_only_claims_mission_bound_to_heartbeat_vehicle(tmp_path:
 
 @pytest.mark.asyncio
 async def test_executor_rejects_heartbeat_identity_mismatch(tmp_path: Path) -> None:
-    settings = Settings(_env_file=None, gateway_journal_path=tmp_path / "identity.json")
+    settings = enabled_settings(tmp_path / "identity.json")
     claim = build_claim()
     backend = WrongIdentityHeartbeatBackend(claim)
     vehicle = FakeVehicleGateway(settings)
@@ -463,12 +634,7 @@ async def test_executor_rejects_heartbeat_identity_mismatch(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_restart_retries_status_with_same_id_without_repeating_start(tmp_path: Path) -> None:
     journal_path = tmp_path / "start-outbox.json"
-    settings = Settings(
-        _env_file=None,
-        mavlink_mode=MavlinkMode.SITL,
-        allow_mission_start=True,
-        gateway_journal_path=journal_path,
-    )
+    settings = enabled_settings(journal_path, mavlink_mode=MavlinkMode.SITL)
     claim = build_claim()
     backend = FlakyExecutingBackend(claim)
     vehicle = ControllableFakeGateway(settings)
@@ -477,6 +643,7 @@ async def test_restart_retries_status_with_same_id_without_repeating_start(tmp_p
     await executor.run_cycle()
     vehicle.armed = True
     vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
 
     with pytest.raises(BackendUnavailableError, match="outage"):
         await executor.run_cycle()
@@ -496,7 +663,7 @@ async def test_restart_retries_status_with_same_id_without_repeating_start(tmp_p
 @pytest.mark.asyncio
 async def test_restart_retries_ambiguous_claim_even_when_offer_disappears(tmp_path: Path) -> None:
     journal_path = tmp_path / "claim-intent.json"
-    settings = Settings(_env_file=None, gateway_journal_path=journal_path)
+    settings = enabled_settings(journal_path)
     claim = build_claim()
     backend = AmbiguousClaimBackend(claim)
     vehicle = FakeVehicleGateway(settings)
@@ -512,7 +679,11 @@ async def test_restart_retries_ambiguous_claim_even_when_offer_disappears(tmp_pa
     await restored.run_cycle()
 
     assert backend.claim_attempts == 2
-    assert backend.upload_statuses == [MissionStatus.UPLOADING, MissionStatus.UPLOADED]
+    assert backend.upload_statuses == [
+        MissionStatus.UPLOADING,
+        MissionStatus.UPLOADED,
+        MissionStatus.VERIFIED,
+    ]
     assert restored.active_mission_id == claim.mission.id
 
 
@@ -523,12 +694,7 @@ async def test_authorization_is_revalidated_before_start(tmp_path: Path) -> None
     claim = claim.model_copy(
         update={"authorization_expires_at": current_time + timedelta(seconds=30)}
     )
-    settings = Settings(
-        _env_file=None,
-        mavlink_mode=MavlinkMode.SITL,
-        allow_mission_start=True,
-        gateway_journal_path=tmp_path / "expiry.json",
-    )
+    settings = enabled_settings(tmp_path / "expiry.json", mavlink_mode=MavlinkMode.SITL)
     backend = RecordingBackend(claim)
     vehicle = ControllableFakeGateway(settings)
     await vehicle.connect()
@@ -538,22 +704,20 @@ async def test_authorization_is_revalidated_before_start(tmp_path: Path) -> None
     vehicle.armed = True
     vehicle.mode = "AUTO"
     clock[0] = current_time + timedelta(minutes=1)
+    backend.queue_command(GatewayCommandType.START, requested_at=clock[0])
 
     await executor.run_cycle()
 
     assert vehicle.start_count == 0
-    assert backend.statuses == [MissionStatus.FAILED]
-    assert executor.active_mission_id is None
+    assert backend.statuses == []
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert "preflight" in (backend.command_acks[-1][2] or "").lower()
+    assert executor.active_mission_id == claim.mission.id
 
 
 @pytest.mark.asyncio
 async def test_backend_health_failure_is_revalidated_before_start(tmp_path: Path) -> None:
-    settings = Settings(
-        _env_file=None,
-        mavlink_mode=MavlinkMode.SITL,
-        allow_mission_start=True,
-        gateway_journal_path=tmp_path / "backend-policy.json",
-    )
+    settings = enabled_settings(tmp_path / "backend-policy.json", mavlink_mode=MavlinkMode.SITL)
     claim = build_claim()
     backend = StartRejectedHeartbeatBackend(claim)
     vehicle = ControllableFakeGateway(settings)
@@ -562,24 +726,44 @@ async def test_backend_health_failure_is_revalidated_before_start(tmp_path: Path
     await executor.run_cycle()
     vehicle.armed = True
     vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
 
     await executor.run_cycle()
 
     assert vehicle.start_count == 0
-    assert backend.statuses == [MissionStatus.FAILED]
-    assert executor.active_mission_id is None
+    assert backend.statuses == []
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert "elegibilidade" in (backend.command_acks[-1][2] or "").lower()
+    assert executor.active_mission_id == claim.mission.id
 
 
 @pytest.mark.asyncio
-async def test_link_loss_keeps_active_mission_and_does_not_fabricate_telemetry(
-    tmp_path: Path,
-) -> None:
-    settings = Settings(
-        _env_file=None,
-        mavlink_mode=MavlinkMode.SITL,
-        allow_mission_start=True,
-        gateway_journal_path=tmp_path / "link-loss.json",
+async def test_expired_start_command_is_rejected_without_vehicle_action(tmp_path: Path) -> None:
+    current_time = datetime.now(UTC)
+    settings = enabled_settings(tmp_path / "expired-command.json", mavlink_mode=MavlinkMode.SITL)
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle, now=lambda: current_time)
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(
+        GatewayCommandType.START,
+        requested_at=current_time - timedelta(seconds=settings.gateway_command_max_age_seconds + 1),
     )
+
+    await executor.run_cycle()
+
+    assert vehicle.start_count == 0
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert "expirado" in (backend.command_acks[-1][2] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_pause_and_continue_require_explicit_commands(tmp_path: Path) -> None:
+    settings = enabled_settings(tmp_path / "pause-continue.json", mavlink_mode=MavlinkMode.SITL)
     claim = build_claim()
     backend = RecordingBackend(claim)
     vehicle = ControllableFakeGateway(settings)
@@ -588,6 +772,124 @@ async def test_link_loss_keeps_active_mission_and_does_not_fabricate_telemetry(
     await executor.run_cycle()
     vehicle.armed = True
     vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
+    await executor.run_cycle()
+
+    backend.queue_command(GatewayCommandType.PAUSE)
+    await executor.run_cycle()
+    assert backend.statuses[-1] is MissionStatus.PAUSED
+    assert vehicle._mission_paused is True
+
+    backend.queue_command(GatewayCommandType.CONTINUE)
+    await executor.run_cycle()
+    assert backend.statuses[-1] is MissionStatus.EXECUTING
+    assert vehicle._mission_paused is False
+
+
+@pytest.mark.asyncio
+async def test_pause_completion_is_reconciled_without_resending_vehicle_command(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "pause-reconciliation.json", mavlink_mode=MavlinkMode.SITL
+    )
+    claim = build_claim()
+    backend = FlakyCommandCompletionBackend(claim)
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
+    await executor.run_cycle()
+
+    pause_count = 0
+    original_pause = vehicle.pause_mission
+
+    async def count_pause() -> None:
+        nonlocal pause_count
+        pause_count += 1
+        await original_pause()
+
+    vehicle.pause_mission = count_pause  # type: ignore[method-assign]
+    backend.queue_command(GatewayCommandType.PAUSE)
+
+    with pytest.raises(BackendUnavailableError, match="command completion outage"):
+        await executor.run_cycle()
+
+    assert pause_count == 1
+    assert backend.commands[0].status is GatewayCommandStatus.ACKNOWLEDGED
+    assert backend.statuses[-1] is MissionStatus.PAUSED
+
+    await executor.run_cycle()
+
+    assert pause_count == 1
+    assert backend.commands == []
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.COMPLETED
+    assert "reconciliado" in (backend.command_acks[-1][2] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_continue_completion_is_reconciled_without_resending_vehicle_command(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "continue-reconciliation.json", mavlink_mode=MavlinkMode.SITL
+    )
+    claim = build_claim()
+    backend = FlakyCommandCompletionBackend(claim, GatewayCommandType.CONTINUE)
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
+    await executor.run_cycle()
+    backend.queue_command(GatewayCommandType.PAUSE)
+    await executor.run_cycle()
+
+    continue_count = 0
+    original_continue = vehicle.continue_mission
+
+    async def count_continue() -> None:
+        nonlocal continue_count
+        continue_count += 1
+        await original_continue()
+
+    vehicle.continue_mission = count_continue  # type: ignore[method-assign]
+    backend.queue_command(GatewayCommandType.CONTINUE)
+
+    with pytest.raises(BackendUnavailableError, match="command completion outage"):
+        await executor.run_cycle()
+
+    assert continue_count == 1
+    assert backend.commands[0].status is GatewayCommandStatus.ACKNOWLEDGED
+    assert backend.statuses[-1] is MissionStatus.EXECUTING
+
+    await executor.run_cycle()
+
+    assert continue_count == 1
+    assert backend.commands == []
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.COMPLETED
+    assert "reconciliado" in (backend.command_acks[-1][2] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_link_loss_keeps_active_mission_and_does_not_fabricate_telemetry(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(tmp_path / "link-loss.json", mavlink_mode=MavlinkMode.SITL)
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    vehicle.armed = True
+    vehicle.mode = "AUTO"
+    backend.queue_command(GatewayCommandType.START)
     await executor.run_cycle()
     telemetry_before_loss = len(backend.telemetry)
     vehicle.link_connected = False

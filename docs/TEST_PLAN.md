@@ -23,7 +23,7 @@ Cobrir formulários, restauração/expiração da sessão, catálogo/carrinho, r
 
 ## Admin
 
-Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, checks automáticos `PASS/WARNING/BLOCKING`, exatamente três confirmações humanas, ausência da frase, modal final, warning não bloqueante, blocker impeditivo, idempotência/duplo clique, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, RTL e abortamento.
+Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, os três gates independentes, checks automáticos `PASS/WARNING/BLOCKING`, exatamente três confirmações humanas, ausência da frase, modal final, warning não bloqueante, blocker impeditivo, idempotência/duplo clique, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, `START`/`PAUSE`/`CONTINUE`, RTL e abortamento.
 
 ## MapTiler e MapLibre
 
@@ -62,7 +62,7 @@ Esses cenários são requisitos de validação e não integram a evidência acum
 
 ## Gateway
 
-Cobrir configuração segura, fake, heartbeat, normalização, preflight, rejeição de missão acima de `MAX_MISSION_DISTANCE_M`, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, abortamento e RTL.
+Cobrir configuração segura, fake, heartbeat, normalização, preflight, rejeição de missão acima de `MAX_MISSION_DISTANCE_M`, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura e `VERIFIED`, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, idade de comando, gates independentes, `START`, `PAUSE`, `CONTINUE`, abortamento e RTL. Confirmar que `START` não arma, exige identidade/frescor/link, veículo já armado e os dois gates locais; `CONTINUE` só é aceito após `PAUSED`; e falha HTTP depois de `PAUSE`/`CONTINUE` confirmado é reconciliada sem reenviar o comando físico.
 
 Os testes Pymavlink usam conexão controlada em memória. Eles não abrem serial/UDP, não executam SITL e não se conectam a hardware.
 
@@ -73,6 +73,33 @@ Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenár
 ## Hardware e voo
 
 Registrar data, local controlado, operador, hardware/firmware, checklist, missão/hash, logs Mission Planner/TLOG/dataflash e resultado real. Progressão: comunicação → sensores → upload desarmado → motores sem hélices → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno.
+
+## Evidência atual — 17 de agosto de 2026
+
+| Evidência executada | Resultado | Limite honesto |
+|---|---|---|
+| backend | Ruff/format e 53 testes aprovados; 1 opt-in ignorado; `pip-audit` limpo | warning Starlette/httpx; audit precisou de UTF-8 explícito por causa do caminho com acento |
+| gateway | Ruff/format e 57 testes aprovados | doubles não provam socket, SITL ou hardware |
+| admin | ESLint, 16 arquivos/67 testes e build Vite aprovados | aviso de chunk acima de 500 kB; controlador visual do navegador indisponível |
+| Flutter | SDK oficial global stable 3.47.0: format 90 arquivos/0 mudanças, analyze sem issues e 98/98 testes; Web release, dry run Wasm e APK debug aprovados | HTTP/build não comprovam UI, tiles, GPS ou aparelho nesta rodada |
+| Docker | imagens backend/admin/gateway construídas; DB/API/admin healthy | gateway físico parado intencionalmente |
+| migração | `0006_mission_start_health` aplicada ao PostgreSQL real; head único e roundtrip SQLite aprovados | downgrade não executado no banco do usuário |
+| serial direta passiva, evidência anterior da mesma sessão | heartbeat real recebido duas vezes em COM7/57600: system/component 1/1, `STABILIZE`, desarmado | GPS, bateria, EKF, home, upload e comandos não foram obtidos/enviados |
+| gateway real limitado → backend | sete heartbeats normalizados aceitos com HTTP 200 em 15 s | não havia missão elegível nem comandos; nenhuma escrita MAVLink foi habilitada |
+| estado físico final | COM7 deixou de ser enumerada; snapshot persistido ficou offline/`ERROR`, com três gates falsos | é o estado atual, portanto nova comunicação depende de reconectar o link |
+| Mission Planner forwarding | listener Inbound conflitante identificado; diagnóstico UDP sem heartbeat | Mavlink Mirror ainda não foi validado |
+| SITL, upload, armamento, motor, voo | não executados | permanecem pendentes e separados |
+
+Total atual comprovado: **275 testes automatizados aprovados**, mais 1 opt-in ignorado. O rerun
+orquestrado terminou com exit 0 em 107,5 s, usando seleção explícita do SDK oficial stable. O APK
+debug integrado atual, regenerado com `DEMO_MODE=false` e a configuração MapTiler do `.env`
+ignorado, possui 195.236.488 bytes e SHA-256
+`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`.
+
+O banco preserva dois pedidos de teste em `PENDING_ADMIN_APPROVAL`; **não aprovar, preparar,
+autorizar, reivindicar ou despachar**. O login administrativo não foi usado no smoke final porque
+a senha do `.env` diverge do hash persistido. Isso não torna o banco vazio. O navegador visual
+estava indisponível, então listener e HTTP 200 não foram registrados como smoke de UI.
 
 ## Evidência da entrega de localizações salvas — 2026-08-09
 
@@ -90,7 +117,7 @@ A fila dos movimentos programáticos da câmera ganhou regressões para três se
 
 Essa evidência é adicional e específica desta entrega; não reescreve as contagens históricas abaixo nem comprova MapTiler com chave restrita, geolocalização real, SITL, Pixhawk ou voo.
 
-## Evidência acumulada — atualizada em 2026-08-08
+## Evidência histórica preservada — 2026-08-08
 
 | Evidência | Estado comprovado | Limite |
 |---|---|---|
@@ -108,13 +135,15 @@ Essa evidência é adicional e específica desta entrega; não reescreve as cont
 | auditoria npm de produção | zero vulnerabilidades conhecidas | fotografia de 2026-08-07; repetir antes de publicar |
 | SITL/Mission Planner/Pixhawk/voo | não validado | exige evidência separada |
 
-Total comprovado: **173 testes automatizados aprovados**. Artefato Android atual: `mobile/build/app/outputs/flutter-apk/app-debug.apk`, 214.406.475 bytes, SHA-256 `ACB33B014CF3407B13B86295E7F6E3BF7AE0006F3CED47520A15D25F9B81287C`. A instalação em emulador/aparelho e a assinatura não foram revalidadas nesta rodada.
+Total histórico daquela bateria: **173 testes automatizados aprovados**. O hash e o tamanho do APK registrados nessa seção foram superados pelo artefato atual descrito acima. A instalação em emulador/aparelho e a assinatura release continuam sem revalidação nesta rodada.
 
 ## Comandos
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\test_all.ps1 -SkipBuilds
+  -File .\scripts\test_all.ps1 `
+  -SkipBuilds `
+  -FlutterSdkRoot '<CAMINHO_SDK_FLUTTER_OFICIAL>'
 docker compose --profile gateway config --quiet
 docker compose --profile gateway up -d --build
 docker compose exec -T backend alembic check

@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
 
 from app.core.config import Settings
-from app.core.exceptions import MissionUploadError, UnsafeOperationError
+from app.core.exceptions import MissionUploadError, UnsafeOperationError, VehicleTimeoutError
 from app.models import (
     AuthorizedMission,
+    ConnectionState,
     MissionStatus,
+    MissionVerificationResult,
     OperationalSource,
     TelemetrySnapshot,
     UploadResult,
@@ -20,7 +22,19 @@ class FakeVehicleGateway:
         self._connected = False
         self._uploaded: dict[str, str] = {}
         self._active_mission_id: str | None = None
+        self._mission_paused = False
         self._progress_tick = 0
+
+    @property
+    def connection_state(self) -> ConnectionState:
+        return ConnectionState.CONNECTED if self._connected else ConnectionState.DISCONNECTED
+
+    @property
+    def connection_error(self) -> str | None:
+        return None
+
+    def mark_reconnecting(self) -> None:
+        self._connected = False
 
     async def connect(self) -> None:
         self._connected = True
@@ -43,12 +57,24 @@ class FakeVehicleGateway:
             geofence_enabled=True,
             origin_latitude=self._settings.base_latitude,
             origin_longitude=self._settings.base_longitude,
+            connection_state=self.connection_state,
+            connection_mode=self._settings.mavlink_mode.value,
+            connection_topology=self._settings.connection_topology,
+            connection_endpoint=self._settings.sanitized_connection,
+            serial_port=None,
+            connection_baud=None,
+            mission_upload_enabled=self._settings.allow_mission_upload,
+            flight_commands_enabled=self._settings.allow_flight_commands,
+            mission_start_enabled=self._settings.allow_mission_start,
         )
 
     async def drain_events(self) -> list[VehicleEvent]:
         return []
 
     async def upload_mission(self, mission: AuthorizedMission, mission_file: str) -> UploadResult:
+        del mission_file
+        if not self._settings.allow_mission_upload:
+            raise UnsafeOperationError("ALLOW_MISSION_UPLOAD não foi habilitado.")
         if not self._connected:
             raise MissionUploadError("Fake vehicle is disconnected.")
         key = str(mission.id)
@@ -62,13 +88,45 @@ class FakeVehicleGateway:
             detail="Upload fake confirmado de forma idempotente.",
         )
 
+    async def verify_mission(self, mission: AuthorizedMission) -> MissionVerificationResult:
+        if self._uploaded.get(str(mission.id)) != mission.mission_sha256:
+            raise MissionUploadError("Missão fake não está carregada com o hash esperado.")
+        return MissionVerificationResult(
+            item_count=len(mission.waypoints),
+            verified=True,
+            detail="Conteúdo fake relido e verificado.",
+        )
+
     async def start_mission(self, mission: AuthorizedMission) -> None:
+        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
+            raise UnsafeOperationError(
+                "ALLOW_FLIGHT_COMMANDS e ALLOW_MISSION_START devem estar habilitados."
+            )
         if str(mission.id) not in self._uploaded:
             raise UnsafeOperationError("Missão não foi enviada antes do início.")
         if self._active_mission_id not in (None, str(mission.id)):
             raise UnsafeOperationError("Outra missão fake já está ativa.")
         self._active_mission_id = str(mission.id)
+        self._mission_paused = False
         self._progress_tick = 0
+
+    async def pause_mission(self) -> None:
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
+        if not self._connected:
+            raise VehicleTimeoutError("Heartbeat fake não está válido.")
+        if self._active_mission_id is None:
+            raise UnsafeOperationError("Nenhuma missão fake ativa para pausar.")
+        self._mission_paused = True
+
+    async def continue_mission(self) -> None:
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
+        if not self._connected:
+            raise VehicleTimeoutError("Heartbeat fake não está válido.")
+        if self._active_mission_id is None or not self._mission_paused:
+            raise UnsafeOperationError("Nenhuma missão fake pausada para continuar.")
+        self._mission_paused = False
 
     async def synchronize_progress(
         self,
@@ -80,6 +138,8 @@ class FakeVehicleGateway:
     async def poll_mission(self, mission: AuthorizedMission) -> VehiclePoll:
         if self._active_mission_id != str(mission.id):
             raise UnsafeOperationError("Missão não está ativa no veículo fake.")
+        if self._mission_paused:
+            raise UnsafeOperationError("Missão fake está pausada.")
         self._progress_tick += 1
         fraction = min(self._progress_tick / 5, 1)
         returning = self._progress_tick >= 4
@@ -124,12 +184,19 @@ class FakeVehicleGateway:
         )
 
     async def request_rtl(self) -> None:
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
+        if not self._connected:
+            raise VehicleTimeoutError("Heartbeat fake não está válido.")
         if self._active_mission_id is None:
             raise UnsafeOperationError("Nenhuma missão fake ativa para RTL.")
         self._progress_tick = 3
 
     async def abort(self) -> None:
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
         self._active_mission_id = None
+        self._mission_paused = False
 
     async def close(self) -> None:
         self._connected = False

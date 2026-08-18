@@ -399,10 +399,16 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final Offset casa = tester.getCenter(find.text('Casa'));
-    final Offset trabalho = tester.getCenter(find.text('Trabalho'));
-    expect((casa.dy - trabalho.dy).abs(), lessThan(1));
-    expect(trabalho.dx, greaterThan(casa.dx));
+    final Rect casa = tester.getRect(
+      find.byKey(const Key('saved-location-picker-demo-saved-location-1')),
+    );
+    final Rect trabalho = tester.getRect(
+      find.byKey(const Key('saved-location-picker-demo-saved-location-2')),
+    );
+    expect((casa.center.dy - trabalho.center.dy).abs(), lessThan(1));
+    expect(casa.overlaps(trabalho), isFalse);
+    expect(casa.width, greaterThan(100));
+    expect(trabalho.width, greaterThan(100));
     expect(tester.takeException(), isNull);
   });
 }

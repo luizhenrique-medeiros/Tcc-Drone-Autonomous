@@ -40,6 +40,23 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
             "geofence_enabled": None,
             "origin_latitude": None,
             "origin_longitude": None,
+            "connection_state": None,
+            "connection_mode": None,
+            "connection_topology": None,
+            "connection_endpoint": None,
+            "serial_port": None,
+            "connection_baud": None,
+            "mavlink_system_id": None,
+            "mavlink_component_id": None,
+            "heartbeat_age_seconds": None,
+            "last_heartbeat_at": None,
+            "current_latitude": None,
+            "current_longitude": None,
+            "current_altitude_m": None,
+            "mission_upload_enabled": None,
+            "flight_commands_enabled": None,
+            "mission_start_enabled": None,
+            "connection_error": None,
         },
     )
 
@@ -53,6 +70,11 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
     assert body["health"]["source"] == "SITL"
     assert body["health"]["is_stale"] is False
     assert body["health"]["received_at"] == body["health"]["captured_at"]
+    assert body["health"]["connection_endpoint"] is None
+    assert body["health"]["serial_port"] is None
+    assert body["health"]["heartbeat_age_seconds"] is None
+    assert body["health"]["mission_upload_enabled"] is None
+    assert body["health"]["mission_start_enabled"] is None
 
     health = client.get(
         f"/api/v1/admin/vehicles/{body['vehicle']['id']}/health",
@@ -61,6 +83,94 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
     assert health.status_code == 200, health.text
     assert health.json()["gps_fix_type"] is None
     assert health.json()["received_at"]
+
+
+def test_health_persists_and_exposes_sanitized_integration_diagnostics(
+    client: TestClient,
+    gateway_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    last_heartbeat_at = datetime.now(UTC) - timedelta(milliseconds=400)
+    response = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={
+            "gateway_id": "gateway-real-1",
+            "vehicle_identifier": "pixhawk-6c-real",
+            "vehicle_name": "Drone Pixhawk 6C",
+            "autopilot_system": "ArduPilot",
+            "autopilot_version": "ArduCopter 4.6",
+            "source": "HARDWARE_REAL",
+            "connected": True,
+            "heartbeat": True,
+            "gps_fix_type": 3,
+            "satellites": 14,
+            "ekf_ok": True,
+            "battery_percent": 88,
+            "battery_voltage": 15.7,
+            "flight_mode": "GUIDED",
+            "armed": False,
+            "preflight_ok": True,
+            "rtl_configured": True,
+            "geofence_enabled": True,
+            "origin_latitude": -23.1175,
+            "origin_longitude": -46.5502,
+            "connection_state": "CONNECTED",
+            "connection_mode": "FORWARD",
+            "connection_topology": "MISSION_PLANNER_FORWARDING",
+            "connection_endpoint": "udp://operator:secret@127.0.0.1:14550?token=hidden",
+            "serial_port": "COM7",
+            "connection_baud": 57600,
+            "mavlink_system_id": 1,
+            "mavlink_component_id": 1,
+            "heartbeat_age_seconds": 0.4,
+            "last_heartbeat_at": last_heartbeat_at.isoformat(),
+            "current_latitude": -23.11872,
+            "current_longitude": -46.58131,
+            "current_altitude_m": 12.5,
+            "mission_upload_enabled": False,
+            "flight_commands_enabled": False,
+            "mission_start_enabled": False,
+            "connection_error": None,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    vehicle_id = response.json()["vehicle"]["id"]
+    health = client.get(
+        f"/api/v1/admin/vehicles/{vehicle_id}/health",
+        headers=admin_headers,
+    )
+
+    assert health.status_code == 200, health.text
+    body = health.json()
+    assert body["connection_state"] == "CONNECTED"
+    assert body["connection_mode"] == "FORWARD"
+    assert body["connection_topology"] == "MISSION_PLANNER_FORWARDING"
+    assert body["connection_endpoint"] == "udp://127.0.0.1:14550"
+    assert body["serial_port"] == "COM7"
+    assert body["connection_baud"] == 57600
+    assert body["mavlink_system_id"] == 1
+    assert body["mavlink_component_id"] == 1
+    assert 0 <= body["heartbeat_age_seconds"] < 10
+    assert body["last_heartbeat_at"]
+    assert float(body["current_latitude"]) == -23.11872
+    assert float(body["current_longitude"]) == -46.58131
+    assert body["current_altitude_m"] == 12.5
+    assert body["mission_upload_enabled"] is False
+    assert body["flight_commands_enabled"] is False
+    assert body["mission_start_enabled"] is False
+    assert body["connection_error"] is None
+    vehicles = client.get("/api/v1/admin/vehicles", headers=admin_headers)
+    assert vehicles.status_code == 200
+    listed = next(item for item in vehicles.json() if item["id"] == vehicle_id)
+    assert listed["gateway_id"] == "gateway-real-1"
+    assert listed["autopilot_system"] == "ArduPilot"
+    assert listed["autopilot_version"] == "ArduCopter 4.6"
+    assert listed["operational_source"] == "HARDWARE_REAL"
+
+    unauthorized = client.get(f"/api/v1/admin/vehicles/{vehicle_id}/health")
+    assert unauthorized.status_code == 401
 
 
 def test_unknown_source_blocks_authorization_and_changes_critical_hash(

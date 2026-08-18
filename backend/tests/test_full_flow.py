@@ -350,19 +350,198 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     assert duplicate.status_code == 200
     assert duplicate.json()["status"] == "UPLOADED"
 
+    incompatible_upload_replay = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/upload-status",
+        headers=gateway_headers,
+        json={"event_id": "upload-event-001", "status": "VERIFIED"},
+    )
+    assert incompatible_upload_replay.status_code == 409
+    assert incompatible_upload_replay.json()["code"] == "EVENT_ID_REUSED"
+
+    unverified_execution = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-before-verification-001", "status": "EXECUTING"},
+    )
+    assert unverified_execution.status_code == 409
+    assert unverified_execution.json()["code"] == "INVALID_STATE"
+
+    verified = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/upload-status",
+        headers=gateway_headers,
+        json={"event_id": "upload-event-verified-001", "status": "VERIFIED"},
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["status"] == "VERIFIED"
+    order_after_verification = client.get(
+        f"/api/v1/orders/{mission['order_id']}", headers=customer_headers
+    )
+    assert order_after_verification.status_code == 200
+    assert order_after_verification.json()["status"] == "MISSION_UPLOADING"
+    assert "MISSION_VERIFIED" in {
+        milestone["event_type"] for milestone in order_after_verification.json()["milestones"]
+    }
+
+    start_request = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/START",
+        headers={**admin_headers, "Idempotency-Key": "mission-start-flow-001"},
+        json={"reason": "Início explícito no ensaio controlado"},
+    )
+    assert start_request.status_code == 202, start_request.text
+    start_replay = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/START",
+        headers={**admin_headers, "Idempotency-Key": "mission-start-flow-001"},
+        json={"reason": "Início explícito no ensaio controlado"},
+    )
+    assert start_replay.status_code == 202, start_replay.text
+    assert start_replay.headers["Idempotency-Replayed"] == "true"
+    pending_start = client.get(
+        "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
+        headers=gateway_headers,
+    )
+    start_command = pending_start.json()[0]
+    assert start_command["command"] == "START"
+    start_ack = client.post(
+        f"/api/v1/gateway/commands/{start_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "start-command-ack-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+    assert start_ack.status_code == 200, start_ack.text
+
     executing = client.post(
         f"/api/v1/gateway/missions/{mission['id']}/status",
         headers=gateway_headers,
         json={"event_id": "status-event-001", "status": "EXECUTING"},
     )
     assert executing.status_code == 200, executing.text
+    start_complete = client.post(
+        f"/api/v1/gateway/commands/{start_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "start-command-complete-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "COMPLETED",
+        },
+    )
+    assert start_complete.status_code == 200, start_complete.text
+
+    pause_request = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/PAUSE",
+        headers={**admin_headers, "Idempotency-Key": "mission-pause-flow-001"},
+        json={"reason": "Teste controlado de pausa"},
+    )
+    assert pause_request.status_code == 202, pause_request.text
+    pending_pause = client.get(
+        "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
+        headers=gateway_headers,
+    )
+    pause_command = pending_pause.json()[0]
+    assert pause_command["command"] == "PAUSE"
+    pause_ack = client.post(
+        f"/api/v1/gateway/commands/{pause_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "pause-command-ack-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+    assert pause_ack.status_code == 200, pause_ack.text
+    paused = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-paused-001", "status": "PAUSED"},
+    )
+    assert paused.status_code == 200, paused.text
+    pause_complete = client.post(
+        f"/api/v1/gateway/commands/{pause_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "pause-command-complete-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "COMPLETED",
+        },
+    )
+    assert pause_complete.status_code == 200, pause_complete.text
+
+    continue_request = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/CONTINUE",
+        headers={**admin_headers, "Idempotency-Key": "mission-continue-flow-001"},
+        json={"reason": "Teste controlado de continuação"},
+    )
+    assert continue_request.status_code == 202, continue_request.text
+    pending_continue = client.get(
+        "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
+        headers=gateway_headers,
+    )
+    continue_command = pending_continue.json()[0]
+    assert continue_command["command"] == "CONTINUE"
+    continue_ack = client.post(
+        f"/api/v1/gateway/commands/{continue_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "continue-command-ack-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+    assert continue_ack.status_code == 200, continue_ack.text
+    resumed = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-resumed-001", "status": "EXECUTING"},
+    )
+    assert resumed.status_code == 200, resumed.text
+    continue_complete = client.post(
+        f"/api/v1/gateway/commands/{continue_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "continue-command-complete-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "COMPLETED",
+        },
+    )
+    assert continue_complete.status_code == 200, continue_complete.text
+
+    destination_reached = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-destination-001", "status": "DESTINATION_REACHED"},
+    )
+    assert destination_reached.status_code == 200, destination_reached.text
+    order_at_destination = client.get(
+        f"/api/v1/orders/{mission['order_id']}", headers=customer_headers
+    )
+    assert order_at_destination.json()["status"] == "AT_DESTINATION"
+    paused_at_destination = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-paused-at-destination-001", "status": "PAUSED"},
+    )
+    assert paused_at_destination.status_code == 200, paused_at_destination.text
+    order_while_paused = client.get(
+        f"/api/v1/orders/{mission['order_id']}", headers=customer_headers
+    )
+    assert order_while_paused.json()["status"] == "AT_DESTINATION"
+    resumed_at_destination = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/status",
+        headers=gateway_headers,
+        json={"event_id": "status-resumed-at-destination-001", "status": "DESTINATION_REACHED"},
+    )
+    assert resumed_at_destination.status_code == 200, resumed_at_destination.text
 
     telemetry_payload = {
         "event_id": "telemetry-event-001",
         "vehicle_id": vehicle_id,
         "source": "SITL",
-        "latitude": -23.1173,
-        "longitude": -46.5501,
+        # More precision than Numeric(10, 7) proves that an identical retry is
+        # compared against the normalized persisted coordinates.
+        "latitude": -23.11730004,
+        "longitude": -46.55010004,
         "relative_altitude_m": 8.5,
         "ground_speed_m_s": 3.2,
         "battery_percent": 80,
@@ -388,6 +567,24 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     )
     assert duplicate_telemetry.status_code == 200
     assert duplicate_telemetry.json()["id"] == telemetry.json()["id"]
+    incompatible_telemetry_replay = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/telemetry",
+        headers=gateway_headers,
+        json={**telemetry_payload, "battery_percent": 79},
+    )
+    assert incompatible_telemetry_replay.status_code == 409
+    assert incompatible_telemetry_replay.json()["code"] == "EVENT_ID_REUSED"
+    mismatched_source = client.post(
+        f"/api/v1/gateway/missions/{mission['id']}/telemetry",
+        headers=gateway_headers,
+        json={
+            **telemetry_payload,
+            "event_id": "telemetry-source-mismatch-001",
+            "source": "HARDWARE_REAL",
+        },
+    )
+    assert mismatched_source.status_code == 409
+    assert mismatched_source.json()["code"] == "CONFLICT"
 
     abort_headers = {**admin_headers, "Idempotency-Key": "admin-abort-flow-001"}
     abort_request = client.post(

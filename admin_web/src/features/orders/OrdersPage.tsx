@@ -8,6 +8,7 @@ import {
   StatusBadge,
 } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { useOperationsStream } from '../../hooks/useOperationsStream';
 import { adminApi, type OrderStatus } from '../../services';
 import { formatCurrency, formatDateTime, shortId } from '../../utils/format';
 
@@ -56,6 +57,7 @@ export function OrdersPage() {
   const [search, setSearch] = useState('');
   const loader = useCallback(() => adminApi.listOrders(), []);
   const { data: orders, isLoading, error, reload } = useAsyncData(loader);
+  useOperationsStream(() => void reload());
 
   const filteredOrders = useMemo(() => {
     const term = search.trim().toLocaleLowerCase('pt-BR');

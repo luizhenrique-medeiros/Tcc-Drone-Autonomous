@@ -522,29 +522,46 @@ GATEWAY_TRANSITIONS: dict[MissionStatus, set[MissionStatus]] = {
         MissionStatus.FAILED,
     },
     MissionStatus.UPLOADED: {
+        MissionStatus.VERIFIED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.VERIFIED: {
         MissionStatus.EXECUTING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
     MissionStatus.EXECUTING: {
+        MissionStatus.PAUSED,
         MissionStatus.DESTINATION_REACHED,
         MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
     MissionStatus.DESTINATION_REACHED: {
+        MissionStatus.PAUSED,
         MissionStatus.DELIVERY_CONFIRMED,
         MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
     MissionStatus.DELIVERY_CONFIRMED: {
+        MissionStatus.PAUSED,
         MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
     MissionStatus.RETURNING: {
+        MissionStatus.PAUSED,
         MissionStatus.COMPLETED,
+        MissionStatus.ABORTED,
+        MissionStatus.FAILED,
+    },
+    MissionStatus.PAUSED: {
+        MissionStatus.EXECUTING,
+        MissionStatus.DESTINATION_REACHED,
+        MissionStatus.DELIVERY_CONFIRMED,
+        MissionStatus.RETURNING,
         MissionStatus.ABORTED,
         MissionStatus.FAILED,
     },
@@ -554,6 +571,7 @@ GATEWAY_TRANSITIONS: dict[MissionStatus, set[MissionStatus]] = {
 ORDER_STATUS_FROM_MISSION: dict[MissionStatus, OrderStatus] = {
     MissionStatus.UPLOADING: OrderStatus.MISSION_UPLOADING,
     MissionStatus.UPLOADED: OrderStatus.MISSION_UPLOADING,
+    MissionStatus.VERIFIED: OrderStatus.MISSION_UPLOADING,
     MissionStatus.EXECUTING: OrderStatus.IN_TRANSIT,
     MissionStatus.DESTINATION_REACHED: OrderStatus.AT_DESTINATION,
     MissionStatus.DELIVERY_CONFIRMED: OrderStatus.DELIVERED,
@@ -618,23 +636,34 @@ def request_safety_action(
     commit: bool = True,
 ) -> Mission:
     command_type = GatewayCommandType(action)
-    allowed_states = (
-        {
+    allowed_states_by_command = {
+        GatewayCommandType.START: {MissionStatus.VERIFIED},
+        GatewayCommandType.PAUSE: {
+            MissionStatus.EXECUTING,
+            MissionStatus.DESTINATION_REACHED,
+            MissionStatus.DELIVERY_CONFIRMED,
+            MissionStatus.RETURNING,
+        },
+        GatewayCommandType.CONTINUE: {MissionStatus.PAUSED},
+        GatewayCommandType.ABORT: {
             MissionStatus.UPLOADING,
             MissionStatus.UPLOADED,
+            MissionStatus.VERIFIED,
             MissionStatus.EXECUTING,
+            MissionStatus.PAUSED,
             MissionStatus.DESTINATION_REACHED,
             MissionStatus.DELIVERY_CONFIRMED,
             MissionStatus.RETURNING,
-        }
-        if command_type is GatewayCommandType.ABORT
-        else {
+        },
+        GatewayCommandType.RTL: {
             MissionStatus.EXECUTING,
+            MissionStatus.PAUSED,
             MissionStatus.DESTINATION_REACHED,
             MissionStatus.DELIVERY_CONFIRMED,
             MissionStatus.RETURNING,
-        }
-    )
+        },
+    }
+    allowed_states = allowed_states_by_command[command_type]
     if mission.status not in allowed_states:
         raise InvalidStateError("A ação de segurança não é válida para o estado atual")
     existing = session.scalar(

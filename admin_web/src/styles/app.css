@@ -1412,7 +1412,7 @@
 /* Mission */
 .mission-progress {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   margin: 0 0 var(--space-5);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -2389,7 +2389,7 @@
 
   .mission-progress {
     overflow-x: auto;
-    grid-template-columns: repeat(6, minmax(7rem, 1fr));
+    grid-template-columns: repeat(7, minmax(7rem, 1fr));
   }
 }
 

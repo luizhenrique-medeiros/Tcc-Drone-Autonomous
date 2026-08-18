@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "br.edu.devcore.drone_delivery_mobile"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_secure_storage 11 exige API 37 para compilar. targetSdk continua
+    // controlado pelo Flutter para não antecipar mudanças de comportamento.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

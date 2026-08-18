@@ -1,19 +1,20 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4
 
 from app.clients.backend_client import BackendClient
-from app.core.config import MavlinkMode, Settings
+from app.core.config import Settings
 from app.core.exceptions import (
     BackendContractError,
     BackendUnavailableError,
     ConfigurationError,
     GatewayError,
     MissionValidationError,
+    UnsafeOperationError,
     VehicleTimeoutError,
 )
 from app.mavlink.vehicle_gateway import VehicleGateway
@@ -97,11 +98,17 @@ class BackendPort(Protocol):
 class ActivePhase(StrEnum):
     UPLOADING_PENDING_REPORT = "UPLOADING_PENDING_REPORT"
     UPLOADING = "UPLOADING"
+    UPLOAD_COMMAND_SENT = "UPLOAD_COMMAND_SENT"
+    UPLOAD_RECOVERY_BLOCKED = "UPLOAD_RECOVERY_BLOCKED"
+    RECOVERED_UPLOAD_PENDING_REPORT = "RECOVERED_UPLOAD_PENDING_REPORT"
     UPLOADED_PENDING_REPORT = "UPLOADED_PENDING_REPORT"
+    VERIFYING = "VERIFYING"
+    VERIFIED_PENDING_REPORT = "VERIFIED_PENDING_REPORT"
     WAITING_OPERATOR_ARM = "WAITING_OPERATOR_ARM"
     START_COMMAND_SENT = "START_COMMAND_SENT"
     EXECUTING_PENDING_REPORT = "EXECUTING_PENDING_REPORT"
     EXECUTING = "EXECUTING"
+    PAUSED = "PAUSED"
 
 
 CLAIM_PENDING_PHASE = "CLAIM_PENDING"
@@ -135,6 +142,8 @@ class ActiveMission:
     phase: ActivePhase
     pending_event_id: UUID | None = None
     upload_detail: str | None = None
+    upload_uncertain_reported: bool = False
+    verification_failure_reported: bool = False
     link_loss_reported: bool = False
     telemetry_stale_reported: bool = False
     start_uncertain_reported: bool = False
@@ -191,6 +200,8 @@ class MissionExecutor:
             phase=phase,
             pending_event_id=record.pending_event_id,
             upload_detail=record.upload_detail,
+            upload_uncertain_reported=record.upload_uncertain_reported,
+            verification_failure_reported=record.verification_failure_reported,
             link_loss_reported=record.link_loss_reported,
             telemetry_stale_reported=record.telemetry_stale_reported,
             start_uncertain_reported=record.start_uncertain_reported,
@@ -211,6 +222,8 @@ class MissionExecutor:
                 phase=active.phase,
                 pending_event_id=active.pending_event_id,
                 upload_detail=active.upload_detail,
+                upload_uncertain_reported=active.upload_uncertain_reported,
+                verification_failure_reported=active.verification_failure_reported,
                 link_loss_reported=active.link_loss_reported,
                 telemetry_stale_reported=active.telemetry_stale_reported,
                 start_uncertain_reported=active.start_uncertain_reported,
@@ -250,7 +263,11 @@ class MissionExecutor:
         self._backend_health_failures = heartbeat.failures
         await self._forward_vehicle_events(await self._vehicle.drain_events())
         if self._pending_claim is not None:
-            if not health.connected or not health.heartbeat:
+            if (
+                not self._settings.allow_mission_upload
+                or not health.connected
+                or not health.heartbeat
+            ):
                 return
             if not self._mission_matches_vehicle(self._pending_claim):
                 logger.error(
@@ -266,7 +283,11 @@ class MissionExecutor:
             return
         commands = await self._backend.pending_commands(limit=20)
         if commands:
-            await self._process_command(commands[0])
+            await self._process_command(
+                commands[0],
+                health,
+                authorization_eligible=heartbeat.authorization_eligible,
+            )
             return
         if self._active is not None:
             await self._continue_active(
@@ -274,7 +295,12 @@ class MissionExecutor:
                 authorization_eligible=heartbeat.authorization_eligible,
             )
             return
-        if not health.connected or not health.heartbeat or not heartbeat.authorization_eligible:
+        if (
+            not self._settings.allow_mission_upload
+            or not health.connected
+            or not health.heartbeat
+            or not heartbeat.authorization_eligible
+        ):
             return
         missions = await self._backend.authorized_missions()
         offered = next((item for item in missions if self._mission_matches_vehicle(item)), None)
@@ -322,7 +348,13 @@ class MissionExecutor:
                 occurred_at=event.occurred_at,
             )
 
-    async def _process_command(self, command: GatewayCommand) -> None:
+    async def _process_command(
+        self,
+        command: GatewayCommand,
+        health: VehicleHealth,
+        *,
+        authorization_eligible: bool,
+    ) -> None:
         active = self._active
         if active is None or active.claim.mission.id != command.mission_id:
             await self._backend.acknowledge_command(
@@ -334,6 +366,80 @@ class MissionExecutor:
                 ),
             )
             return
+        if command.command is GatewayCommandType.START and active.phase in {
+            ActivePhase.EXECUTING_PENDING_REPORT,
+            ActivePhase.EXECUTING,
+        }:
+            if active.phase is ActivePhase.EXECUTING_PENDING_REPORT:
+                await self._continue_active(
+                    health,
+                    authorization_eligible=authorization_eligible,
+                )
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.COMPLETED,
+                detail="START já confirmado localmente; estado reconciliado sem reenvio.",
+            )
+            return
+        if (
+            command.command is GatewayCommandType.START
+            and active.phase is ActivePhase.START_COMMAND_SENT
+        ):
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail=(
+                    "Resultado anterior de START é incerto; o gateway não repetirá o comando "
+                    "automaticamente. Confirme o estado físico no Mission Planner."
+                ),
+            )
+            return
+        if command.status is GatewayCommandStatus.ACKNOWLEDGED:
+            reconciled_detail = None
+            if command.command is GatewayCommandType.PAUSE and active.phase is ActivePhase.PAUSED:
+                reconciled_detail = (
+                    "PAUSE já confirmado localmente; estado reconciliado sem reenviar o comando."
+                )
+            elif (
+                command.command is GatewayCommandType.CONTINUE
+                and active.phase is ActivePhase.EXECUTING
+            ):
+                reconciled_detail = (
+                    "CONTINUE já confirmado localmente; estado reconciliado sem reenviar o comando."
+                )
+            if reconciled_detail is not None:
+                await self._backend.acknowledge_command(
+                    command.id,
+                    GatewayCommandStatus.COMPLETED,
+                    detail=reconciled_detail,
+                )
+                return
+        requested_at = command.requested_at
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+        if self._now() - requested_at > timedelta(
+            seconds=self._settings.gateway_command_max_age_seconds
+        ):
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="Comando expirado; solicite uma nova ação administrativa.",
+            )
+            return
+        if not self._settings.allow_flight_commands:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="ALLOW_FLIGHT_COMMANDS não foi habilitado.",
+            )
+            return
+        if not health.connected or not health.heartbeat:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="Comando bloqueado: heartbeat MAVLink válido não está disponível.",
+            )
+            return
         if command.status is GatewayCommandStatus.PENDING:
             await self._backend.acknowledge_command(
                 command.id,
@@ -342,7 +448,58 @@ class MissionExecutor:
             )
         reason_suffix = f" Motivo administrativo: {command.reason}" if command.reason else ""
         try:
-            if command.command is GatewayCommandType.RTL:
+            if command.command is GatewayCommandType.START:
+                if not self._settings.allow_mission_start:
+                    raise UnsafeOperationError("ALLOW_MISSION_START não foi habilitado.")
+                if active.phase is not ActivePhase.WAITING_OPERATOR_ARM:
+                    raise UnsafeOperationError("Missão não está aguardando início explícito.")
+                if health.armed is not True:
+                    raise UnsafeOperationError(
+                        "Veículo não está comprovadamente armado; o gateway nunca arma sozinho."
+                    )
+                if not self._backend_allows_armed_start(authorization_eligible):
+                    raise UnsafeOperationError("Backend bloqueou a elegibilidade para início.")
+                readiness = evaluate_start_readiness(
+                    health, active.claim, self._settings, now=self._now()
+                )
+                if not readiness.passed:
+                    raise UnsafeOperationError(
+                        "Início bloqueado pelo preflight: " + ", ".join(readiness.failures)
+                    )
+                await self._start(active)
+            elif command.command is GatewayCommandType.PAUSE:
+                if active.phase is not ActivePhase.EXECUTING:
+                    raise UnsafeOperationError("Missão não está em execução para pausar.")
+                await self._vehicle.pause_mission()
+                await self._backend.report_status(
+                    command.mission_id,
+                    MissionStatus.PAUSED,
+                    detail="ArduPilot confirmou a pausa da missão." + reason_suffix,
+                )
+                active.phase = ActivePhase.PAUSED
+                self._save_active()
+            elif command.command is GatewayCommandType.CONTINUE:
+                if active.phase is not ActivePhase.PAUSED:
+                    raise UnsafeOperationError("Missão não está pausada para continuar.")
+                await self._vehicle.continue_mission()
+                resumed_status = (
+                    active.last_reported_progress_status
+                    if active.last_reported_progress_status
+                    in {
+                        MissionStatus.DESTINATION_REACHED,
+                        MissionStatus.DELIVERY_CONFIRMED,
+                        MissionStatus.RETURNING,
+                    }
+                    else MissionStatus.EXECUTING
+                )
+                await self._backend.report_status(
+                    command.mission_id,
+                    resumed_status,
+                    detail="ArduPilot confirmou a continuação da missão." + reason_suffix,
+                )
+                active.phase = ActivePhase.EXECUTING
+                self._save_active()
+            elif command.command is GatewayCommandType.RTL:
                 await self._vehicle.request_rtl()
                 await self._backend.report_status(
                     command.mission_id,
@@ -350,6 +507,7 @@ class MissionExecutor:
                     detail="Adaptador confirmou a solicitação RTL." + reason_suffix,
                 )
                 active.last_reported_progress_status = MissionStatus.RETURNING
+                active.phase = ActivePhase.EXECUTING
                 self._save_active()
                 await self._backend.report_event(
                     command.mission_id,
@@ -388,6 +546,12 @@ class MissionExecutor:
         *,
         authorization_eligible: bool,
     ) -> None:
+        if not self._settings.allow_mission_upload or not health.connected or not health.heartbeat:
+            logger.warning(
+                "mission claim blocked by local MAVLink safety gate",
+                extra={"gateway_id": self._settings.gateway_id},
+            )
+            return
         claim: ClaimResponse | None = None
         self._save_claim_intent(offered_mission)
         try:
@@ -478,6 +642,8 @@ class MissionExecutor:
             self._save_active()
 
         if active.phase is ActivePhase.UPLOADING_PENDING_REPORT:
+            if not self._settings.allow_mission_upload:
+                return
             await self._backend.report_upload(
                 active.claim.mission.id,
                 MissionStatus.UPLOADING,
@@ -494,6 +660,10 @@ class MissionExecutor:
             return
 
         if active.phase is ActivePhase.UPLOADING:
+            if not self._settings.allow_mission_upload:
+                return
+            if not health.connected or not health.heartbeat:
+                return
             if not authorization_eligible:
                 await self._fail_active("Backend bloqueou a elegibilidade antes do upload.")
                 return
@@ -504,11 +674,25 @@ class MissionExecutor:
                 )
                 return
             try:
+                active.phase = ActivePhase.UPLOAD_COMMAND_SENT
+                active.upload_uncertain_reported = False
+                self._save_active()
                 result = await self._vehicle.upload_mission(
                     active.claim.mission, active.claim.mission_file
                 )
             except GatewayError as exc:
-                await self._fail_active(str(exc))
+                if not active.upload_uncertain_reported:
+                    await self._backend.report_event(
+                        active.claim.mission.id,
+                        event_type="MISSION_UPLOAD_RESULT_UNCERTAIN",
+                        severity="ERROR",
+                        message=(
+                            f"Não foi possível confirmar o resultado do upload: {exc}. "
+                            "O gateway não repetirá o upload automaticamente."
+                        ),
+                    )
+                    active.upload_uncertain_reported = True
+                    self._save_active()
                 return
             if not result.acknowledged:
                 await self._fail_active("Veículo não confirmou e verificou o upload.")
@@ -516,6 +700,76 @@ class MissionExecutor:
             active.phase = ActivePhase.UPLOADED_PENDING_REPORT
             active.pending_event_id = uuid4()
             active.upload_detail = result.detail
+            active.upload_uncertain_reported = False
+            self._save_active()
+            await self._continue_active(
+                health,
+                authorization_eligible=authorization_eligible,
+            )
+            return
+
+        if active.phase is ActivePhase.UPLOAD_COMMAND_SENT:
+            if not self._settings.allow_mission_upload:
+                return
+            if not health.connected or not health.heartbeat:
+                return
+            try:
+                verification = await self._vehicle.verify_mission(active.claim.mission)
+            except GatewayError as exc:
+                await self._backend.report_event(
+                    active.claim.mission.id,
+                    event_type="MISSION_UPLOAD_RECOVERY_BLOCKED",
+                    severity="ERROR",
+                    message=(
+                        "O upload anterior ficou sem confirmação e o readback não comprovou "
+                        f"o conteúdo: {exc}. O gateway não repetirá o upload automaticamente."
+                    ),
+                )
+                active.phase = ActivePhase.UPLOAD_RECOVERY_BLOCKED
+                active.upload_uncertain_reported = True
+                self._save_active()
+                return
+            if not verification.verified:
+                await self._backend.report_event(
+                    active.claim.mission.id,
+                    event_type="MISSION_UPLOAD_RECOVERY_BLOCKED",
+                    severity="ERROR",
+                    message=(
+                        "O upload anterior ficou sem confirmação e o readback divergiu da "
+                        "missão autorizada. O gateway não repetirá o upload automaticamente: "
+                        f"{verification.detail}"
+                    ),
+                )
+                active.phase = ActivePhase.UPLOAD_RECOVERY_BLOCKED
+                active.upload_uncertain_reported = True
+                self._save_active()
+                return
+            active.phase = ActivePhase.RECOVERED_UPLOAD_PENDING_REPORT
+            active.pending_event_id = uuid4()
+            active.upload_detail = (
+                "Upload recuperado sem reenvio: o readback MAVLink corresponde à missão "
+                f"autorizada. {verification.detail}"
+            )
+            active.upload_uncertain_reported = False
+            self._save_active()
+            await self._continue_active(
+                health,
+                authorization_eligible=authorization_eligible,
+            )
+            return
+
+        if active.phase is ActivePhase.UPLOAD_RECOVERY_BLOCKED:
+            return
+
+        if active.phase is ActivePhase.RECOVERED_UPLOAD_PENDING_REPORT:
+            await self._backend.report_upload(
+                active.claim.mission.id,
+                MissionStatus.UPLOADED,
+                detail=active.upload_detail,
+                event_id=active.pending_event_id,
+            )
+            active.pending_event_id = uuid4()
+            active.phase = ActivePhase.VERIFIED_PENDING_REPORT
             self._save_active()
             await self._continue_active(
                 health,
@@ -531,37 +785,80 @@ class MissionExecutor:
                 event_id=active.pending_event_id,
             )
             active.pending_event_id = None
-            if self._settings.mavlink_mode is MavlinkMode.SIMULATION:
-                await self._start(active)
-            else:
-                active.phase = ActivePhase.WAITING_OPERATOR_ARM
-                self._save_active()
-                await self._backend.report_event(
-                    active.claim.mission.id,
-                    event_type="MISSION_UPLOADED_WAITING_OPERATOR_ARM",
-                    severity="WARNING",
-                    message=(
-                        "Missão enviada e relida. O gateway não arma automaticamente; "
-                        "aguarda ação do operador."
-                    ),
-                )
+            active.phase = ActivePhase.VERIFYING
+            self._save_active()
+            await self._continue_active(
+                health,
+                authorization_eligible=authorization_eligible,
+            )
+            return
+
+        if active.phase is ActivePhase.VERIFYING:
+            if not self._settings.allow_mission_upload:
+                return
+            if not health.connected or not health.heartbeat:
+                return
+            try:
+                verification = await self._vehicle.verify_mission(active.claim.mission)
+            except GatewayError as exc:
+                if not active.verification_failure_reported:
+                    await self._backend.report_event(
+                        active.claim.mission.id,
+                        event_type="MISSION_VERIFICATION_BLOCKED",
+                        severity="ERROR",
+                        message=str(exc),
+                    )
+                    active.verification_failure_reported = True
+                    self._save_active()
+                return
+            if not verification.verified:
+                if not active.verification_failure_reported:
+                    await self._backend.report_event(
+                        active.claim.mission.id,
+                        event_type="MISSION_VERIFICATION_FAILED",
+                        severity="ERROR",
+                        message=verification.detail,
+                    )
+                    active.verification_failure_reported = True
+                    self._save_active()
+                return
+            active.phase = ActivePhase.VERIFIED_PENDING_REPORT
+            active.pending_event_id = uuid4()
+            active.upload_detail = verification.detail
+            active.verification_failure_reported = False
+            self._save_active()
+            await self._continue_active(
+                health,
+                authorization_eligible=authorization_eligible,
+            )
+            return
+
+        if active.phase is ActivePhase.VERIFIED_PENDING_REPORT:
+            await self._backend.report_upload(
+                active.claim.mission.id,
+                MissionStatus.VERIFIED,
+                detail=active.upload_detail,
+                event_id=active.pending_event_id,
+            )
+            active.pending_event_id = None
+            active.phase = ActivePhase.WAITING_OPERATOR_ARM
+            self._save_active()
+            await self._backend.report_event(
+                active.claim.mission.id,
+                event_type="MISSION_VERIFIED_WAITING_OPERATOR_ARM",
+                severity="WARNING",
+                message=(
+                    "Missão enviada e verificada. O gateway nunca arma automaticamente; "
+                    "o início exige flags locais, armamento pelo operador e comando "
+                    "administrativo START explícito."
+                ),
+            )
             return
 
         if active.phase is ActivePhase.WAITING_OPERATOR_ARM:
-            if not health.armed:
-                return
-            if not self._backend_allows_armed_start(authorization_eligible):
-                await self._fail_active("Backend bloqueou a elegibilidade antes do início.")
-                return
-            readiness = evaluate_start_readiness(
-                health, active.claim, self._settings, now=self._now()
-            )
-            if not readiness.passed:
-                await self._fail_active(
-                    "Início bloqueado pelo preflight: " + ", ".join(readiness.failures)
-                )
-                return
-            await self._start(active)
+            return
+
+        if active.phase is ActivePhase.PAUSED:
             return
 
         if active.phase is ActivePhase.START_COMMAND_SENT:
@@ -598,6 +895,8 @@ class MissionExecutor:
         await self._continue_executing(active, health)
 
     async def _start(self, active: ActiveMission) -> None:
+        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
+            return
         active.phase = ActivePhase.START_COMMAND_SENT
         active.pending_event_id = None
         self._save_active()
@@ -616,7 +915,7 @@ class MissionExecutor:
                 )
                 active.start_uncertain_reported = True
                 self._save_active()
-            return
+            raise
         active.phase = ActivePhase.EXECUTING_PENDING_REPORT
         active.pending_event_id = uuid4()
         active.start_uncertain_reported = False

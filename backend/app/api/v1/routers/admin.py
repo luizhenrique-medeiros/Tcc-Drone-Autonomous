@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from app.api.dependencies import AdminUser, AppSettings, DatabaseSession
-from app.core.enums import MissionStatus, OrderStatus
+from app.core.enums import GatewayCommandType, MissionStatus, OrderStatus
 from app.core.exceptions import NotFoundError
 from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
@@ -360,6 +360,59 @@ async def admin_request_rtl(
     }
     await manager.broadcast_order(mission.order_id, message)
     await manager.broadcast_admin(message)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
+    )
+
+
+@router.post(
+    "/missions/{mission_id}/commands/{action}",
+    response_model=AdminMissionRead,
+    status_code=202,
+)
+async def admin_request_flight_command(
+    mission_id: UUID,
+    action: GatewayCommandType,
+    session: DatabaseSession,
+    admin: AdminUser,
+    payload: SafetyActionRequest | None = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=8, max_length=200),
+    ] = None,
+) -> JSONResponse:
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    reason = payload.reason if payload else None
+
+    def mutation() -> dict[str, object]:
+        result = request_safety_action(
+            session,
+            mission,
+            admin,
+            action.value,
+            reason,
+            commit=False,
+        )
+        return admin_mission_to_read(session, result).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.command:{mission_id}:{action.value}",
+        key=idempotency_key,
+        request_payload={
+            "mission_id": str(mission_id),
+            "action": action.value,
+            "reason": reason,
+        },
+        response_status=status.HTTP_202_ACCEPTED,
+        action=mutation,
+    )
+    await _broadcast_mission(mission)
     return JSONResponse(
         content=result.body,
         status_code=result.status_code,

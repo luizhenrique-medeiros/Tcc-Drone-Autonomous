@@ -31,6 +31,7 @@
 - **RF-ADM-06:** visualizar checks automáticos recentes do veículo e da missão como `PASS`, `WARNING` ou `BLOCKING` antes da autorização.
 - **RF-ADM-07:** autorizar voo em endpoint separado, com três confirmações físicas, resumo final e área controlada, sem frase digitada.
 - **RF-ADM-08:** acompanhar telemetria/eventos e solicitar abortamento ou RTL com confirmação.
+- **RF-ADM-09:** solicitar `START`, `PAUSE` ou `CONTINUE` como comandos auditados e idempotentes, sem substituir os gates locais nem armar o veículo.
 
 ### Missão, gateway e hardware
 
@@ -39,7 +40,7 @@
 - **RF-MIS-03:** invalidar autorização se versão ou estado crítico mudar; expirar e consumir uma única vez.
 - **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
 - **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita e nunca armar no startup/health.
-- **RF-GTW-03:** validar preflight, enviar missão, confirmar conteúdo e só então iniciar uma missão autorizada.
+- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um `START` administrativo separado para a missão autorizada.
 - **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento.
 - **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
 - **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
@@ -91,6 +92,7 @@
 - **CA-22:** editar ou excluir uma localização salva depois de criar um pedido não altera coordenadas, endereço, instruções nem disponibilidade do destino histórico.
 - **CA-23:** mover o mapa após escolher uma localização salva altera somente o snapshot do novo pedido; atualizar o atalho exige ação explícita na tela de edição, e as duas confirmações atuais são solicitadas novamente depois da revisão.
 - **CA-24:** uma localização com nome e coordenadas válidas pode ser salva sem endereço textual, desde que `map_provider` seja o realmente usado, `map_type` seja `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` sejam verdadeiros; falha no salvamento opcional posterior não muda o resultado do pedido.
+- **CA-25:** `UPLOADED` só evolui para `VERIFIED` após releitura equivalente; `START` exige os dois gates locais e veículo já armado, `PAUSE` produz `PAUSED` após ACK e `CONTINUE` só sai de `PAUSED`. Nenhuma dessas ações arma o veículo.
 
 ## Matriz de rastreabilidade
 
@@ -104,6 +106,7 @@
 | RF-ADM-03 | orders, approvals, admin | `/admin/orders/{id}/approve|reject` | RBAC/transição/auditoria |
 | RF-ADM-04/05 | missions, admin | prepare/review/download | exportador e componente |
 | RF-ADM-06/07 | vehicles, approvals, admin | health/authorize-flight | checks automáticos, três confirmações, TTL e idempotência |
+| RF-ADM-08/09 | missions, gateway_commands, admin | commands/ACK | estados válidos, idade, gates locais e ausência de armamento automático |
 | RF-GTW-01/03 | gateway, missions | authorized/claim/status | idempotência e timeout |
 | RF-GTW-04 | telemetry, WebSocket | telemetry/events/ws | normalização e ordenação |
 | RF-OPS-01 | gateway, documentação | configuração real/checklist | ensaio manual, nunca CI |

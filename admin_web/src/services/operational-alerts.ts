@@ -312,7 +312,12 @@ export const generateOperationalAlerts = ({
         recommended_action: 'Aguarde fix adequado em área aberta e investigue mensagens do autopiloto.',
       });
     }
-    if (health.satellites === null || health.satellites < 10) {
+    const minimumSatellites = health.authorization_limits?.min_gps_satellites;
+    if (
+      health.satellites === null ||
+      minimumSatellites === undefined ||
+      health.satellites < minimumSatellites
+    ) {
       add({
         key: 'satellites-low',
         severity: 'WARNING',
@@ -320,7 +325,9 @@ export const generateOperationalAlerts = ({
         what:
           health.satellites === null
             ? 'Quantidade de satélites indisponível.'
-            : `${health.satellites} satélites reportados; mínimo visual atual: 10.`,
+            : minimumSatellites === undefined
+              ? `${health.satellites} satélites reportados; limite do backend indisponível.`
+              : `${health.satellites} satélites reportados; mínimo do backend: ${minimumSatellites}.`,
         impact: 'A precisão de navegação pode ser insuficiente para a missão.',
         last_updated_at: updatedAt,
         recommended_action: 'Aguarde estabilização do GPS e valide o limite efetivo no backend.',
@@ -337,15 +344,22 @@ export const generateOperationalAlerts = ({
         recommended_action: 'Investigue a mensagem no Mission Planner sem contornar pre-arm.',
       });
     }
-    if (health.battery_percent === null || health.battery_percent < 40) {
+    const minimumBattery = health.authorization_limits?.min_battery_percent;
+    if (
+      health.battery_percent === null ||
+      minimumBattery === undefined ||
+      health.battery_percent < minimumBattery
+    ) {
       add({
         key: 'battery-low',
-        severity: health.battery_percent !== null && health.battery_percent < 25 ? 'CRITICAL' : 'WARNING',
+        severity: 'WARNING',
         title: 'Bateria abaixo do mínimo ou indisponível',
         what:
           health.battery_percent === null
             ? 'Percentual da bateria indisponível.'
-            : `${Math.round(health.battery_percent)}% reportados; mínimo visual atual: 40%.`,
+            : minimumBattery === undefined
+              ? `${Math.round(health.battery_percent)}% reportados; limite do backend indisponível.`
+              : `${Math.round(health.battery_percent)}% reportados; mínimo do backend: ${minimumBattery}%.`,
         impact: 'Não há margem confirmada para executar e retornar com segurança.',
         last_updated_at: updatedAt,
         recommended_action: 'Interrompa a autorização e valide bateria, tensão e reserva operacional.',
@@ -367,6 +381,7 @@ export const generateOperationalAlerts = ({
       'AUTHORIZED',
       'UPLOADING',
       'UPLOADED',
+      'VERIFIED',
       'EXECUTING',
       'DESTINATION_REACHED',
       'DELIVERY_CONFIRMED',

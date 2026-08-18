@@ -2,9 +2,13 @@
 
 Esta lista contém apenas etapas que dependem de conta, credencial, rede, software externo ou hardware. Uma implementação ou build aprovado não conclui essas etapas.
 
-## Concluído nesta rodada — segredos locais
+## Estado das credenciais locais
 
-Banco, JWT, gateway e administrador receberam valores locais fortes e distintos no `.env` ignorado. A senha da conta existente foi rotacionada; login ADMIN, `/health` e `/ready` foram aprovados. Não copie esses valores para Git, documentação, screenshots ou comandos salvos no histórico.
+Banco, JWT e gateway possuem valores locais no `.env` ignorado. `/health`, `/ready` e `/docs`
+respondem 200, porém a senha `ADMIN_INITIAL_PASSWORD` atual não corresponde ao hash da conta
+persistida: o login retorna `401`. Isso não indica banco vazio. Obtenha a senha vigente ou peça
+autorização explícita antes de rotacionar; não copie qualquer valor para Git, documentação,
+screenshots ou histórico.
 
 Para uma rotação futura, use:
 
@@ -75,7 +79,7 @@ Acesse:
 - admin React: `http://localhost:5173`;
 - FastAPI/OpenAPI: `http://localhost:8000/docs`.
 
-O ensaio atual confirmou cadastro/login, produtos, carrinho, pesquisa por Atibaia, mapa híbrido, câmera inicial, pan, reverse geocoding, confirmação segura, PIX simulado, criação do pedido e visualização no admin. Estilo, tiles, fontes, sprites, logo e atribuição responderam sem erro de console. Depois de instalar as chaves substitutas restritas, repita a validação e complete os cenários não cobertos:
+O ensaio visual de 7 de agosto confirmou cadastro/login, produtos, carrinho, pesquisa por Atibaia, mapa híbrido, câmera inicial, pan, reverse geocoding, confirmação segura, PIX simulado, criação do pedido e visualização no admin. Na rodada atual, admin/Flutter Web e assets responderam 200, os headers do admin e o MIME do worker foram conferidos, mas o controlador visual do navegador estava indisponível. Depois de instalar as chaves substitutas restritas e resolver o login admin, repita a validação e complete os cenários não cobertos:
 
 1. login em larguras de celular e desktop, sem overflow horizontal;
 2. mapa MapLibre real com estilo híbrido MapTiler, atribuição e logo visíveis;
@@ -103,7 +107,9 @@ Detalhes: [LOCAL_NETWORK_SETUP.md](LOCAL_NETWORK_SETUP.md).
 
 ## Prioridade 4 — SITL
 
-1. Confirme WSL 2, checkout e versão do ArduPilot.
+Neste computador, `wsl --list --verbose` mostrou apenas a distribuição interna `docker-desktop`; não há uma distribuição Linux de desenvolvimento nem ArduPilot/MAVProxy instalados. Portanto, SITL ainda não pode ser executado.
+
+1. Instale uma distribuição Ubuntu no WSL 2 e o ArduPilot conforme a documentação oficial.
 2. Inicie SITL pelo procedimento documentado.
 3. Configure `MAVLINK_MODE=sitl`, URL UDP e IDs realmente observados.
 4. Mantenha `ALLOW_MISSION_START=false` no primeiro teste de conexão e telemetria.
@@ -115,19 +121,35 @@ Detalhes: [LOCAL_NETWORK_SETUP.md](LOCAL_NETWORK_SETUP.md).
 
 Antes de iniciar, confirme hardware, firmware, frame, topologia do link, porta/baud, `sysid`/`compid`, alimentação e parâmetros já existentes. Não altere parâmetros automaticamente.
 
+Evidência anterior da rodada: após liberar a COM7/57600, dois diagnósticos passivos receberam
+heartbeat real `sysid=1`, `compid=1`, modo `STABILIZE` e `armed=false`; um ciclo limitado publicou
+sete heartbeats no backend sem escrita MAVLink. O forwarding não foi validado.
+
+Estado atual: a COM7 não está enumerada; o dispositivo PnP aparece somente como histórico/estado
+desconhecido, o Mission Planner está fechado e não há listeners UDP 14550/14551. O diagnóstico
+passivo retorna exit 2/`VEHICLE_PORT_NOT_FOUND`, e o backend preserva snapshot `HARDWARE_REAL`,
+`ERROR`, `direct`, COM7/57600 com upload/comandos/início falsos.
+
 1. execute [PREFLIGHT_CHECKLIST.md](PREFLIGHT_CHECKLIST.md);
 2. remova as hélices;
-3. confirme heartbeat no Mission Planner;
-4. valide GPS, EKF, bateria, home e pre-arm;
-5. configure encaminhamento MAVLink e conecte o gateway;
-6. confira no admin origem `HARDWARE_REAL`, timestamps e campos ausentes honestos;
-7. exporte, revise e compare a missão;
-8. teste upload e releitura sem iniciar a missão;
-9. preserve TLOG/dataflash, eventos e logs.
+3. reconecte o cabo/link e confirme no Gerenciador de Dispositivos que a porta COM7 voltou;
+4. para serial direta, mantenha Mission Planner fechado e execute somente `scripts\start_gateway.ps1 -DiagnoseOnly`;
+5. para forwarding, abra o Mission Planner, desabilite o AutoConnect **Mavlink alt port** UDP 14551 `Inbound` e conecte em `COM7`, `57600`;
+6. abra `SETUP` → `Advanced` → `Mavlink Mirror`, escolha **UDP Client**, `127.0.0.1`, porta `14551`, com **Write access** desmarcado;
+7. execute `scripts\start_gateway.ps1 -DiagnoseOnly` e confirme heartbeat no gateway;
+8. valide GPS, EKF, bateria, home e pre-arm no Inspector e no admin;
+9. confira no admin origem `HARDWARE_REAL`, timestamps e campos ausentes honestos;
+10. somente em outra sessão, depois de SITL/checklist, habilite Write access + ACK/upload, mantendo comandos/start falsos;
+11. exporte, revise, envie, aguarde ACK e releia/compare a missão sem iniciar voo;
+12. preserve TLOG/dataflash, eventos e logs.
 
 ## Prioridade 6 — APK físico
 
-O APK debug atual foi recompilado com MapTiler e perfil `android_emulator` em `mobile/build/app/outputs/flutter-apk/app-debug.apk`: 190.538.195 bytes, SHA-256 `AF1328CB60E74CFF0D3A5CDE5A8527618F79FB2D55A9E1778061BE221285BE25` e assinatura Android Debug v2 verificada. Ele não foi instalado. Não há release atual nem keystore privada configurada.
+O APK debug integrado atual está em `mobile/build/app/outputs/flutter-apk/app-debug.apk`:
+195.236.488 bytes e SHA-256
+`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`.
+Foi compilado com API 37, AGP 9.1.1 e Gradle 9.3.1, mas não foi instalado nesta rodada. Não há
+release atual nem keystore privada configurada.
 
 1. Crie/forneça um keystore release fora do repositório e configure aliases/senhas por mecanismo secreto local.
 2. Observe o `User-Agent` realmente enviado pelo APK assinado ao MapTiler e valide a regra antes de restringir a chave Android.
@@ -145,4 +167,6 @@ O APK debug atual foi recompilado com MapTiler e perfil `android_emulator` em `m
 - origens Web finais e `User-Agent` Android ainda precisam ser confirmados no painel MapTiler;
 - falta keystore para produzir APK release assinado/implantável;
 - os pedidos controlados `27207fa7-df70-45b5-bb2f-d9279a0347f8` e `92198217-c06b-41f5-b91e-61b985b86803` devem permanecer sem despacho;
-- nenhum aparelho Android, SITL, Mission Planner, Pixhawk ou aeronave foi conectado nesta rodada.
+- a COM7 foi validada anteriormente por heartbeat real, mas está ausente agora; o forwarding 14551 ainda depende da configuração manual acima;
+- SITL depende da instalação de uma distribuição WSL 2 e do ArduPilot;
+- novo heartbeat no estado atual, GPS/bateria/EKF/home pelo gateway, upload na Pixhawk, motores, armamento e voo permanecem não executados.

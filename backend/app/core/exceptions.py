@@ -38,6 +38,10 @@ class ConflictError(DomainError):
     code = "CONFLICT"
 
 
+class EventIdConflictError(ConflictError):
+    code = "EVENT_ID_REUSED"
+
+
 class InvalidStateError(ConflictError):
     code = "INVALID_STATE"
 

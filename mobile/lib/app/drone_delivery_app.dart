@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../core/config/app_config.dart';
+import '../design_system/components/runtime_profile_banner.dart';
 import '../design_system/theme/app_theme.dart';
 import '../features/auth/presentation/splash_screen.dart';
 import '../features/diagnostics/presentation/runtime_diagnostics_screen.dart';
@@ -41,6 +43,13 @@ class _DroneDeliveryAppState extends State<DroneDeliveryApp> {
         title: 'Devcore Entregas',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light,
+        builder: (BuildContext context, Widget? child) {
+          return RuntimeProfileBanner(
+            isDemoMode: _controller.isDemoMode,
+            profile: AppConfig.environment,
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
         routes: <String, WidgetBuilder>{
           if (kDebugMode) '/debug': (_) => const RuntimeDiagnosticsScreen(),
         },

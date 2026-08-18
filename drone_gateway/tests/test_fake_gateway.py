@@ -42,7 +42,7 @@ def build_mission() -> tuple[AuthorizedMission, str]:
 
 @pytest.mark.asyncio
 async def test_fake_upload_is_idempotent_for_same_hash() -> None:
-    gateway = FakeVehicleGateway(Settings(_env_file=None))
+    gateway = FakeVehicleGateway(Settings(_env_file=None, allow_mission_upload=True))
     mission, content = build_mission()
     await gateway.connect()
 
@@ -54,7 +54,7 @@ async def test_fake_upload_is_idempotent_for_same_hash() -> None:
 
 @pytest.mark.asyncio
 async def test_fake_upload_rejects_hash_change_for_same_mission() -> None:
-    gateway = FakeVehicleGateway(Settings(_env_file=None))
+    gateway = FakeVehicleGateway(Settings(_env_file=None, allow_mission_upload=True))
     mission, content = build_mission()
     await gateway.connect()
     await gateway.upload_mission(mission, content)

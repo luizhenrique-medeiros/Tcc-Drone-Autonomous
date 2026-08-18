@@ -1,4 +1,7 @@
-from app.core.config import Settings
+import pytest
+
+from app.core.config import MavlinkMode, Settings
+from app.core.exceptions import ConfigurationError
 
 
 def test_canonical_mavlink_baud_environment_name(monkeypatch) -> None:
@@ -17,3 +20,59 @@ def test_legacy_mavlink_baud_rate_name_remains_compatible(monkeypatch) -> None:
     settings = Settings(_env_file=None)
 
     assert settings.mavlink_baud_rate == 57600
+
+
+def test_direct_uses_serial_connection_and_safe_defaults() -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=MavlinkMode.DIRECT,
+        mavlink_connection="COM7",
+    )
+
+    assert settings.effective_mavlink_connection == "COM7"
+    assert settings.connection_topology == "direct"
+    assert settings.mavlink_source_component_id == 190
+    assert not settings.real_hardware_acknowledged
+    assert not settings.allow_mission_upload
+    assert not settings.allow_flight_commands
+    assert not settings.allow_mission_start
+
+
+def test_mission_planner_forward_uses_dedicated_udp_endpoint() -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=MavlinkMode.MISSION_PLANNER_FORWARD,
+        mavlink_connection="COM7",
+        mavlink_forward_connection="udpin:127.0.0.1:14551",
+    )
+
+    assert settings.effective_mavlink_connection == "udpin:127.0.0.1:14551"
+    assert settings.connection_topology == "mission_planner_forward"
+    assert settings.mavlink_baud_rate == 57600
+
+
+def test_forward_requires_serial_upstream_and_udpin_endpoint() -> None:
+    with pytest.raises(ConfigurationError, match="porta serial upstream"):
+        Settings(
+            _env_file=None,
+            mavlink_mode=MavlinkMode.MISSION_PLANNER_FORWARD,
+            mavlink_connection="udp:127.0.0.1:14550",
+        )
+
+    with pytest.raises(ConfigurationError, match="udpin"):
+        Settings(
+            _env_file=None,
+            mavlink_mode=MavlinkMode.MISSION_PLANNER_FORWARD,
+            mavlink_connection="COM7",
+            mavlink_forward_connection="udpout:127.0.0.1:14551",
+        )
+
+
+def test_hardware_mutation_flags_require_explicit_acknowledgement() -> None:
+    with pytest.raises(ConfigurationError, match="REAL_HARDWARE_ACKNOWLEDGED"):
+        Settings(
+            _env_file=None,
+            mavlink_mode=MavlinkMode.DIRECT,
+            mavlink_connection="COM7",
+            allow_mission_upload=True,
+        )

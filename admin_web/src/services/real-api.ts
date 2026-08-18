@@ -132,6 +132,8 @@ interface RawVehicle {
   identifier: string;
   name: string;
   autopilot_system: string;
+  autopilot_version?: string | null;
+  operational_source?: string | null;
   gateway_id: string;
   status: 'UNKNOWN' | 'OFFLINE' | 'ONLINE' | 'BUSY' | 'ERROR';
   last_communication_at?: string | null;
@@ -153,6 +155,23 @@ export interface BackendVehicleHealth {
   geofence_enabled: boolean | null;
   origin_latitude?: string | number | null;
   origin_longitude?: string | number | null;
+  current_latitude?: string | number | null;
+  current_longitude?: string | number | null;
+  current_altitude_m?: number | null;
+  connection_state?: string | null;
+  connection_mode?: string | null;
+  connection_topology?: string | null;
+  connection_endpoint?: string | null;
+  serial_port?: string | null;
+  connection_baud?: number | null;
+  mavlink_system_id?: number | null;
+  mavlink_component_id?: number | null;
+  heartbeat_age_seconds?: number | null;
+  last_heartbeat_at?: string | null;
+  mission_upload_enabled?: boolean | null;
+  flight_commands_enabled?: boolean | null;
+  mission_start_enabled?: boolean | null;
+  connection_error?: string | null;
   preflight_messages?: string[] | null;
   captured_at: string | null;
   source?: string | null;
@@ -341,10 +360,19 @@ export const adaptAdminOrder = (raw: BackendAdminOrder): Order => {
   };
 };
 
-const adaptVehicle = (raw: RawVehicle): Vehicle => ({
+export const adaptVehicle = (raw: RawVehicle): Vehicle => ({
   id: raw.id,
+  identifier: raw.identifier,
   name: raw.name,
   system: `${raw.autopilot_system} · ${raw.identifier}`,
+  autopilot_system: raw.autopilot_system,
+  autopilot_version: raw.autopilot_version ?? null,
+  gateway_id: raw.gateway_id,
+  operational_source: operationalSources.has(
+    raw.operational_source as OperationalSource,
+  )
+    ? (raw.operational_source as OperationalSource)
+    : 'UNKNOWN',
   connected: raw.status === 'ONLINE' || raw.status === 'BUSY',
   status:
     raw.status === 'ONLINE' || raw.status === 'BUSY'
@@ -387,6 +415,9 @@ export const adaptVehicleHealth = (
     raw.origin_longitude !== undefined
       ? true
       : null,
+  current_latitude: nullableNumberFromApi(raw.current_latitude),
+  current_longitude: nullableNumberFromApi(raw.current_longitude),
+  current_altitude_m: raw.current_altitude_m ?? null,
   geofence_enabled: raw.geofence_enabled,
   rtl_configured: raw.rtl_configured,
   preflight_ok: raw.preflight_ok,
@@ -396,6 +427,20 @@ export const adaptVehicleHealth = (
       ? ['O gateway reportou falha nas verificações pré-voo.']
       : []),
   measured_at: raw.captured_at,
+  connection_state: raw.connection_state ?? null,
+  connection_mode: raw.connection_mode ?? null,
+  connection_topology: raw.connection_topology ?? null,
+  connection_endpoint: raw.connection_endpoint ?? null,
+  serial_port: raw.serial_port ?? null,
+  connection_baud: raw.connection_baud ?? null,
+  mavlink_system_id: raw.mavlink_system_id ?? null,
+  mavlink_component_id: raw.mavlink_component_id ?? null,
+  heartbeat_age_seconds: raw.heartbeat_age_seconds ?? null,
+  last_heartbeat_at: raw.last_heartbeat_at ?? null,
+  mission_upload_enabled: raw.mission_upload_enabled ?? null,
+  flight_commands_enabled: raw.flight_commands_enabled ?? null,
+  mission_start_enabled: raw.mission_start_enabled ?? null,
+  connection_error: raw.connection_error ?? null,
   authorization_limits: raw.authorization_limits ?? null,
 });
 
@@ -544,6 +589,13 @@ export const realApi: AdminApi = {
       await postCritical<RawMission>(`/admin/missions/${id}/request-rtl`, {
         reason,
       }),
+    ),
+  requestMissionCommand: async (id, action, reason) =>
+    adaptMission(
+      await postCritical<RawMission>(
+        `/admin/missions/${id}/commands/${action}`,
+        { reason },
+      ),
     ),
   exportMission: async (id: string) => {
     const token = sessionToken.get();

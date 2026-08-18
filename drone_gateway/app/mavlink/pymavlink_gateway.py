@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import math
+import os
 import time
 from collections import deque
 from datetime import UTC, datetime
@@ -7,18 +9,25 @@ from types import ModuleType
 from typing import Any
 
 from pydantic import ValidationError
+from serial import SerialException
 
 from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import (
     MissionUploadError,
     UnsafeOperationError,
     VehicleConnectionError,
+    VehiclePortAccessError,
+    VehiclePortBusyError,
+    VehiclePortNotFoundError,
     VehicleTimeoutError,
 )
 from app.core.geo import distance_m
+from app.mavlink.ports import list_serial_ports
 from app.models import (
     AuthorizedMission,
+    ConnectionState,
     MissionStatus,
+    MissionVerificationResult,
     OperationalSource,
     TelemetrySnapshot,
     UploadResult,
@@ -26,6 +35,8 @@ from app.models import (
     VehicleHealth,
     VehiclePoll,
 )
+
+logger = logging.getLogger(__name__)
 
 MISSION_PROGRESS_STATUSES = (
     MissionStatus.DESTINATION_REACHED,
@@ -43,7 +54,14 @@ class PymavlinkVehicleGateway:
         self._mavutil: ModuleType | None = None
         # pymavlink builds dynamic dialect classes, so a static type is not available here.
         self._connection: Any | None = None
+        self._connection_lock = asyncio.Lock()
+        self._connection_state = ConnectionState.DISCONNECTED
+        self._connection_error: str | None = None
+        self._passive_connection = False
         self._last_heartbeat_monotonic: float | None = None
+        self._last_heartbeat_recorded_at: datetime | None = None
+        self._last_gcs_heartbeat_monotonic: float | None = None
+        self._last_message_monotonic: dict[str, float] = {}
         self._mode: str | None = None
         self._armed: bool | None = None
         self._gps_fix: int | None = None
@@ -68,8 +86,23 @@ class PymavlinkVehicleGateway:
         self._reached_sequences: set[int] = set()
         self._events: deque[VehicleEvent] = deque(maxlen=200)
         self._reported_progress: dict[str, set[MissionStatus]] = {}
+        self._verified: dict[str, str] = {}
+
+    @property
+    def connection_state(self) -> ConnectionState:
+        self._refresh_connection_state()
+        return self._connection_state
+
+    @property
+    def connection_error(self) -> str | None:
+        return self._connection_error
+
+    def mark_reconnecting(self) -> None:
+        self._connection_state = ConnectionState.RECONNECTING
 
     def _load_mavutil(self) -> ModuleType:
+        if self._settings.mavlink2_enabled:
+            os.environ["MAVLINK20"] = "1"
         try:
             from pymavlink import mavutil
         except ImportError as exc:
@@ -78,26 +111,153 @@ class PymavlinkVehicleGateway:
             ) from exc
         return mavutil
 
-    async def connect(self) -> None:
-        self._mavutil = self._load_mavutil()
-        self._connection = self._mavutil.mavlink_connection(
-            self._settings.mavlink_connection,
-            baud=self._settings.mavlink_baud_rate,
-            autoreconnect=True,
-            source_system=self._settings.mavlink_source_system_id,
+    async def connect(self, *, passive: bool = False) -> None:
+        async with self._connection_lock:
+            await self._close_unlocked()
+            self._connection_state = ConnectionState.CONNECTING
+            self._connection_error = None
+            # A hardware endpoint without the explicit acknowledgement is strictly
+            # receive-only.  This also suppresses otherwise harmless-looking MAVLink
+            # requests and GCS heartbeats so the default cannot affect a live bus.
+            self._passive_connection = passive or (
+                self._settings.is_hardware_mode and not self._settings.real_hardware_acknowledged
+            )
+            self._reset_live_state()
+            self._mavutil = self._load_mavutil()
+            try:
+                self._validate_serial_port_exists()
+                self._connection = self._mavutil.mavlink_connection(
+                    self._settings.effective_mavlink_connection,
+                    baud=self._settings.mavlink_baud_rate,
+                    autoreconnect=True,
+                    source_system=self._settings.mavlink_source_system_id,
+                    source_component=self._settings.mavlink_source_component_id,
+                    dialect=self._settings.mavlink_dialect,
+                )
+                self._connection_state = ConnectionState.WAITING_HEARTBEAT
+                heartbeat = await asyncio.to_thread(self._wait_for_target_heartbeat)
+                if heartbeat is None:
+                    raise VehicleTimeoutError(
+                        "Conexão aberta, mas nenhum heartbeat ArduPilot válido chegou no timeout."
+                    )
+                self._ingest_message(heartbeat)
+                self._connection_state = ConnectionState.CONNECTED
+                if not self._passive_connection:
+                    await asyncio.to_thread(self._request_initial_state)
+                    await asyncio.to_thread(self._drain_messages, 100)
+                logger.info(
+                    "MAVLink connected",
+                    extra={
+                        "connection_state": self._connection_state.value,
+                        "connection_mode": self._settings.connection_topology,
+                    },
+                )
+            except (PermissionError, SerialException, OSError) as exc:
+                translated = self._translate_connection_error(exc)
+                self._connection_error = str(translated)
+                self._connection_state = ConnectionState.ERROR
+                await self._close_connection_resource()
+                raise translated from exc
+            except (VehicleConnectionError, VehicleTimeoutError) as exc:
+                self._connection_error = str(exc)
+                self._connection_state = ConnectionState.ERROR
+                await self._close_connection_resource()
+                raise
+
+    async def _close_connection_resource(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is None:
+            return
+        close = getattr(connection, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except (OSError, SerialException):
+                logger.warning("MAVLink resource close failed", exc_info=True)
+
+    async def _close_unlocked(self) -> None:
+        await self._close_connection_resource()
+        self._connection_state = ConnectionState.DISCONNECTED
+        self._connection_error = None
+
+    def _reset_live_state(self) -> None:
+        self._last_heartbeat_monotonic = None
+        self._last_heartbeat_recorded_at = None
+        self._last_gcs_heartbeat_monotonic = None
+        self._last_message_monotonic.clear()
+        self._mode = None
+        self._armed = None
+        self._gps_fix = None
+        self._satellites = None
+        self._ekf_ok = None
+        self._battery_percent = None
+        self._battery_voltage = None
+        self._preflight_ok = None
+        self._rtl_configured = None
+        self._geofence_enabled = None
+        self._autopilot_version = None
+        self._origin_latitude = None
+        self._origin_longitude = None
+        self._latitude = None
+        self._longitude = None
+        self._last_position_monotonic = None
+        self._last_position_recorded_at = None
+        self._relative_altitude_m = 0.0
+        self._ground_speed_m_s = 0.0
+        self._last_current_sequence = None
+        self._reached_sequences.clear()
+
+    def _is_serial_connection(self) -> bool:
+        return not self._settings.effective_mavlink_connection.lower().startswith(
+            ("udp:", "udpin:", "udpout:", "tcp:", "tcpin:", "mcast:")
         )
-        heartbeat = await asyncio.to_thread(self._wait_for_target_heartbeat)
-        if heartbeat is None:
-            raise VehicleTimeoutError("Heartbeat MAVLink não chegou dentro do timeout.")
-        self._ingest_message(heartbeat)
-        await asyncio.to_thread(self._request_initial_state)
-        await asyncio.to_thread(self._drain_messages, 100)
+
+    def _upstream_serial_port(self) -> str | None:
+        if self._settings.mavlink_mode is MavlinkMode.MISSION_PLANNER_FORWARD:
+            configured = self._settings.mavlink_connection.strip()
+        elif self._is_serial_connection():
+            configured = self._settings.effective_mavlink_connection.strip()
+        else:
+            return None
+        return configured or None
+
+    def _validate_serial_port_exists(self) -> None:
+        if not self._is_serial_connection():
+            return
+        configured = self._settings.effective_mavlink_connection.casefold()
+        available = {port.device.casefold() for port in list_serial_ports()}
+        if configured not in available:
+            raise VehiclePortNotFoundError(
+                f"Porta {self._settings.sanitized_connection} não foi encontrada."
+            )
+
+    def _translate_connection_error(self, exc: BaseException) -> VehicleConnectionError:
+        endpoint = self._settings.sanitized_connection
+        message = str(exc).casefold()
+        if isinstance(exc, PermissionError) and self._is_serial_connection():
+            return VehiclePortBusyError(
+                f"Porta {endpoint} ocupada ou com acesso negado. Feche o Mission Planner "
+                "para usar MAVLINK_MODE=direct, ou mantenha-o aberto e use "
+                "MAVLINK_MODE=mission_planner_forward com forwarding UDP."
+            )
+        if isinstance(exc, PermissionError):
+            return VehiclePortAccessError(f"Acesso negado ao abrir {endpoint}.")
+        if self._is_serial_connection() and any(
+            marker in message for marker in ("access is denied", "permission", "acesso negado")
+        ):
+            return VehiclePortBusyError(
+                f"{endpoint} existe, mas está ocupada ou sem permissão; feche o concorrente "
+                "ou use Mission Planner forwarding."
+            )
+        return VehicleConnectionError(f"Falha ao abrir {endpoint}: {exc}")
 
     def _wait_for_target_heartbeat(self) -> Any | None:
         connection = self._required_connection()
         mavutil = self._required_mavutil()
         deadline = time.monotonic() + self._settings.heartbeat_timeout_seconds
         invalid_autopilot = getattr(mavutil.mavlink, "MAV_AUTOPILOT_INVALID", 8)
+        ardupilot_autopilot = getattr(mavutil.mavlink, "MAV_AUTOPILOT_ARDUPILOTMEGA", 3)
         while time.monotonic() < deadline:
             heartbeat = connection.recv_match(
                 type="HEARTBEAT",
@@ -118,7 +278,8 @@ class PymavlinkVehicleGateway:
                 and source_component != self._settings.mavlink_target_component_id
             ):
                 continue
-            if int(getattr(heartbeat, "autopilot", invalid_autopilot)) == invalid_autopilot:
+            autopilot = int(getattr(heartbeat, "autopilot", invalid_autopilot))
+            if autopilot in {invalid_autopilot} or autopilot != ardupilot_autopilot:
                 continue
             connection.target_system = source_system
             connection.target_component = source_component
@@ -126,6 +287,8 @@ class PymavlinkVehicleGateway:
         return None
 
     def _request_initial_state(self) -> None:
+        if self._passive_connection:
+            return
         connection = self._required_connection()
         mavutil = self._required_mavutil()
         target_system = connection.target_system
@@ -186,23 +349,24 @@ class PymavlinkVehicleGateway:
             )
 
     def _request_message_intervals(self) -> bool:
+        if self._passive_connection:
+            return False
         connection = self._required_connection()
         mavlink = self._required_mavutil().mavlink
         command = getattr(mavlink, "MAV_CMD_SET_MESSAGE_INTERVAL", None)
         if command is None:
             return False
         requested = (
-            ("MAVLINK_MSG_ID_HEARTBEAT", 1_000_000),
             ("MAVLINK_MSG_ID_SYS_STATUS", 1_000_000),
+            ("MAVLINK_MSG_ID_BATTERY_STATUS", 1_000_000),
             ("MAVLINK_MSG_ID_GPS_RAW_INT", 1_000_000),
             ("MAVLINK_MSG_ID_GLOBAL_POSITION_INT", 500_000),
             ("MAVLINK_MSG_ID_EKF_STATUS_REPORT", 1_000_000),
             ("MAVLINK_MSG_ID_HOME_POSITION", 5_000_000),
             ("MAVLINK_MSG_ID_MISSION_CURRENT", 1_000_000),
-            ("MAVLINK_MSG_ID_MISSION_ITEM_REACHED", 1_000_000),
-            ("MAVLINK_MSG_ID_STATUSTEXT", 1_000_000),
         )
         sent_any = False
+        all_acknowledged = True
         for constant_name, interval_us in requested:
             message_id = getattr(mavlink, constant_name, None)
             if message_id is None:
@@ -224,7 +388,49 @@ class PymavlinkVehicleGateway:
             except (AttributeError, OSError, TypeError, ValueError):
                 return False
             sent_any = True
-        return sent_any
+            if not self._wait_command_ack(
+                command,
+                timeout=self._settings.mavlink_message_interval_timeout_seconds,
+            ):
+                all_acknowledged = False
+        return sent_any and all_acknowledged
+
+    def _wait_command_ack(self, command: int, *, timeout: float) -> bool:
+        result = self._receive_command_ack_result(command, timeout=timeout)
+        accepted = getattr(self._required_mavutil().mavlink, "MAV_RESULT_ACCEPTED", 0)
+        return result == accepted
+
+    def _receive_command_ack_result(self, command: int, *, timeout: float) -> int | None:
+        connection = self._required_connection()
+        mavlink = self._required_mavutil().mavlink
+        in_progress = getattr(mavlink, "MAV_RESULT_IN_PROGRESS", 5)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            message = connection.recv_match(
+                type="COMMAND_ACK",
+                condition=f"COMMAND_ACK.command=={command}",
+                blocking=True,
+                timeout=max(0.05, deadline - time.monotonic()),
+            )
+            if message is None or not self._message_matches_target(message):
+                continue
+            target_system = getattr(
+                message, "target_system", self._settings.mavlink_source_system_id
+            )
+            if int(target_system) not in {0, self._settings.mavlink_source_system_id}:
+                continue
+            target_component = getattr(
+                message,
+                "target_component",
+                self._settings.mavlink_source_component_id,
+            )
+            if int(target_component) not in {0, self._settings.mavlink_source_component_id}:
+                continue
+            result = int(message.result)
+            if result == in_progress:
+                continue
+            return result
+        return None
 
     def _request_data_stream_fallback(self) -> None:
         connection = self._required_connection()
@@ -254,6 +460,7 @@ class PymavlinkVehicleGateway:
 
     def _drain_messages(self, maximum: int = 50) -> None:
         connection = self._required_connection()
+        self._send_gcs_heartbeat_if_due()
         for _ in range(maximum):
             message = connection.recv_match(blocking=False)
             if message is None:
@@ -267,8 +474,13 @@ class PymavlinkVehicleGateway:
             return
         if not self._message_matches_target(message):
             return
+        received_monotonic = time.monotonic()
+        self._last_message_monotonic[message_type] = received_monotonic
         if message_type == "HEARTBEAT":
-            self._last_heartbeat_monotonic = time.monotonic()
+            self._last_heartbeat_monotonic = received_monotonic
+            self._last_heartbeat_recorded_at = datetime.now(UTC)
+            self._connection_state = ConnectionState.CONNECTED
+            self._connection_error = None
             self._mode = mavutil.mode_string_v10(message)
             armed_flag = mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
             self._armed = bool(message.base_mode & armed_flag)
@@ -283,6 +495,20 @@ class PymavlinkVehicleGateway:
                 self._battery_voltage = float(message.voltage_battery) / 1000
             prearm_bit = getattr(mavutil.mavlink, "MAV_SYS_STATUS_PREARM_CHECK", 1 << 28)
             self._preflight_ok = bool(int(message.onboard_control_sensors_health) & prearm_bit)
+            self._last_message_monotonic["BATTERY"] = received_monotonic
+        elif message_type == "BATTERY_STATUS":
+            battery_remaining = int(getattr(message, "battery_remaining", -1))
+            updated = False
+            if battery_remaining >= 0:
+                self._battery_percent = float(battery_remaining)
+                updated = True
+            voltages = getattr(message, "voltages", ())
+            valid_voltages = [int(value) for value in voltages if 0 < int(value) < 0xFFFF]
+            if valid_voltages:
+                self._battery_voltage = sum(valid_voltages) / 1000
+                updated = True
+            if updated:
+                self._last_message_monotonic["BATTERY"] = received_monotonic
         elif message_type == "EKF_STATUS_REPORT":
             attitude = getattr(mavutil.mavlink, "EKF_ATTITUDE", 1)
             velocity = getattr(mavutil.mavlink, "EKF_VELOCITY_HORIZ", 2)
@@ -297,7 +523,7 @@ class PymavlinkVehicleGateway:
             self._longitude = float(message.lon) / 10_000_000
             self._relative_altitude_m = float(message.relative_alt) / 1000
             self._ground_speed_m_s = math.hypot(float(message.vx), float(message.vy)) / 100
-            self._last_position_monotonic = time.monotonic()
+            self._last_position_monotonic = received_monotonic
             self._last_position_recorded_at = datetime.now(UTC)
         elif message_type == "PARAM_VALUE":
             raw_parameter_id = message.param_id
@@ -387,9 +613,77 @@ class PymavlinkVehicleGateway:
     def _operational_source(self) -> OperationalSource:
         if self._settings.mavlink_mode is MavlinkMode.SITL:
             return OperationalSource.SITL
-        if self._settings.mavlink_mode is MavlinkMode.REAL:
+        if self._settings.is_hardware_mode:
             return OperationalSource.HARDWARE_REAL
         return OperationalSource.SIMULATION
+
+    def _heartbeat_age_seconds(self) -> float | None:
+        if self._last_heartbeat_monotonic is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_heartbeat_monotonic)
+
+    def _refresh_connection_state(self) -> None:
+        if self._connection is None:
+            if self._connection_state not in {ConnectionState.ERROR, ConnectionState.RECONNECTING}:
+                self._connection_state = ConnectionState.DISCONNECTED
+            return
+        heartbeat_age = self._heartbeat_age_seconds()
+        if heartbeat_age is None:
+            self._connection_state = ConnectionState.WAITING_HEARTBEAT
+        elif heartbeat_age <= self._settings.heartbeat_timeout_seconds:
+            self._connection_state = ConnectionState.CONNECTED
+            self._connection_error = None
+        else:
+            self._connection_state = ConnectionState.STALE
+            self._connection_error = (
+                f"Nenhum heartbeat válido nos últimos {heartbeat_age:.1f} segundos."
+            )
+
+    def _require_live_heartbeat(self, operation: str) -> None:
+        self._refresh_connection_state()
+        if self._connection_state is not ConnectionState.CONNECTED:
+            raise VehicleTimeoutError(
+                f"{operation} bloqueado: heartbeat ArduPilot válido não está disponível."
+            )
+
+    def _message_is_fresh(self, *message_types: str, timeout: float | None = None) -> bool:
+        latest = max(
+            (
+                self._last_message_monotonic[item]
+                for item in message_types
+                if item in self._last_message_monotonic
+            ),
+            default=None,
+        )
+        if latest is None:
+            return False
+        limit = timeout or self._settings.mavlink_telemetry_stale_seconds
+        return time.monotonic() - latest <= limit
+
+    def _send_gcs_heartbeat_if_due(self) -> None:
+        if (
+            self._passive_connection
+            or self._connection is None
+            or (self._settings.is_hardware_mode and not self._settings.real_hardware_acknowledged)
+        ):
+            return
+        now = time.monotonic()
+        if (
+            self._last_gcs_heartbeat_monotonic is not None
+            and now - self._last_gcs_heartbeat_monotonic
+            < self._settings.gcs_heartbeat_interval_seconds
+        ):
+            return
+        mavlink = self._required_mavutil().mavlink
+        self._connection.mav.heartbeat_send(
+            getattr(mavlink, "MAV_TYPE_GCS", 6),
+            getattr(mavlink, "MAV_AUTOPILOT_INVALID", 8),
+            0,
+            0,
+            getattr(mavlink, "MAV_STATE_ACTIVE", 4),
+        )
+        self._last_gcs_heartbeat_monotonic = now
+        logger.debug("GCS heartbeat sent")
 
     def _queue_event(
         self,
@@ -415,31 +709,64 @@ class PymavlinkVehicleGateway:
         return events
 
     async def read_health(self) -> VehicleHealth:
-        await asyncio.to_thread(self._drain_messages)
-        heartbeat = (
-            self._last_heartbeat_monotonic is not None
-            and time.monotonic() - self._last_heartbeat_monotonic
-            <= self._settings.heartbeat_timeout_seconds
-        )
+        if self._connection is not None:
+            await asyncio.to_thread(self._drain_messages)
+        self._refresh_connection_state()
+        heartbeat_age = self._heartbeat_age_seconds()
+        heartbeat = self._connection_state is ConnectionState.CONNECTED
         connected = self._connection is not None and heartbeat
+        gps_fresh = self._message_is_fresh("GPS_RAW_INT")
+        battery_fresh = self._message_is_fresh("BATTERY")
+        ekf_fresh = self._message_is_fresh("EKF_STATUS_REPORT")
+        status_fresh = self._message_is_fresh("SYS_STATUS")
+        position_fresh = self._message_is_fresh("GLOBAL_POSITION_INT")
+        heartbeat_fields_fresh = heartbeat
+        connection = self._connection
+        target_system = int(connection.target_system) if connection is not None else None
+        target_component = int(connection.target_component) if connection is not None else None
         try:
             return VehicleHealth(
                 source=self._operational_source(),
                 autopilot_version=self._autopilot_version,
                 connected=connected,
                 heartbeat=heartbeat,
-                gps_fix_type=self._gps_fix,
-                satellites=self._satellites,
-                ekf_ok=self._ekf_ok,
-                battery_percent=self._battery_percent,
-                battery_voltage=self._battery_voltage,
-                flight_mode=self._mode,
-                armed=self._armed,
-                preflight_ok=self._preflight_ok,
+                gps_fix_type=self._gps_fix if gps_fresh else None,
+                satellites=self._satellites if gps_fresh else None,
+                ekf_ok=self._ekf_ok if ekf_fresh else None,
+                battery_percent=self._battery_percent if battery_fresh else None,
+                battery_voltage=self._battery_voltage if battery_fresh else None,
+                flight_mode=self._mode if heartbeat_fields_fresh else None,
+                armed=self._armed if heartbeat_fields_fresh else None,
+                preflight_ok=self._preflight_ok if status_fresh else None,
                 rtl_configured=self._rtl_configured,
                 geofence_enabled=self._geofence_enabled,
                 origin_latitude=self._origin_latitude,
                 origin_longitude=self._origin_longitude,
+                connection_state=self._connection_state,
+                connection_mode=self._settings.mavlink_mode.value,
+                connection_topology=self._settings.connection_topology,
+                connection_endpoint=self._settings.sanitized_connection,
+                serial_port=self._upstream_serial_port(),
+                connection_baud=(
+                    self._settings.mavlink_baud_rate
+                    if self._upstream_serial_port() is not None
+                    else None
+                ),
+                mavlink_system_id=target_system if target_system and target_system > 0 else None,
+                mavlink_component_id=(
+                    target_component
+                    if target_component is not None and target_component >= 0
+                    else None
+                ),
+                heartbeat_age_seconds=heartbeat_age,
+                last_heartbeat_at=self._last_heartbeat_recorded_at,
+                current_latitude=self._latitude if position_fresh else None,
+                current_longitude=self._longitude if position_fresh else None,
+                current_altitude_m=self._relative_altitude_m if position_fresh else None,
+                mission_upload_enabled=self._settings.allow_mission_upload,
+                flight_commands_enabled=self._settings.allow_flight_commands,
+                mission_start_enabled=self._settings.allow_mission_start,
+                connection_error=self._connection_error,
             )
         except ValidationError as exc:
             raise VehicleConnectionError(
@@ -447,57 +774,88 @@ class PymavlinkVehicleGateway:
             ) from exc
 
     async def upload_mission(self, mission: AuthorizedMission, mission_file: str) -> UploadResult:
+        del mission_file
+        self._require_live_heartbeat("upload")
+        if not self._settings.allow_mission_upload:
+            raise UnsafeOperationError("ALLOW_MISSION_UPLOAD não foi habilitado.")
         key = str(mission.id)
         previous_hash = self._uploaded.get(key)
         if previous_hash == mission.mission_sha256:
-            await asyncio.to_thread(self._verify_mission_sync, mission)
             return UploadResult(
                 item_count=len(mission.waypoints),
                 acknowledged=True,
-                detail="Upload do mesmo hash foi relido e confirmado novamente.",
+                detail="MISSION_ACK do mesmo mission_id/hash já foi registrado nesta sessão.",
             )
         if previous_hash is not None:
             raise MissionUploadError("Missão já enviada com outro hash.")
-        for attempt in range(1, self._settings.mission_protocol_retries + 1):
-            try:
-                await asyncio.to_thread(self._upload_sync, mission)
-                await asyncio.to_thread(self._verify_mission_sync, mission)
-                break
-            except VehicleTimeoutError:
-                if attempt >= self._settings.mission_protocol_retries:
-                    raise
+        await asyncio.to_thread(self._upload_sync, mission)
         self._uploaded[key] = mission.mission_sha256
+        self._verified.pop(key, None)
         self._last_current_sequence = None
         self._reached_sequences.clear()
         self._reported_progress.pop(key, None)
         return UploadResult(
             item_count=len(mission.waypoints),
             acknowledged=True,
-            detail="MISSION_ACK aceito; contagem e conteúdo relidos do veículo.",
+            detail="MISSION_ACK aceito; a releitura ainda precisa ser verificada.",
+        )
+
+    async def verify_mission(self, mission: AuthorizedMission) -> MissionVerificationResult:
+        self._require_live_heartbeat("verificação da missão")
+        if not self._settings.allow_mission_upload:
+            raise UnsafeOperationError("ALLOW_MISSION_UPLOAD não foi habilitado.")
+        key = str(mission.id)
+        if self._verified.get(key) == mission.mission_sha256:
+            return MissionVerificationResult(
+                item_count=len(mission.waypoints),
+                verified=True,
+                detail="A mesma versão/hash já foi verificada nesta sessão.",
+            )
+        await asyncio.to_thread(self._verify_mission_sync, mission)
+        self._uploaded[key] = mission.mission_sha256
+        self._verified[key] = mission.mission_sha256
+        return MissionVerificationResult(
+            item_count=len(mission.waypoints),
+            verified=True,
+            detail="Contagem e conteúdo foram relidos e comparados com a missão autorizada.",
         )
 
     def _upload_sync(self, mission: AuthorizedMission) -> None:
         connection = self._required_connection()
         mavutil = self._required_mavutil()
-        target_system = connection.target_system
-        target_component = connection.target_component
         ordered = sorted(mission.waypoints, key=lambda item: item.sequence)
         if [item.sequence for item in ordered] != list(range(len(ordered))):
             raise MissionUploadError("Waypoints não possuem sequência contígua.")
-        connection.mav.mission_count_send(target_system, target_component, len(ordered))
+        self._send_mission_count(len(ordered))
         sent_sequences: set[int] = set()
-        deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
-        while time.monotonic() < deadline:
-            remaining = max(0.1, deadline - time.monotonic())
+        last_sequence: int | None = None
+        retries = 0
+        overall_deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
+        while time.monotonic() < overall_deadline:
+            self._send_gcs_heartbeat_if_due()
             message = connection.recv_match(
                 type=["MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"],
                 blocking=True,
-                timeout=remaining,
+                timeout=min(
+                    self._settings.mission_protocol_step_timeout_seconds,
+                    max(0.05, overall_deadline - time.monotonic()),
+                ),
             )
             if message is None:
+                retries += 1
+                if retries > self._settings.mission_protocol_retries:
+                    expected = "MISSION_REQUEST_INT" if last_sequence is None else "MISSION_ACK"
+                    raise VehicleTimeoutError(
+                        f"Timeout aguardando {expected}; retries da etapa esgotados."
+                    )
+                if last_sequence is None:
+                    self._send_mission_count(len(ordered))
+                else:
+                    self._send_mission_item_int(ordered[last_sequence])
                 continue
             if not self._message_matches_mission_operation(message):
                 continue
+            retries = 0
             message_type = message.get_type()
             if message_type == "MISSION_ACK":
                 if int(message.type) != mavutil.mavlink.MAV_MISSION_ACCEPTED:
@@ -512,56 +870,61 @@ class PymavlinkVehicleGateway:
                 raise MissionUploadError(f"Veículo solicitou waypoint inexistente: {sequence}")
             waypoint = ordered[sequence]
             sent_sequences.add(sequence)
-            if message_type == "MISSION_REQUEST_INT":
-                connection.mav.mission_item_int_send(
-                    target_system,
-                    target_component,
-                    waypoint.sequence,
-                    self._int_frame(waypoint.frame),
-                    waypoint.command,
-                    waypoint.current,
-                    waypoint.autocontinue,
-                    waypoint.param1,
-                    waypoint.param2,
-                    waypoint.param3,
-                    waypoint.param4,
-                    round(waypoint.latitude * 10_000_000),
-                    round(waypoint.longitude * 10_000_000),
-                    waypoint.altitude_m,
-                )
-            else:
-                connection.mav.mission_item_send(
-                    target_system,
-                    target_component,
-                    waypoint.sequence,
-                    waypoint.frame,
-                    waypoint.command,
-                    waypoint.current,
-                    waypoint.autocontinue,
-                    waypoint.param1,
-                    waypoint.param2,
-                    waypoint.param3,
-                    waypoint.param4,
-                    waypoint.latitude,
-                    waypoint.longitude,
-                    waypoint.altitude_m,
-                )
+            last_sequence = sequence
+            # MAVLink Mission Protocol requires ITEM_INT even for a legacy REQUEST.
+            self._send_mission_item_int(waypoint)
         raise VehicleTimeoutError("Timeout aguardando requests/ACK do upload MAVLink.")
+
+    def _send_mission_count(self, item_count: int) -> None:
+        connection = self._required_connection()
+        connection.mav.mission_count_send(
+            connection.target_system,
+            connection.target_component,
+            item_count,
+        )
+
+    def _send_mission_item_int(self, waypoint: Any) -> None:
+        connection = self._required_connection()
+        connection.mav.mission_item_int_send(
+            connection.target_system,
+            connection.target_component,
+            waypoint.sequence,
+            self._int_frame(waypoint.frame),
+            waypoint.command,
+            waypoint.current,
+            waypoint.autocontinue,
+            waypoint.param1,
+            waypoint.param2,
+            waypoint.param3,
+            waypoint.param4,
+            round(waypoint.latitude * 10_000_000),
+            round(waypoint.longitude * 10_000_000),
+            waypoint.altitude_m,
+        )
 
     def _message_matches_mission_operation(self, message: Any) -> bool:
         connection = self._required_connection()
         source_system = getattr(message, "get_srcSystem", None)
-        if callable(source_system) and int(source_system()) != int(connection.target_system):
+        if not callable(source_system) or int(source_system()) != int(connection.target_system):
             return False
         source_component = getattr(message, "get_srcComponent", None)
-        if (
-            callable(source_component)
-            and int(connection.target_component) > 0
+        if not callable(source_component) or (
+            int(connection.target_component) > 0
             and int(source_component()) != int(connection.target_component)
         ):
             return False
         target_system = getattr(message, "target_system", connection.source_system)
         if int(target_system) not in {0, int(connection.source_system)}:
+            return False
+        own_component = int(
+            getattr(
+                connection,
+                "source_component",
+                self._settings.mavlink_source_component_id,
+            )
+        )
+        target_component = getattr(message, "target_component", own_component)
+        if int(target_component) not in {0, own_component}:
             return False
         mission_type = getattr(message, "mission_type", 0)
         return int(mission_type) == 0
@@ -586,10 +949,14 @@ class PymavlinkVehicleGateway:
         message_types: str | list[str],
         *,
         sequence: int | None = None,
+        timeout: float | None = None,
     ) -> Any:
         connection = self._required_connection()
-        deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
+        deadline = time.monotonic() + (
+            timeout or self._settings.mission_protocol_step_timeout_seconds
+        )
         while time.monotonic() < deadline:
+            self._send_gcs_heartbeat_if_due()
             message = connection.recv_match(
                 type=message_types,
                 blocking=True,
@@ -609,17 +976,35 @@ class PymavlinkVehicleGateway:
         target_system = connection.target_system
         target_component = connection.target_component
         ordered = sorted(mission.waypoints, key=lambda item: item.sequence)
-        connection.mav.mission_request_list_send(target_system, target_component)
-        count_message = self._recv_mission_message("MISSION_COUNT")
+        count_message = None
+        for attempt in range(self._settings.mission_protocol_retries + 1):
+            connection.mav.mission_request_list_send(target_system, target_component)
+            try:
+                count_message = self._recv_mission_message("MISSION_COUNT")
+                break
+            except VehicleTimeoutError:
+                if attempt >= self._settings.mission_protocol_retries:
+                    raise
+        if count_message is None:  # pragma: no cover - guarded by the retry loop
+            raise VehicleTimeoutError("MISSION_COUNT não chegou durante a verificação.")
         if int(count_message.count) != len(ordered):
             raise MissionUploadError(
                 f"Veículo armazenou {count_message.count} waypoints; esperado {len(ordered)}."
             )
         for sequence, expected in enumerate(ordered):
-            connection.mav.mission_request_int_send(target_system, target_component, sequence)
-            actual = self._recv_mission_message(
-                ["MISSION_ITEM_INT", "MISSION_ITEM"], sequence=sequence
-            )
+            actual = None
+            for attempt in range(self._settings.mission_protocol_retries + 1):
+                connection.mav.mission_request_int_send(target_system, target_component, sequence)
+                try:
+                    actual = self._recv_mission_message(
+                        ["MISSION_ITEM_INT", "MISSION_ITEM"], sequence=sequence
+                    )
+                    break
+                except VehicleTimeoutError:
+                    if attempt >= self._settings.mission_protocol_retries:
+                        raise
+            if actual is None:  # pragma: no cover - guarded by the retry loop
+                raise VehicleTimeoutError(f"Waypoint {sequence} não chegou durante a verificação.")
             self._verify_downloaded_waypoint(actual, expected)
         connection.mav.mission_ack_send(
             target_system,
@@ -676,11 +1061,14 @@ class PymavlinkVehicleGateway:
             raise MissionUploadError(f"Altitude relida diverge no waypoint {expected.sequence}.")
 
     async def start_mission(self, mission: AuthorizedMission) -> None:
-        if not self._settings.allow_mission_start:
-            raise UnsafeOperationError("ALLOW_MISSION_START não foi habilitado.")
-        if self._armed is False:
+        self._require_live_heartbeat("start")
+        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
             raise UnsafeOperationError(
-                "Veículo está desarmado; o gateway não arma automaticamente. "
+                "ALLOW_FLIGHT_COMMANDS e ALLOW_MISSION_START devem estar habilitados."
+            )
+        if self._armed is not True:
+            raise UnsafeOperationError(
+                "Veículo não está comprovadamente armado; o gateway não arma automaticamente. "
                 "Operador deve seguir o procedimento."
             )
         await asyncio.to_thread(self._verify_mission_sync, mission)
@@ -702,9 +1090,12 @@ class PymavlinkVehicleGateway:
         mavutil = self._required_mavutil()
         command_by_name = {
             "MISSION_START": mavutil.mavlink.MAV_CMD_MISSION_START,
+            "PAUSE": mavutil.mavlink.MAV_CMD_DO_PAUSE_CONTINUE,
+            "CONTINUE": mavutil.mavlink.MAV_CMD_DO_PAUSE_CONTINUE,
             "RTL": mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH,
         }
         command = command_by_name[command_name]
+        first_parameter = 1 if command_name == "CONTINUE" else 0
         while (
             connection.recv_match(
                 type="COMMAND_ACK",
@@ -719,7 +1110,7 @@ class PymavlinkVehicleGateway:
             connection.target_component,
             command,
             0,
-            0,
+            first_parameter,
             0,
             0,
             0,
@@ -727,41 +1118,31 @@ class PymavlinkVehicleGateway:
             0,
             0,
         )
-        deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
-        ack = None
-        while time.monotonic() < deadline:
-            candidate = connection.recv_match(
-                type="COMMAND_ACK",
-                condition=f"COMMAND_ACK.command=={command}",
-                blocking=True,
-                timeout=max(0.1, deadline - time.monotonic()),
-            )
-            if candidate is None:
-                continue
-            source_system = getattr(candidate, "get_srcSystem", None)
-            if callable(source_system) and int(source_system()) != int(connection.target_system):
-                continue
-            source_component = getattr(candidate, "get_srcComponent", None)
-            if (
-                callable(source_component)
-                and int(connection.target_component) > 0
-                and int(source_component()) != int(connection.target_component)
-            ):
-                continue
-            ack = candidate
-            break
-        if ack is None:
+        result = self._receive_command_ack_result(
+            command,
+            timeout=self._settings.mission_command_timeout_seconds,
+        )
+        if result is None:
             raise VehicleTimeoutError(f"Timeout aguardando ACK válido de {command_name}.")
-        if int(ack.result) != mavutil.mavlink.MAV_RESULT_ACCEPTED:
-            raise UnsafeOperationError(f"{command_name} rejeitado pelo veículo: {ack.result}")
+        if result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            raise UnsafeOperationError(f"{command_name} rejeitado pelo veículo: {result}")
+
+    async def pause_mission(self) -> None:
+        self._require_live_heartbeat("pause")
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
+        await asyncio.to_thread(self._command_and_wait, "PAUSE")
+
+    async def continue_mission(self) -> None:
+        self._require_live_heartbeat("continue")
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
+        await asyncio.to_thread(self._command_and_wait, "CONTINUE")
 
     async def poll_mission(self, mission: AuthorizedMission) -> VehiclePoll:
         await asyncio.to_thread(self._drain_messages)
-        heartbeat_fresh = (
-            self._last_heartbeat_monotonic is not None
-            and time.monotonic() - self._last_heartbeat_monotonic
-            <= self._settings.heartbeat_timeout_seconds
-        )
+        self._refresh_connection_state()
+        heartbeat_fresh = self._connection_state is ConnectionState.CONNECTED
         if not heartbeat_fresh:
             raise VehicleTimeoutError("Heartbeat ficou vencido durante a missão.")
         if self._latitude is None or self._longitude is None:
@@ -780,9 +1161,11 @@ class PymavlinkVehicleGateway:
                 longitude=self._longitude,
                 relative_altitude_m=self._relative_altitude_m,
                 ground_speed_m_s=self._ground_speed_m_s,
-                battery_percent=self._battery_percent,
-                gps_fix_type=self._gps_fix,
-                satellites=self._satellites,
+                battery_percent=(
+                    self._battery_percent if self._message_is_fresh("BATTERY") else None
+                ),
+                gps_fix_type=(self._gps_fix if self._message_is_fresh("GPS_RAW_INT") else None),
+                satellites=(self._satellites if self._message_is_fresh("GPS_RAW_INT") else None),
                 flight_mode=self._mode,
                 armed=self._armed,
                 recorded_at=self._last_position_recorded_at,
@@ -947,6 +1330,9 @@ class PymavlinkVehicleGateway:
         )
 
     async def request_rtl(self) -> None:
+        self._require_live_heartbeat("RTL")
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
         await asyncio.to_thread(self._command_and_wait, "RTL")
 
     async def abort(self) -> None:
@@ -956,8 +1342,5 @@ class PymavlinkVehicleGateway:
         )
 
     async def close(self) -> None:
-        if self._connection is not None:
-            close = getattr(self._connection, "close", None)
-            if callable(close):
-                await asyncio.to_thread(close)
-        self._connection = None
+        async with self._connection_lock:
+            await self._close_unlocked()
