@@ -29,6 +29,9 @@ o SDK na ordem `-FlutterSdkRoot`, `FLUTTER_ROOT` e `PATH`; `./flutter` só entra
 máquina é rejeitado por essas regras. A atualização do Android Studio permanece manual pelo
 próprio editor; não aceite licenças automaticamente em nome do usuário.
 
+Em 20/08, havia atualizações disponíveis para Docker Desktop 4.87, WSL 2.7.12, VS Code e Java;
+elas não foram instaladas automaticamente. Docker Scout exige login e não integrou o audit.
+
 ## URLs locais
 
 | Aplicação | URL |
@@ -37,6 +40,40 @@ próprio editor; não aceite licenças automaticamente em nome do usuário.
 | OpenAPI | `http://localhost:8000/docs` |
 | admin React | `http://localhost:5173` |
 | cliente Flutter Web | `http://localhost:5174` |
+
+## Inicialização integrada recomendada
+
+Na raiz, um único comando sobe DB/backend/admin e mantém o Flutter Web em primeiro plano. O
+gateway fica desligado por padrão:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\start_development.ps1 `
+  -FlutterSdkRoot 'C:\Users\Luiz\Documents\flutter'
+```
+
+Valide tudo sem iniciar containers/processos:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\start_development.ps1 `
+  -FlutterSdkRoot 'C:\Users\Luiz\Documents\flutter' `
+  -ValidateOnly
+```
+
+Para incluir deliberadamente apenas o gateway simulado:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\start_development.ps1 `
+  -FlutterSdkRoot 'C:\Users\Luiz\Documents\flutter' `
+  -IncludeSimulationGateway `
+  -ConfirmSimulationGateway
+```
+
+Sem `-ConfirmSimulationGateway`, a solicitação é recusada. O launcher força runtime container,
+`simulation`, `udp:0.0.0.0:14550` e quatro gates falsos. COM7/forwarding não entram nesse comando:
+execute `scripts\start_gateway.ps1` em outro terminal para preservar logs e separação operacional.
 
 ## 1. Backend e admin
 
@@ -57,7 +94,10 @@ O gateway não sobe no perfil padrão. Para `simulation`:
 docker compose --profile gateway up -d --build
 ```
 
-Não use o container do gateway para abrir `COM7` no Windows. Em `direct` ou `mission_planner_forward`, mantenha banco/backend/admin no Docker e execute o gateway no host com o script da seção 9.
+O Compose injeta `GATEWAY_CONTAINER_MAVLINK_MODE`/`GATEWAY_CONTAINER_MAVLINK_CONNECTION`, marca
+`GATEWAY_RUNTIME=container` e o gateway recusa `real`, `direct` e `mission_planner_forward` nesse
+runtime. Não use o container para abrir `COM7`. Nesses modos, mantenha banco/backend/admin no
+Docker e execute o gateway no host com o script da seção 9.
 
 ## 2. Flutter Web — modo recomendado
 
@@ -65,7 +105,8 @@ Com API/admin ativos:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\start_mobile_web.ps1
+  -File .\scripts\start_mobile_web.ps1 `
+  -FlutterSdkRoot 'C:\Users\Luiz\Documents\flutter'
 ```
 
 O launcher:
@@ -186,12 +227,12 @@ flutter.bat build apk --release
 
 O APK debug atual foi recompilado no perfil integrado (`DEMO_MODE=false`, configuração
 MapTiler obtida do `.env` ignorado) com `compileSdk=37`, AGP 9.1.1 e Gradle 9.3.1:
-195.236.488 bytes, SHA-256
-`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`. Ele ainda precisa ser
+195.252.860 bytes, SHA-256
+`0D1F104AB2D22605F901E7588B8DF16CF159D1149CE9F2F1880DDAA1F482B9F6`. Ele ainda precisa ser
 instalado e executado em emulador/aparelho. Não há APK release atual nem keystore privada
-configurada para distribuição. O pacote `maplibre_gl` ainda produz aviso de compatibilidade futura
-com o Kotlin Gradle Plugin; o build atual termina com sucesso, mas a dependência precisa ser
-reavaliada quando publicar uma correção.
+configurada para distribuição. `maplibre_gl` 0.26.2 ainda produz avisos de Kotlin Gradle Plugin
+legado, Java 8 source/target e APIs de plugins; o build atual termina com sucesso. A versão 0.27
+exige migração e validação separada em browser/dispositivo.
 
 Não use a chave debug como assinatura de distribuição e não versione APK ou keystore.
 
@@ -245,7 +286,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\start_gateway.ps1
 ```
 
-O primeiro comando é diagnóstico passivo e termina; o segundo mantém o processo integrado ao backend. O padrão versionado é `simulation`, enquanto o `.env` local pode escolher `direct` ou `mission_planner_forward`. Em hardware, mantenha `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false` até concluir cada gate. Siga [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md); mudar apenas o modo não configura a topologia nem substitui checklist.
+O primeiro comando é diagnóstico passivo e termina; o segundo mantém o processo integrado ao backend. O padrão versionado é `simulation`, enquanto o `.env` local pode escolher `direct` ou `mission_planner_forward`. Em hardware, mantenha `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false` até concluir cada gate. Siga [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md); mudar apenas o modo não configura a topologia nem substitui checklist.
+
+O launcher identifica `GATEWAY_RUNTIME=host`; esse é o único runtime permitido para serial direta
+ou forwarding do Mission Planner.
 
 ## 10. Smoke integrado mutante
 
@@ -265,7 +309,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -ConfirmSimulationMutation
 ```
 
-O smoke cria dados e altera estados. `COMPLETED` em `simulation` não prova entrega física.
+O smoke cria dados e altera estados, recusa senhas com prefixo `change_me` e só deve ser usado em
+dados descartáveis/autorizados. `COMPLETED` em `simulation` não prova entrega física. Os dois
+pedidos `PENDING_ADMIN_APPROVAL` preservados no banco atual estão fora de escopo e não podem ser
+aprovados, preparados, autorizados, reivindicados ou despachados.
 
 ## 11. Bateria completa
 
@@ -280,32 +327,48 @@ ExecutionPolicy bloquear scripts locais: essa tentativa termina antes da bateria
 contagens, artefatos e hashes em [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md). Não reutilize
 contagens/hashes de uma bateria anterior depois de alterar código.
 
-## Evidência atual — 17 de agosto de 2026
+## Evidência atual — 21 de agosto de 2026
 
-- backend: Ruff/format e 53 testes aprovados, com 1 opt-in ignorado;
-- gateway: Ruff/format e 57 testes aprovados;
-- admin: ESLint, 16 arquivos/67 testes, build Vite e imagem Docker aprovados;
+- backend: Ruff/format e 56 testes aprovados, com 1 opt-in ignorado;
+- gateway: Ruff/format e 85 testes aprovados;
+- admin: ESLint, 20 arquivos/112 testes e build Vite aprovados;
 - Flutter: no SDK oficial global estável 3.47.0/Dart 3.13.0, format verificou 90 arquivos sem
   mudanças, analyze terminou sem issues e 98/98 testes passaram; Web release, dry run
   Wasm e APK debug integrado (`DEMO_MODE=false`) também foram aprovados; `main.dart.js` tem
-  3.592.450 bytes e o servidor em 5174 respondeu 200;
-- orquestração: `test_all.ps1 -SkipBuilds` terminou com exit 0 em 107,5 s usando a seleção por
-  parâmetro do SDK oficial stable, revisão `4cf24164269a`; a chamada direta bloqueada pela
-  ExecutionPolicy não executou a bateria e não entra como resultado;
-- Docker: banco, API e admin healthy; gateway físico parado deliberadamente;
+  3.592.748 bytes e o servidor em 5174 respondeu 200;
+- orquestração: `test_all.ps1 -SkipBuilds` terminou com exit 0, **351 testes aprovados + 1 opt-in ignorado**,
+  usando a seleção explícita do SDK oficial stable;
+- Docker: as imagens e o runtime descritos abaixo são o snapshot anterior de 20/08; backend e
+  gateway não foram reconstruídos nem recriados depois do ARM administrativo;
 - HTTP: `/health`, `/ready`, `/docs`, admin 5173 e Flutter Web 5174 responderam 200;
 - admin: CSP, `nosniff`, `DENY` e `Referrer-Policy` presentes; worker MapLibre respondeu 200 com
-  `application/javascript`;
-- migração: `0006_mission_start_health` aplicada; head único e roundtrip SQLite aprovados;
+  `application/javascript` e 470.280 bytes; WS recebeu `operations.connected`;
+- migração: head versionado `0007_vehicle_arm_command`; upgrade/current/downgrade temporário
+  aprovado. O PostgreSQL vivo permaneceu em `0006_mission_start_health` e não recebeu upgrade;
 - navegador: controlador visual indisponível; não houve novo smoke visual, console ou tiles;
-- login admin: credenciais atuais do `.env` retornaram 401; não resetar sem autorização.
-- auditorias: `pip-audit` de backend/gateway e `npm audit` completo/produção retornaram zero
-  vulnerabilidades conhecidas; use UTF-8 explícito no subprocesso Python se o caminho acentuado
-  causar erro de decodificação.
+- integração Flutter/API: preflight CORS 200 com origem/métodos exatos, request sem token 401 e
+  JWT efêmero de cliente retornando quatro produtos;
+- login admin: senha atual do `.env` retornou 401; nenhuma rotação/reset foi feita;
+- auditorias: `pip check`/`pip-audit` nos venvs e imagens Python e `npm audit` completo/produção
+  retornaram zero incompatibilidades/vulnerabilidades conhecidas; `npm ci --dry-run`/`npm ls` OK.
+- launcher integrado: parser Windows PowerShell 5.1 e `-ValidateOnly` padrão/simulado passaram em
+  porta livre 5199; omitir `-ConfirmSimulationGateway` foi recusado; esse teste não iniciou serviços.
 
 Imagens usadas: `postgis/postgis:17-3.5`, `python:3.13-slim`, `node:24-alpine` e
 `nginx:1.28.3-alpine`. Digests e matriz completa estão em
-[INTEGRATION_STATUS.md](INTEGRATION_STATUS.md).
+[INTEGRATION_STATUS.md](INTEGRATION_STATUS.md). Uvicorn está em 0.52.4; o admin usa
+`@testing-library/user-event` 14.6.5, `@vitejs/plugin-react` 6.1.0, MapLibre 6.4.1, Vite 8.2.2 e
+Vitest 4.1.11.
+
+O navegador visual integrado não estava disponível; não houve novo smoke visual de login/mapa.
+O MapTiler respondeu diretamente com style GL v8/40 camadas e reverse geocode/10 resultados, o
+que não substitui a renderização. A dependência Flutter `maplibre_gl` 0.27.0 não foi adotada porque
+muda Web para GL JS 6/WebGL2 e o lifecycle Android sem browser/dispositivo disponíveis para validar.
+
+O `mobile/pubspec.lock` atualizou MapLibre direto para 0.26.2 e oito transitivas compatíveis:
+archive 4.1.0, code_assets 2.0.0, dbus 0.7.15, hooks 2.2.0, image 4.9.2, objective_c 9.6.0,
+record_use 1.1.1 e vm_service 15.3.0. O lock tem SHA-256
+`A11E35E0E411D5B7BD81E81B6F66E222134C504230D187847AB086C6FB5C3EC5`.
 
 ## Evidência histórica após a migração de mapas
 

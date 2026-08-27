@@ -101,7 +101,13 @@ class GatewayCommand(Base):
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
     command: Mapped[GatewayCommandType] = mapped_column(
-        Enum(GatewayCommandType, name="gateway_command_type", native_enum=False), nullable=False
+        Enum(
+            GatewayCommandType,
+            name="gateway_command_type",
+            native_enum=False,
+            length=16,
+        ),
+        nullable=False,
     )
     reason: Mapped[str | None] = mapped_column(Text)
     status: Mapped[GatewayCommandStatus] = mapped_column(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,13 @@ from app.core.enums import AuthorizationStatus, MissionStatus
 from app.database.session import SessionLocal
 from app.modules.approvals.models import FlightAuthorization
 from app.modules.missions.models import Mission
+
+
+def _as_utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _create_submitted_order(
@@ -297,10 +305,7 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
         headers=gateway_headers,
         json={"gateway_id": "gateway-nao-vinculado"},
     )
-    assert wrong_gateway_claim.status_code == 409
-    assert wrong_gateway_claim.json()["detail"] == (
-        "O gateway não está vinculado ao veículo autorizado"
-    )
+    assert wrong_gateway_claim.status_code == 403
 
     available = client.get("/api/v1/gateway/missions/authorized", headers=gateway_headers)
     assert available.status_code == 200
@@ -381,6 +386,290 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     assert "MISSION_VERIFIED" in {
         milestone["event_type"] for milestone in order_after_verification.json()["milestones"]
     }
+
+    arm_payload = {
+        "reason": "Ensaio presencial em bancada isolada",
+        "area_clear_confirmed": True,
+        "operator_present_confirmed": True,
+        "safety_switch_ready_confirmed": True,
+    }
+    arm_health_payload = {
+        **heartbeat_payload,
+        "flight_mode": "STABILIZE",
+        "flight_commands_enabled": True,
+        "mission_start_enabled": True,
+        "vehicle_arm_enabled": True,
+    }
+    for gate, blocker in (
+        ("vehicle_arm_enabled", "VEHICLE_ARM_DISABLED"),
+        ("flight_commands_enabled", "FLIGHT_COMMANDS_DISABLED"),
+        ("mission_start_enabled", "MISSION_START_DISABLED"),
+    ):
+        disabled_arm_heartbeat = client.post(
+            "/api/v1/gateway/heartbeat",
+            headers=gateway_headers,
+            json={**arm_health_payload, gate: False},
+        )
+        assert disabled_arm_heartbeat.status_code == 200
+        disabled_arm = client.post(
+            f"/api/v1/admin/missions/{mission['id']}/arm",
+            headers={**admin_headers, "Idempotency-Key": f"arm-disabled-{gate}-001"},
+            json=arm_payload,
+        )
+        assert disabled_arm.status_code == 409
+        assert blocker in disabled_arm.json()["fields"]["preflight"]
+
+    invalid_mode_heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={**arm_health_payload, "flight_mode": "GUIDED"},
+    )
+    assert invalid_mode_heartbeat.status_code == 200
+    invalid_mode_arm = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**admin_headers, "Idempotency-Key": "arm-invalid-mode-001"},
+        json=arm_payload,
+    )
+    assert invalid_mode_arm.status_code == 409
+    assert "ARMING_MODE_NOT_ALLOWED" in invalid_mode_arm.json()["fields"]["preflight"]
+
+    arm_ready_heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json=arm_health_payload,
+    )
+    assert arm_ready_heartbeat.status_code == 200, arm_ready_heartbeat.text
+    assert arm_ready_heartbeat.json()["health"]["vehicle_arm_enabled"] is True
+
+    probe_arm = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**admin_headers, "Idempotency-Key": "mission-arm-abort-probe-001"},
+        json=arm_payload,
+    )
+    assert probe_arm.status_code == 202, probe_arm.text
+    blocked_prequeued_start = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/START",
+        headers={**admin_headers, "Idempotency-Key": "start-while-arm-open-001"},
+        json={"reason": "START não pode ficar atrás de ARM pendente"},
+    )
+    assert blocked_prequeued_start.status_code == 409
+    cancel_pending_arm = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/abort",
+        headers={**admin_headers, "Idempotency-Key": "abort-pending-arm-001"},
+        json={"reason": "Cancelar ARM ainda não reconhecido"},
+    )
+    assert cancel_pending_arm.status_code == 202, cancel_pending_arm.text
+    cancelled_probe = client.get(
+        (f"/api/v1/admin/missions/{mission['id']}/commands/{probe_arm.json()['command']['id']}"),
+        headers=admin_headers,
+    )
+    assert cancelled_probe.status_code == 200
+    assert cancelled_probe.json()["status"] == "FAILED"
+    assert "cancelado" in cancelled_probe.json()["result_detail"]
+    pending_abort = client.get(
+        "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
+        headers=gateway_headers,
+    )
+    assert pending_abort.status_code == 200
+    assert [command["command"] for command in pending_abort.json()] == ["ABORT"]
+    close_probe_abort = client.post(
+        f"/api/v1/gateway/commands/{pending_abort.json()[0]['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "abort-pending-arm-failed-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "FAILED",
+            "detail": "Abortamento preventivo registrado sem ação MAVLink",
+        },
+    )
+    assert close_probe_abort.status_code == 200, close_probe_abort.text
+
+    start_while_disarmed = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/START",
+        headers={**admin_headers, "Idempotency-Key": "start-while-disarmed-001"},
+        json={"reason": "START deve exigir armamento confirmado"},
+    )
+    assert start_while_disarmed.status_code == 409
+    assert "VEHICLE_NOT_ARMED" in start_while_disarmed.json()["fields"]["preflight"]
+
+    generic_arm = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/commands/ARM",
+        headers={**admin_headers, "Idempotency-Key": "generic-arm-blocked-001"},
+        json={"reason": "Tentativa pelo contrato genérico"},
+    )
+    assert generic_arm.status_code == 409
+
+    missing_idempotency_key = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers=admin_headers,
+        json=arm_payload,
+    )
+    assert missing_idempotency_key.status_code == 422
+    customer_arm = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**customer_headers, "Idempotency-Key": "customer-arm-blocked-001"},
+        json=arm_payload,
+    )
+    assert customer_arm.status_code == 403
+    unsafe_arm_payload = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**admin_headers, "Idempotency-Key": "arm-extra-field-001"},
+        json={**arm_payload, "force": True},
+    )
+    assert unsafe_arm_payload.status_code == 422
+    missing_confirmation = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**admin_headers, "Idempotency-Key": "arm-confirmation-001"},
+        json={**arm_payload, "area_clear_confirmed": False},
+    )
+    assert missing_confirmation.status_code == 422
+    coerced_confirmation = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers={**admin_headers, "Idempotency-Key": "arm-confirmation-type-001"},
+        json={**arm_payload, "area_clear_confirmed": 1},
+    )
+    assert coerced_confirmation.status_code == 422
+
+    arm_headers = {**admin_headers, "Idempotency-Key": "mission-arm-flow-001"}
+    arm_request = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers=arm_headers,
+        json=arm_payload,
+    )
+    assert arm_request.status_code == 202, arm_request.text
+    assert arm_request.json()["mission"]["id"] == mission["id"]
+    assert arm_request.json()["command"]["command"] == "ARM"
+    assert arm_request.json()["command"]["status"] == "PENDING"
+    arm_replay = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers=arm_headers,
+        json=arm_payload,
+    )
+    assert arm_replay.status_code == 202
+    assert arm_replay.headers["Idempotency-Replayed"] == "true"
+    arm_mismatch = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/arm",
+        headers=arm_headers,
+        json={**arm_payload, "reason": "Justificativa incompatível no replay"},
+    )
+    assert arm_mismatch.status_code == 409
+
+    pending_arm = client.get(
+        "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1",
+        headers=gateway_headers,
+    )
+    assert pending_arm.status_code == 200
+    arm_command = pending_arm.json()[0]
+    assert arm_command["command"] == "ARM"
+    assert arm_command["id"] == arm_request.json()["command"]["id"]
+
+    wrong_gateway_arm_ack = client.post(
+        f"/api/v1/gateway/commands/{arm_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "arm-wrong-gateway-001",
+            "gateway_id": "gateway-nao-vinculado",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+    assert wrong_gateway_arm_ack.status_code == 403
+    pre_ack_armed_heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={
+            **arm_health_payload,
+            "armed": True,
+            "last_heartbeat_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert pre_ack_armed_heartbeat.status_code == 200, pre_ack_armed_heartbeat.text
+    arm_ack = client.post(
+        f"/api/v1/gateway/commands/{arm_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "arm-command-ack-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "ACKNOWLEDGED",
+        },
+    )
+    assert arm_ack.status_code == 200, arm_ack.text
+
+    abort_after_arm_ack = client.post(
+        f"/api/v1/admin/missions/{mission['id']}/abort",
+        headers={**admin_headers, "Idempotency-Key": "abort-acknowledged-arm-001"},
+        json={"reason": "Não mascarar resultado físico incerto"},
+    )
+    assert abort_after_arm_ack.status_code == 409
+
+    premature_arm_complete = client.post(
+        f"/api/v1/gateway/commands/{arm_command['id']}/ack",
+        headers=gateway_headers,
+        json={
+            "event_id": "arm-command-premature-001",
+            "gateway_id": "gateway-sitl-1",
+            "status": "COMPLETED",
+        },
+    )
+    assert premature_arm_complete.status_code == 409
+    assert "heartbeat novo" in premature_arm_complete.json()["detail"]
+
+    armed_heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={
+            **arm_health_payload,
+            "armed": True,
+            "last_heartbeat_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert armed_heartbeat.status_code == 200, armed_heartbeat.text
+    assert armed_heartbeat.json()["health"]["armed"] is True
+    arm_complete_payload = {
+        "event_id": "arm-command-complete-001",
+        "gateway_id": "gateway-sitl-1",
+        "status": "COMPLETED",
+        "detail": "ACK aceito e heartbeat confirmou armed=true",
+    }
+    arm_complete = client.post(
+        f"/api/v1/gateway/commands/{arm_command['id']}/ack",
+        headers=gateway_headers,
+        json=arm_complete_payload,
+    )
+    assert arm_complete.status_code == 200, arm_complete.text
+    assert arm_complete.json()["status"] == "COMPLETED"
+    admin_arm_result = client.get(
+        f"/api/v1/admin/missions/{mission['id']}/commands/{arm_command['id']}",
+        headers=admin_headers,
+    )
+    assert admin_arm_result.status_code == 200
+    assert admin_arm_result.json()["status"] == "COMPLETED"
+    assert admin_arm_result.json()["result_detail"] == arm_complete_payload["detail"]
+    arm_events = client.get(
+        f"/api/v1/admin/events?mission_id={mission['id']}",
+        headers=admin_headers,
+    )
+    assert arm_events.status_code == 200
+    arm_completed_event = next(
+        event
+        for event in arm_events.json()
+        if event["event_id"] == arm_complete_payload["event_id"]
+    )
+    evidence = arm_completed_event["metadata"]
+    assert evidence["health_snapshot_id"] == armed_heartbeat.json()["health"]["id"]
+    assert _as_utc_datetime(evidence["health_received_at"]) == _as_utc_datetime(
+        armed_heartbeat.json()["health"]["received_at"]
+    )
+    assert _as_utc_datetime(evidence["last_heartbeat_at"]) == _as_utc_datetime(
+        armed_heartbeat.json()["health"]["last_heartbeat_at"]
+    )
+    assert evidence["source"] == "SITL"
+    assert evidence["armed"] is True
+    arm_complete_replay = client.post(
+        f"/api/v1/gateway/commands/{arm_command['id']}/ack",
+        headers=gateway_headers,
+        json=arm_complete_payload,
+    )
+    assert arm_complete_replay.status_code == 200
 
     start_request = client.post(
         f"/api/v1/admin/missions/{mission['id']}/commands/START",

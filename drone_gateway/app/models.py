@@ -38,6 +38,7 @@ class ConnectionState(StrEnum):
 
 
 class GatewayCommandType(StrEnum):
+    ARM = "ARM"
     START = "START"
     PAUSE = "PAUSE"
     CONTINUE = "CONTINUE"
@@ -139,7 +140,7 @@ class VehicleHealth(BaseModel):
     autopilot_version: str | None = Field(default=None, max_length=120)
     connected: bool
     heartbeat: bool
-    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=8)
     satellites: int | None = Field(default=None, ge=0, le=100)
     ekf_ok: bool | None = None
     battery_percent: float | None = Field(default=None, ge=0, le=100)
@@ -167,6 +168,7 @@ class VehicleHealth(BaseModel):
     mission_upload_enabled: bool = False
     flight_commands_enabled: bool = False
     mission_start_enabled: bool = False
+    vehicle_arm_enabled: bool = False
     connection_error: str | None = Field(default=None, max_length=1000)
 
 
@@ -177,7 +179,7 @@ class TelemetrySnapshot(BaseModel):
     relative_altitude_m: float = Field(ge=-100, le=1000)
     ground_speed_m_s: float = Field(ge=0, le=200)
     battery_percent: float | None = Field(default=None, ge=0, le=100)
-    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=8)
     satellites: int | None = Field(default=None, ge=0, le=100)
     flight_mode: str | None = Field(default=None, max_length=40)
     armed: bool | None = None
@@ -208,3 +210,10 @@ class MissionVerificationResult(BaseModel):
     item_count: int = Field(ge=1)
     verified: bool
     detail: str
+
+
+class VehicleArmResult(BaseModel):
+    command_sent: bool
+    command_acknowledged: bool
+    armed_heartbeat_confirmed: bool
+    external_state_reconciled: bool

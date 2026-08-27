@@ -4,7 +4,9 @@ Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como
 
 ## Autenticação
 
-`Authorization: Bearer <JWT>` para cliente/admin. O gateway usa `X-Gateway-API-Key`. Cadastro ignora/rejeita papel enviado pelo público. Erro padrão:
+`Authorization: Bearer <JWT>` para cliente/admin. O gateway usa `X-Gateway-API-Key` junto de
+`X-Gateway-ID`; o backend vincula ambos ao `GATEWAY_ID` configurado e rejeita ID divergente em
+header, query ou payload. Cadastro ignora/rejeita papel enviado pelo público. Erro padrão:
 
 ```json
 {"code":"ORDER_INVALID_STATE","detail":"Pedido não aguarda aprovação.","fields":{"status":"APPROVED"}}
@@ -147,9 +149,11 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `POST /admin/missions/{id}/mark-under-review` | exportada |
 | `POST /admin/missions/{id}/mark-reviewed` | em revisão |
 | `POST /admin/missions/{id}/authorize-flight` | revisada + checklist + saúde |
+| `POST /admin/missions/{id}/arm` | `VERIFIED`, reivindicada + ARM normal elegível |
+| `GET /admin/missions/{id}/commands/{command_id}` | acompanhar o comando exato da missão |
 | `POST /admin/missions/{id}/abort` | estado abortável |
 | `POST /admin/missions/{id}/request-rtl` | execução/condição válida |
-| `POST /admin/missions/{id}/commands/{action}` | `action=START|PAUSE|CONTINUE|RTL|ABORT`, estado compatível |
+| `POST /admin/missions/{id}/commands/{action}` | `action=START|PAUSE|CONTINUE|RTL|ABORT`, estado compatível; `ARM` é recusado aqui |
 | `GET /admin/vehicles` | `ADMIN` |
 | `GET /admin/vehicles/{id}/health` | `ADMIN` |
 | `GET /admin/events` | `ADMIN` e paginação |
@@ -167,7 +171,33 @@ As respostas administrativas de missão incluem `authorization` com o último re
 
 No `claim`, o gateway precisa corresponder ao veículo autorizado. Mudanças saudáveis de telemetria, como pequenas variações de bateria ou satélites, não revogam a autorização por igualdade exata de amostra; qualquer falha atual nos limites técnicos, expiração ou alteração de versão/hash revoga a autorização, retorna a missão para nova autorização e registra o motivo em `SystemEvent`.
 
-O endpoint de comando aceita `SafetyActionRequest` opcional e `Idempotency-Key`. `START` só é criado em `VERIFIED`; `PAUSE`, durante estados físicos permitidos; `CONTINUE`, somente em `PAUSED`. O `202` significa que o pedido foi persistido, não que o autopiloto executou. O gateway ainda rejeita comando vencido, identidade de veículo divergente, snapshot/heartbeat/preflight inválido ou gate local fechado. Em especial, `START` requer `flight_commands_enabled=true`, `mission_start_enabled=true` e veículo já armado pelo operador; o software não envia armamento.
+### Armamento normal dedicado
+
+`POST /api/v1/admin/missions/{id}/arm` exige JWT `ADMIN`, header `Idempotency-Key` e exatamente este formato:
+
+```json
+{
+  "reason": "Ensaio autorizado com operador presente.",
+  "area_clear_confirmed": true,
+  "operator_present_confirmed": true,
+  "safety_switch_ready_confirmed": true
+}
+```
+
+`reason` é aparado, obrigatório e possui de 10 a 1000 caracteres. Os três booleanos aceitam somente `true`; campo desconhecido, inclusive qualquer tentativa de `force` ou bypass, retorna `422`. Repetir a mesma chave e o mesmo corpo devolve a resposta original com `Idempotency-Replayed`; reutilizar a chave com outro corpo retorna conflito.
+
+Antes de persistir `ARM`, o backend bloqueia a missão para serializar ações críticas e exige:
+
+- missão `VERIFIED`, já reivindicada, com veículo e gateway correspondentes;
+- último snapshot do mesmo veículo fresco, conectado, com heartbeat, origem `SITL` ou `HARDWARE_REAL` e `armed=false`;
+- GPS/satélites, EKF, bateria, home/origem, geofence, RTL e preflight completos e dentro dos limites canônicos;
+- `flight_mode=STABILIZE`;
+- `vehicle_arm_enabled=true`, `flight_commands_enabled=true` e `mission_start_enabled=true`;
+- ausência de outro comando crítico `PENDING` ou `ACKNOWLEDGED` para a missão.
+
+Campo ausente, nulo, stale ou falso falha fechado com `409`; o navegador não pode fornecer resultados técnicos. O `202` devolve `{ "mission": AdminMissionRead, "command": GatewayCommandRead }` e significa apenas que a solicitação foi persistida. O painel acompanha o `command.id` exato por `GET /api/v1/admin/missions/{id}/commands/{command_id}`. A sequência auditável é `PENDING → ACKNOWLEDGED → COMPLETED|FAILED`; `FAILED` expõe `result_detail`, enquanto `COMPLETED` só é aceito depois de ACK MAVLink correlacionado e de um heartbeat novo, persistido pelo backend, com `armed=true`, origem permitida e identidade correta. ARM não inicia nem muda a missão para `EXECUTING`; `START` continua sendo request posterior. Não existe rearmamento automático após timeout, falha, restart ou desarmamento.
+
+O endpoint genérico de comando aceita `SafetyActionRequest` opcional e `Idempotency-Key`. `START` só é criado em `VERIFIED`; `PAUSE`, durante estados físicos permitidos; `CONTINUE`, somente em `PAUSED`. O `202` significa que o pedido foi persistido, não que o autopiloto executou. O gateway ainda rejeita comando vencido, identidade de veículo divergente, snapshot/heartbeat/preflight inválido ou gate local fechado. Em especial, `START` requer `flight_commands_enabled=true`, `mission_start_enabled=true` e veículo já armado; ele nunca envia ARM implicitamente. O único caminho de armamento é o endpoint dedicado descrito acima.
 
 ## Gateway
 
@@ -180,12 +210,12 @@ O endpoint de comando aceita `SafetyActionRequest` opcional e `Idempotency-Key`.
 | `POST /gateway/missions/{id}/status` | transição física validada |
 | `POST /gateway/missions/{id}/telemetry` | amostra normalizada com origem; desconhecidos permanecem nulos |
 | `POST /gateway/missions/{id}/events` | evento com UUID deduplicável |
-| `GET /gateway/commands/pending` | comandos `START`/`PAUSE`/`CONTINUE`/RTL/ABORT destinados ao gateway |
+| `GET /gateway/commands/pending` | comandos ARM/`START`/`PAUSE`/`CONTINUE`/RTL/ABORT destinados ao gateway da missão |
 | `POST /gateway/commands/{id}/ack` | ACK/resultado idempotente do comando |
 
 Repetir `claim`, `upload-status` ou evento com a mesma chave retorna resultado consistente ou `409`; nunca inicia novamente.
 
-O heartbeat/health do gateway persiste diagnóstico de conexão, topologia, endpoint/serial/baud, `sysid`/`compid`, idade/horário do heartbeat, posição disponível, erro e três flags independentes: `mission_upload_enabled`, `flight_commands_enabled` e `mission_start_enabled`. Campo não observado continua `null`.
+O heartbeat/health do gateway persiste diagnóstico de conexão, topologia, endpoint/serial/baud, `sysid`/`compid`, idade/horário do heartbeat, posição disponível, erro e quatro flags independentes: `mission_upload_enabled`, `flight_commands_enabled`, `mission_start_enabled` e `vehicle_arm_enabled`. Campo não observado continua `null` e nunca é promovido a habilitado.
 
 ## WebSocket
 

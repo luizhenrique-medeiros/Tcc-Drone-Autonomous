@@ -65,6 +65,7 @@ export const readyHealth: VehicleHealth = {
   last_heartbeat_at: '2026-08-06T12:00:00.700Z',
   mission_upload_enabled: true,
   flight_commands_enabled: false,
+  vehicle_arm_enabled: false,
   mission_start_enabled: false,
   connection_error: null,
   authorization_limits: {

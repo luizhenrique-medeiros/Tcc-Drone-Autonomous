@@ -3,9 +3,13 @@ import { appConfig } from './config';
 import type {
   AdminApi,
   AdminUser,
+  ArmMissionInput,
+  ArmMissionResult,
   AuthSession,
   EventSeverity,
   FlightAuthorizationInput,
+  GatewayCommand,
+  GatewayCommandStatus,
   LoginInput,
   Mission,
   MissionAuthorization,
@@ -127,6 +131,24 @@ interface RawAuthorizationResult {
   };
 }
 
+interface RawGatewayCommand {
+  id: string;
+  mission_id: string;
+  command: GatewayCommand['command'];
+  reason: string | null;
+  status: GatewayCommandStatus;
+  gateway_id: string | null;
+  requested_at: string;
+  acknowledged_at: string | null;
+  completed_at: string | null;
+  result_detail: string | null;
+}
+
+interface RawVehicleArmResult {
+  mission: RawMission;
+  command: RawGatewayCommand;
+}
+
 interface RawVehicle {
   id: string;
   identifier: string;
@@ -170,6 +192,7 @@ export interface BackendVehicleHealth {
   last_heartbeat_at?: string | null;
   mission_upload_enabled?: boolean | null;
   flight_commands_enabled?: boolean | null;
+  vehicle_arm_enabled?: boolean | null;
   mission_start_enabled?: boolean | null;
   connection_error?: string | null;
   preflight_messages?: string[] | null;
@@ -439,6 +462,7 @@ export const adaptVehicleHealth = (
   last_heartbeat_at: raw.last_heartbeat_at ?? null,
   mission_upload_enabled: raw.mission_upload_enabled ?? null,
   flight_commands_enabled: raw.flight_commands_enabled ?? null,
+  vehicle_arm_enabled: raw.vehicle_arm_enabled ?? null,
   mission_start_enabled: raw.mission_start_enabled ?? null,
   connection_error: raw.connection_error ?? null,
   authorization_limits: raw.authorization_limits ?? null,
@@ -460,6 +484,10 @@ export const adaptTelemetryPoint = (
   armed: point.armed,
   recorded_at: point.recorded_at,
 });
+
+export const adaptGatewayCommand = (
+  command: RawGatewayCommand,
+): GatewayCommand => ({ ...command });
 
 const apiRequest = async <T>(
   path: string,
@@ -524,6 +552,24 @@ const postCritical = <T>(
 };
 
 const flightAuthorizationRequestIds = new Map<string, string>();
+const armMissionRequestIds = new Map<
+  string,
+  { fingerprint: string; requestId: string }
+>();
+
+const armMissionRequestId = (id: string, input: ArmMissionInput) => {
+  const fingerprint = JSON.stringify({
+    reason: input.reason.trim(),
+    area_clear_confirmed: input.area_clear_confirmed,
+    operator_present_confirmed: input.operator_present_confirmed,
+    safety_switch_ready_confirmed: input.safety_switch_ready_confirmed,
+  });
+  const existing = armMissionRequestIds.get(id);
+  if (existing?.fingerprint === fingerprint) return existing.requestId;
+  const requestId = createRequestId();
+  armMissionRequestIds.set(id, { fingerprint, requestId });
+  return requestId;
+};
 
 export const realApi: AdminApi = {
   login: async (input: LoginInput) => {
@@ -580,6 +626,33 @@ export const realApi: AdminApi = {
     flightAuthorizationRequestIds.delete(id);
     return adaptMission(response.mission);
   },
+  armMission: async (
+    id: string,
+    input: ArmMissionInput,
+  ): Promise<ArmMissionResult> => {
+    const requestId = armMissionRequestId(id, input);
+    const response = await postCritical<RawVehicleArmResult>(
+      `/admin/missions/${id}/arm`,
+      {
+        reason: input.reason.trim(),
+        area_clear_confirmed: input.area_clear_confirmed,
+        operator_present_confirmed: input.operator_present_confirmed,
+        safety_switch_ready_confirmed: input.safety_switch_ready_confirmed,
+      },
+      requestId,
+    );
+    armMissionRequestIds.delete(id);
+    return {
+      mission: adaptMission(response.mission),
+      command: adaptGatewayCommand(response.command),
+    };
+  },
+  getMissionCommand: async (missionId: string, commandId: string) =>
+    adaptGatewayCommand(
+      await apiRequest<RawGatewayCommand>(
+        `/admin/missions/${missionId}/commands/${commandId}`,
+      ),
+    ),
   abortMission: async (id: string, reason: string) =>
     adaptMission(
       await postCritical<RawMission>(`/admin/missions/${id}/abort`, { reason }),

@@ -32,15 +32,34 @@ REAL_HARDWARE_ACKNOWLEDGED=false
 ALLOW_MISSION_UPLOAD=false
 ALLOW_FLIGHT_COMMANDS=false
 ALLOW_MISSION_START=false
+ALLOW_VEHICLE_ARM=false
 ```
 
-### Sequência observada em 17 de agosto de 2026
+Esses modos executam somente no host Windows. O profile Docker usa `GATEWAY_CONTAINER_*`, marca
+`GATEWAY_RUNTIME=container` e rejeita configurações reais; o launcher host marca o runtime correto.
+
+### Sequência observada em 20 de agosto de 2026
+
+Com Mission Planner 1.3.83 e Pixhawk 6C/ArduCopter 4.6.3 identificados, o diagnóstico e o gateway
+host abriram `COM7`/57600 diretamente e somente para recepção entre 11:14:04Z e 11:19:05Z. O alvo
+`1/1` permaneceu em `STABILIZE` e `armed=false`. O backend recebeu 129 snapshots
+`HARDWARE_REAL`; bateria 74–75%, GPS chegou a fix 3/5 satélites e terminou fix 1/0,
+EKF/preflight ficaram falsos e home/origin ausentes. REST/WS do admin mostraram a origem real e,
+após a parada, `is_stale=true`.
+
+Todos os gates ficaram falsos. Nenhum comando, upload, início, armamento, ensaio de motor ou voo
+ocorreu. Observar `armed=false` comprova somente o estado passivo, não um ensaio de motor.
+
+O forwarding foi tentado, mas UDP 14551 continuava como Inbound e o diagnóstico expirou sem
+heartbeat. Portanto, Mission Planner forwarding E2E permanece **não comprovado**.
+
+### Sequência histórica observada em 17 de agosto de 2026
 
 O Windows enumerou `COM7` como **Silicon Labs CP210x USB to UART Bridge/CP2102**, VID/PID `10C4:EA60`, e o Mission Planner 1.3.83 estava usando `COM7` a 57600 baud. Uma primeira tentativa estritamente passiva falhou com acesso negado. Depois de fechar/liberar o Mission Planner, dois diagnósticos passivos diretos receberam heartbeat real do autopiloto: system/component `1/1`, modo `STABILIZE`, veículo desarmado. Um ciclo integrado de 15 segundos publicou sete heartbeats no backend. Nenhum desses passos enviou bytes de escrita MAVLink.
 
 Também foi observado no Mission Planner o item de AutoConnect **Mavlink alt port**, UDP 14551, direção **Inbound**. Esse listener espera datagramas destinados ao Mission Planner: ele **não** encaminha o stream da `COM7` para o gateway. Depois, o Mission Planner foi fechado e os listeners 14550/14551 desapareceram, mas o Mavlink Mirror não chegou a ser configurado/validado.
 
-No estado final, o cabo/link não está enumerado como porta serial. O dispositivo PnP aparece apenas como histórico/`Unknown`, o diagnóstico passivo retorna `VEHICLE_PORT_NOT_FOUND` com exit 2 e o snapshot do backend registra `HARDWARE_REAL`, `ERROR`, `direct`, COM7/57600 e as três flags falsas. O heartbeat anterior continua válido como evidência daquele ensaio, não como saúde atual.
+No final daquele ensaio, o cabo/link não estava enumerado como porta serial. O dispositivo PnP aparecia apenas como histórico/`Unknown`, o diagnóstico passivo retornava `VEHICLE_PORT_NOT_FOUND` com exit 2 e o snapshot do backend registrava `HARDWARE_REAL`, `ERROR`, `direct`, COM7/57600 e as três flags falsas. O heartbeat permanece válido como evidência histórica daquele ensaio, não como saúde atual.
 
 ### Corrigir o forwarding no Mission Planner
 
@@ -52,7 +71,7 @@ No estado final, o cabo/link não está enumerado como porta serial. O dispositi
 6. Selecione **UDP Client**, informe destino `127.0.0.1` e porta `14551`. O campo de baud da janela não controla UDP.
 7. Deixe **Write access** desmarcado e clique em **Connect**. Assim, o primeiro marco é somente Mission Planner → gateway.
 8. Inicie o gateway com `MAVLINK_FORWARD_CONNECTION=udpin:127.0.0.1:14551` e as quatro flags seguras acima.
-9. Só depois de heartbeat/telemetria ao vivo, IDs, frescor, revisão da missão, checklist e autorização válidos, uma sessão separada pode registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** e definir `ALLOW_MISSION_UPLOAD=true` para upload desarmado. Mantenha `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false`. Não arme nem voe nesse ensaio.
+9. Só depois de heartbeat/telemetria ao vivo, IDs, frescor, revisão da missão, checklist e autorização válidos, uma sessão separada pode registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** e definir `ALLOW_MISSION_UPLOAD=true` para upload desarmado. Mantenha `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. Não arme nem voe nesse ensaio.
 
 O Mission Planner encaminha para apenas um destino nessa ferramenta. Mais consumidores exigem roteador MAVLink explícito, como MAVProxy, com portas distintas.
 
@@ -81,11 +100,11 @@ O upload envia `MISSION_COUNT`; responde a cada `MISSION_REQUEST_INT` com o `MIS
 
 Toda mensagem que exige resposta possui timeout e retry limitado. A especificação recomenda 1500 ms como timeout geral, 250 ms para itens e no máximo cinco tentativas; a configuração local pode ser mais conservadora, mas, ao esgotar tentativas, deve cancelar e voltar a idle sem publicar upload confirmado. Para comandos permitidos em etapas futuras, associe o `COMMAND_ACK` ao comando e ao alvo: `MAV_RESULT_ACCEPTED` confirma aceite, não necessariamente conclusão; `MAV_RESULT_IN_PROGRESS` exige aguardar o ACK final.
 
-Upload não equivale a início. O ACK gera `UPLOADED`; somente a releitura equivalente gera `VERIFIED`. O início exige comando administrativo `START`, autorização consumida, heartbeat/preflight atuais, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e veículo já armado pelo operador. O gateway nunca arma no startup, health check, upload ou START. `PAUSE` e `CONTINUE` também exigem o gate geral, estado compatível e ACK. Mission Planner permanece aberto para monitoramento, mensagens e logs.
+Upload não equivale a armamento nem início. O ACK gera `UPLOADED`; somente a releitura equivalente gera `VERIFIED`. O gateway nunca arma no startup, health check, upload ou `START`. O único ARM remoto é a solicitação administrativa dedicada, normal e auditada, que exige missão `VERIFIED`, health/preflight completo, modo `STABILIZE`, `ALLOW_VEHICLE_ARM=true`, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true`, ACK correlacionado e heartbeat posterior com `armed=true`. O início continua exigindo um `START` separado. `PAUSE` e `CONTINUE` também exigem o gate geral, estado compatível e ACK. Mission Planner permanece aberto para monitoramento, mensagens e logs.
 
 ## SITL
 
-SITL valida parsing, upload, ACK, telemetria, chegada, retorno, perda de link e abortamento antes do hardware. Scripts usam WSL 2 quando necessário. Resultados ficam separados dos testes unitários.
+SITL valida parsing, upload, ACK, telemetria, chegada, retorno, perda de link e abortamento antes do hardware. Scripts usam WSL 2 quando necessário. Resultados ficam separados dos testes unitários. Em 20/08, SITL não foi possível porque o WSL contém somente `docker-desktop`, sem distribuição ArduPilot/MAVProxy.
 
 ## Pixhawk real
 
@@ -93,18 +112,16 @@ SITL valida parsing, upload, ACK, telemetria, chegada, retorno, perda de link e 
 
 ### Estado da evidência
 
-| Evidência | Estado em 17 de agosto de 2026 |
+| Evidência | Estado em 20 de agosto de 2026 |
 |---|---|
-| enumeração Windows de `COM7`, descritor e VID/PID | observada ao vivo |
-| Mission Planner ocupando `COM7` e listeners UDP 14550/14551 | observado ao vivo |
-| primeira abertura passiva de `COM7` | falhou por acesso negado enquanto Mission Planner era o dono |
-| dois diagnósticos passivos diretos posteriores | heartbeat real `1/1`, `STABILIZE`, `armed=false` |
-| ciclo real limitado → backend | sete heartbeats normalizados com HTTP 200, sem comandos/escrita |
-| estado final da porta | COM7 ausente; diagnóstico exit 2 `VEHICLE_PORT_NOT_FOUND`; snapshot `ERROR` |
-| mensagens ArduPilot em TLOG anterior | evidência histórica até 07:55; não prova conexão atual |
-| heartbeat/telemetria pelo forwarding 14551 | ainda não comprovados; Mission Planner fechado e sem listeners no estado final |
+| COM7/57600 e alvo `1/1` | observados ao vivo, direct/receive-only |
+| autopiloto | Pixhawk 6C, ArduCopter 4.6.3, `STABILIZE`, sempre `armed=false` |
+| ciclo real → backend/admin | 129 snapshots, REST e WS `HARDWARE_REAL`; stale correto após parar |
+| telemetria | bateria 74–75%; GPS máximo fix 3/5 sats, final fix 1/0 |
+| prontidão | EKF/preflight falsos, home/origin ausentes; `NO-GO` |
+| heartbeat/telemetria pelo forwarding 14551 | não comprovados; listener Inbound não espelhou COM7 |
 | upload/ACK/releitura no hardware | ainda não comprovados |
-| armamento, motor, voo ou entrega real | não executados/comprovados nesta revisão |
+| ensaio motor, armamento, voo ou entrega real | não executados/comprovados nesta revisão |
 
 ## Limites
 

@@ -9,18 +9,21 @@ from sqlalchemy import select
 
 from app.api.dependencies import AdminUser, AppSettings, DatabaseSession
 from app.core.enums import GatewayCommandType, MissionStatus, OrderStatus
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import InvalidStateError, NotFoundError
 from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
-from app.modules.missions.models import Mission
+from app.modules.missions.models import GatewayCommand, Mission
 from app.modules.missions.schemas import (
     AdminMissionRead,
     FlightAuthorizationCreate,
     FlightAuthorizationRead,
+    GatewayCommandRead,
     MissionAuthorizationResult,
     MissionRead,
     MissionReview,
     SafetyActionRequest,
+    VehicleArmRequest,
+    VehicleArmResult,
 )
 from app.modules.missions.service import (
     admin_mission_to_read,
@@ -31,6 +34,7 @@ from app.modules.missions.service import (
     mark_under_review,
     prepare_mission,
     request_safety_action,
+    request_vehicle_arm,
 )
 from app.modules.orders.admin_schemas import (
     AdminOrderRead,
@@ -287,6 +291,7 @@ async def admin_authorize_flight(
 async def admin_abort(
     mission_id: UUID,
     session: DatabaseSession,
+    settings: AppSettings,
     admin: AdminUser,
     payload: SafetyActionRequest | None = None,
     idempotency_key: Annotated[
@@ -300,7 +305,9 @@ async def admin_abort(
     reason = payload.reason if payload else None
 
     def action() -> dict[str, object]:
-        result = request_safety_action(session, mission, admin, "ABORT", reason, commit=False)
+        result = request_safety_action(
+            session, mission, admin, "ABORT", reason, settings, commit=False
+        )
         return admin_mission_to_read(session, result).model_dump(mode="json")
 
     result = execute_idempotently(
@@ -329,6 +336,7 @@ async def admin_abort(
 async def admin_request_rtl(
     mission_id: UUID,
     session: DatabaseSession,
+    settings: AppSettings,
     admin: AdminUser,
     payload: SafetyActionRequest | None = None,
     idempotency_key: Annotated[
@@ -342,7 +350,9 @@ async def admin_request_rtl(
     reason = payload.reason if payload else None
 
     def action() -> dict[str, object]:
-        result = request_safety_action(session, mission, admin, "RTL", reason, commit=False)
+        result = request_safety_action(
+            session, mission, admin, "RTL", reason, settings, commit=False
+        )
         return admin_mission_to_read(session, result).model_dump(mode="json")
 
     result = execute_idempotently(
@@ -376,6 +386,7 @@ async def admin_request_flight_command(
     mission_id: UUID,
     action: GatewayCommandType,
     session: DatabaseSession,
+    settings: AppSettings,
     admin: AdminUser,
     payload: SafetyActionRequest | None = None,
     idempotency_key: Annotated[
@@ -383,6 +394,8 @@ async def admin_request_flight_command(
         Header(alias="Idempotency-Key", min_length=8, max_length=200),
     ] = None,
 ) -> JSONResponse:
+    if action == GatewayCommandType.ARM:
+        raise InvalidStateError("Use o endpoint dedicado de armamento")
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
@@ -395,6 +408,7 @@ async def admin_request_flight_command(
             admin,
             action.value,
             reason,
+            settings,
             commit=False,
         )
         return admin_mission_to_read(session, result).model_dump(mode="json")
@@ -418,6 +432,75 @@ async def admin_request_flight_command(
         status_code=result.status_code,
         headers={"Idempotency-Replayed": str(result.replayed).lower()},
     )
+
+
+@router.post(
+    "/missions/{mission_id}/arm",
+    response_model=VehicleArmResult,
+    status_code=202,
+    summary="Solicitar armamento normal com confirmações presenciais",
+)
+async def admin_request_vehicle_arm(
+    mission_id: UUID,
+    payload: VehicleArmRequest,
+    session: DatabaseSession,
+    settings: AppSettings,
+    admin: AdminUser,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=8, max_length=200),
+    ],
+) -> JSONResponse:
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+
+    def mutation() -> dict[str, object]:
+        armed_mission, command = request_vehicle_arm(
+            session,
+            mission,
+            admin,
+            payload,
+            settings,
+            commit=False,
+        )
+        return VehicleArmResult(
+            mission=admin_mission_to_read(session, armed_mission),
+            command=GatewayCommandRead.model_validate(command),
+        ).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.arm:{mission_id}",
+        key=idempotency_key,
+        request_payload={"mission_id": str(mission_id), **payload.model_dump(mode="json")},
+        response_status=status.HTTP_202_ACCEPTED,
+        action=mutation,
+    )
+    await _broadcast_mission(mission)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
+    )
+
+
+@router.get(
+    "/missions/{mission_id}/commands/{command_id}",
+    response_model=GatewayCommandRead,
+    summary="Consultar o resultado de um comando específico da missão",
+)
+def get_mission_command(
+    mission_id: UUID,
+    command_id: UUID,
+    session: DatabaseSession,
+    _admin: AdminUser,
+) -> GatewayCommand:
+    command = session.get(GatewayCommand, command_id)
+    if not command or command.mission_id != mission_id:
+        raise NotFoundError("Comando da missão não encontrado")
+    return command
 
 
 @router.get("/vehicles", response_model=list[VehicleRead], summary="Listar veículos conhecidos")

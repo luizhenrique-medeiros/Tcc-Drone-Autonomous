@@ -10,3 +10,4 @@ ADRs são imutáveis após aceitos; uma decisão nova substitui outra indicando 
 | [0004](0004-sitl-antes-do-hardware.md) | SITL antes do hardware | aceito |
 | [0005](0005-painel-admin-separado.md) | painel administrativo React separado | aceito |
 | [0006](0006-autorizacao-em-duas-etapas.md) | aprovação e autorização distintas | aceito |
+| [0007](0007-arm-normal-administrativo.md) | ARM normal administrativo, dedicado e fail-closed | aceito |

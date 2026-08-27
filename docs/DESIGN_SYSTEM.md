@@ -217,9 +217,14 @@ Em 7 de agosto de 2026, um smoke real no Chrome confirmou Flutter Web e admin co
 fontes, sprites, pan, busca, reverse geocoding, atribuição/logo, checkout e ponto autenticado. A
 credencial temporária usada foi exposta e deve ser rotacionada; essa evidência não valida Android.
 
-Em 17 de agosto, o admin aprovou lint, 16 arquivos/67 testes e build, o Flutter aprovou 98 testes e build Web,
-e os endpoints/worker responderam 200 com headers/MIME esperados. O controlador visual do
-navegador estava indisponível, portanto essa bateria nova não é registrada como nova revisão
-visual. Após rotacionar a chave e resolver a credencial admin persistida, repita o checklist em
-browser e Android. Os pedidos controlados permanecem apenas como evidência e não devem ser
-aprovados ou despachados.
+Em 20 de agosto, o admin aprovou lint, 16 arquivos/67 testes e build, o Flutter aprovou 98 testes e
+build Web, e os endpoints/worker responderam 200 com headers/MIME esperados. O WebSocket recebeu
+`operations.connected` e o catálogo integrado retornou quatro produtos, mas o controlador visual
+integrado não encontrou navegador. Portanto, essa bateria não é registrada como nova revisão
+visual. Após criar três chaves MapTiler separadas/restritas e resolver a credencial admin
+persistida, repita o checklist em browser e Android. Os pedidos controlados permanecem apenas como
+evidência e não devem ser aprovados ou despachados.
+
+Em 21 de agosto, o fluxo de ARM administrativo elevou o admin para 20 arquivos/112 testes, com lint
+e build aprovados. O controlador visual continuou sem navegador conectado; portanto modal, hold de
+dois segundos e estados de acompanhamento foram validados por componentes, não por novo smoke visual.

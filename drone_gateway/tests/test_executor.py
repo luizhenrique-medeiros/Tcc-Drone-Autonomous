@@ -8,7 +8,7 @@ from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import BackendContractError, BackendUnavailableError, VehicleTimeoutError
 from app.mavlink.fake_gateway import FakeVehicleGateway
 from app.mission_planner.waypoint import mission_sha256, render_qgc_wpl
-from app.missions.executor import MissionExecutor
+from app.missions.executor import ActivePhase, MissionExecutor
 from app.models import (
     AuthorizedMission,
     ClaimResponse,
@@ -19,7 +19,9 @@ from app.models import (
     HeartbeatVehicle,
     MissionStatus,
     MissionWaypoint,
+    OperationalSource,
     TelemetrySnapshot,
+    VehicleArmResult,
     VehicleHealth,
 )
 
@@ -175,6 +177,32 @@ class ControllableFakeGateway(FakeVehicleGateway):
         await super().start_mission(mission)
 
 
+class ArmRecordingGateway(FakeVehicleGateway):
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.arm_count = 0
+
+    async def arm_vehicle(self) -> VehicleArmResult:
+        self.arm_count += 1
+        return await super().arm_vehicle()
+
+    async def read_health(self) -> VehicleHealth:
+        health = await super().read_health()
+        return health.model_copy(update={"source": OperationalSource.SITL})
+
+
+class ExternalArmRaceGateway(ArmRecordingGateway):
+    async def arm_vehicle(self) -> VehicleArmResult:
+        self.arm_count += 1
+        self._armed = True
+        return VehicleArmResult(
+            command_sent=False,
+            command_acknowledged=False,
+            armed_heartbeat_confirmed=True,
+            external_state_reconciled=True,
+        )
+
+
 class UncertainUploadGateway(FakeVehicleGateway):
     def __init__(self, settings: Settings, *, persisted_before_timeout: bool = True) -> None:
         super().__init__(settings)
@@ -248,6 +276,41 @@ class FlakyCommandCompletionBackend(RecordingBackend):
         ):
             self.fail_completion_once = False
             raise BackendUnavailableError("command completion outage")
+        return await super().acknowledge_command(
+            command_id,
+            status,
+            detail=detail,
+            event_id=event_id,
+        )
+
+
+class ArmHealthOrderingBackend(RecordingBackend):
+    def __init__(self, claim: ClaimResponse) -> None:
+        super().__init__(claim)
+        self.latest_armed: bool | None = None
+        self.arm_completion_saw_fresh_health = False
+
+    async def heartbeat(self, health: VehicleHealth) -> HeartbeatResponse:
+        self.latest_armed = health.armed
+        return await super().heartbeat(health)
+
+    async def acknowledge_command(
+        self,
+        command_id: UUID,
+        status: GatewayCommandStatus,
+        *,
+        detail: str | None = None,
+        event_id: UUID | None = None,
+    ) -> UUID:
+        command = next((item for item in self.commands if item.id == command_id), None)
+        if (
+            command is not None
+            and command.command is GatewayCommandType.ARM
+            and status is GatewayCommandStatus.COMPLETED
+        ):
+            if self.latest_armed is not True:
+                raise BackendContractError("backend ainda não recebeu health armado")
+            self.arm_completion_saw_fresh_health = True
         return await super().acknowledge_command(
             command_id,
             status,
@@ -425,6 +488,7 @@ def enabled_settings(
     journal_path: Path,
     *,
     mavlink_mode: MavlinkMode = MavlinkMode.SIMULATION,
+    allow_vehicle_arm: bool = False,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -432,6 +496,7 @@ def enabled_settings(
         allow_mission_upload=True,
         allow_flight_commands=True,
         allow_mission_start=True,
+        allow_vehicle_arm=allow_vehicle_arm,
         gateway_journal_path=journal_path,
     )
 
@@ -899,3 +964,198 @@ async def test_link_loss_keeps_active_mission_and_does_not_fabricate_telemetry(
     assert len(backend.telemetry) == telemetry_before_loss
     assert "VEHICLE_LINK_LOST" in backend.events
     assert executor.active_mission_id == claim.mission.id
+
+
+@pytest.mark.asyncio
+async def test_pending_arm_requires_verified_waiting_mission_and_confirms_simulated_state(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-command.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = ArmHealthOrderingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    backend.queue_command(GatewayCommandType.ARM)
+
+    await executor.run_cycle()
+
+    assert vehicle.arm_count == 1
+    assert backend.arm_completion_saw_fresh_health
+    assert (await vehicle.read_health()).armed is True
+    assert [status for _id, status, _detail in backend.command_acks[-2:]] == [
+        GatewayCommandStatus.ACKNOWLEDGED,
+        GatewayCommandStatus.COMPLETED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_arm_reconciles_already_armed_vehicle_without_resend(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-already-confirmed.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    vehicle._armed = True
+    backend.queue_command(GatewayCommandType.ARM)
+
+    await executor.run_cycle()
+
+    assert vehicle.arm_count == 0
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.COMPLETED
+    assert "sem envio MAVLink" in (backend.command_acks[-1][2] or "")
+
+
+@pytest.mark.asyncio
+async def test_arm_race_reconciles_external_state_without_claiming_command_ack(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-external-race.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ExternalArmRaceGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    backend.queue_command(GatewayCommandType.ARM)
+
+    await executor.run_cycle()
+
+    detail = backend.command_acks[-1][2] or ""
+    assert vehicle.arm_count == 1
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.COMPLETED
+    assert "armamento externo" in detail
+    assert "COMMAND_ACK correlacionado" not in detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observed_armed", [False, None])
+async def test_acknowledged_arm_after_restart_never_resends_without_armed_confirmation(
+    tmp_path: Path,
+    observed_armed: bool | None,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / f"arm-restart-{observed_armed}.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    original = MissionExecutor(settings, backend, vehicle)
+    await original.run_cycle()
+    queued = backend.queue_command(GatewayCommandType.ARM)
+    backend.commands[0] = queued.model_copy(update={"status": GatewayCommandStatus.ACKNOWLEDGED})
+    vehicle._armed = observed_armed
+
+    restarted = MissionExecutor(settings, backend, vehicle)
+    await restarted.run_cycle()
+
+    assert vehicle.arm_count == 0
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert "incerto" in (backend.command_acks[-1][2] or "")
+
+
+@pytest.mark.asyncio
+async def test_acknowledged_arm_completion_outage_reconciles_true_heartbeat_without_resend(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-completion-outage.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = FlakyCommandCompletionBackend(claim, GatewayCommandType.ARM)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    backend.queue_command(GatewayCommandType.ARM)
+
+    with pytest.raises(BackendUnavailableError, match="command completion outage"):
+        await executor.run_cycle()
+
+    assert vehicle.arm_count == 1
+    assert backend.commands[0].status is GatewayCommandStatus.ACKNOWLEDGED
+
+    restarted = MissionExecutor(settings, backend, vehicle)
+    await restarted.run_cycle()
+
+    assert vehicle.arm_count == 1
+    assert backend.commands == []
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.COMPLETED
+    assert "sem reenvio" in (backend.command_acks[-1][2] or "")
+
+
+@pytest.mark.asyncio
+async def test_arm_is_rejected_outside_verified_waiting_phase_without_vehicle_action(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-wrong-phase.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    assert executor._active is not None
+    executor._active.phase = ActivePhase.EXECUTING
+    executor._active.claim = executor._active.claim.model_copy(
+        update={
+            "mission": executor._active.claim.mission.model_copy(
+                update={"status": MissionStatus.EXECUTING}
+            )
+        }
+    )
+    executor._save_active()
+    backend.queue_command(GatewayCommandType.ARM)
+
+    await executor.run_cycle()
+
+    assert vehicle.arm_count == 0
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert "VERIFIED_PENDING_REPORT/WAITING_OPERATOR_ARM" in (backend.command_acks[-1][2] or "")
+
+
+@pytest.mark.asyncio
+async def test_executor_defensively_requires_all_three_arm_gates_before_ack(
+    tmp_path: Path,
+) -> None:
+    settings = enabled_settings(
+        tmp_path / "arm-gate-defense.json",
+        allow_vehicle_arm=True,
+    )
+    claim = build_claim()
+    backend = RecordingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    await executor.run_cycle()
+    executor._settings = settings.model_copy(update={"allow_mission_start": False})
+    backend.queue_command(GatewayCommandType.ARM)
+
+    await executor.run_cycle()
+
+    assert vehicle.arm_count == 0
+    assert backend.command_acks[-1][1] is GatewayCommandStatus.FAILED
+    assert GatewayCommandStatus.ACKNOWLEDGED not in {
+        status for _id, status, _detail in backend.command_acks[-1:]
+    }
+    assert "ALLOW_MISSION_START" in (backend.command_acks[-1][2] or "")

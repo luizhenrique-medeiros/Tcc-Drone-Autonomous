@@ -19,7 +19,7 @@ PostgreSQL + PostGIS, tabelas/colunas `snake_case`, UUID para entidades principa
 | `mission_waypoints` | sequence, command, lat/lon/alt, params | sequência única por missão |
 | `flight_authorizations` | mission/version, admin, status, expiry, used_at, checklist | uso único e expiração |
 | `vehicles` | identifier, name, autopilot, status, last_seen | identificador único |
-| `vehicle_health_snapshots` | source, heartbeat, GPS/bateria/modo/armed, diagnóstico de conexão e três gates | campos físicos nulos quando desconhecidos; frescor derivado |
+| `vehicle_health_snapshots` | source, heartbeat, GPS/bateria/modo/armed, diagnóstico de conexão e quatro gates | campos físicos nulos quando desconhecidos; frescor derivado |
 | `gateway_commands` | mission, action, requester, gateway, status, timestamps e resultado | `START`, `PAUSE`, `CONTINUE`, RTL e ABORT persistidos/ACK-aware |
 | `telemetry_logs` | mission/vehicle, source, received_at, point, altitude, speed, battery, GPS, mode, armed | retenção/amostragem configurável; campos físicos anuláveis |
 | `system_events` | actor/order/mission/vehicle, type, severity, message, metadata | event_id único para deduplicação |
@@ -79,7 +79,7 @@ O seed é idempotente e cria produtos de demonstração e, somente quando variá
 
 `0004_saved_locations` cria `saved_locations`, sua FK, índice por `user_id`, constraints geográficas, provider/tipo de mapa, quatro flags de confirmação e timestamps. Ela não converte automaticamente `delivery_points` antigos em atalhos: pontos existentes continuam snapshots/auditoria, e nenhum dado fictício ou confirmação presumida é criado para preencher o limite.
 
-`0005_vehicle_integration_health` adiciona os diagnósticos de conexão, posição e os gates de upload/comandos ao snapshot do veículo. `0006_mission_start_health`, head aplicado em 17 de agosto de 2026, adiciona `mission_start_enabled` como gate independente. O downgrade de cada revisão remove apenas suas próprias colunas; em ambiente real, faça backup antes de qualquer downgrade.
+`0005_vehicle_integration_health` adiciona os diagnósticos de conexão, posição e os gates de upload/comandos ao snapshot do veículo. `0006_mission_start_health` adiciona `mission_start_enabled`. `0007_vehicle_arm_command` adiciona `vehicle_arm_enabled` como gate independente e amplia `gateway_commands.command` para comportar todos os valores atuais, inclusive `CONTINUE`. O downgrade de 0007 recusa explicitamente a redução para cinco caracteres quando há um comando incompatível, preservando a auditoria; em ambiente real, faça backup antes de qualquer downgrade.
 
 `0003_schema_names` normaliza, de forma idempotente, nomes de índices e constraints encontrados em volumes antigos criados antes da cadeia Alembic atual. Em banco novo ela não altera a estrutura funcional. Valide com `alembic check`; os três tipos `geography` e os enums operacionais não nativos possuem comparação explícita para evitar falsos drifts.
 

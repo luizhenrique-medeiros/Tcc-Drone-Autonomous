@@ -74,9 +74,12 @@
 ## Execução, entrega e retorno
 
 - Heartbeat, GPS, EKF, bateria, origem, distância, geofence e RTL são verificados antes do upload.
-- Startup e health check nunca armam. O gateway não corrige pre-arm mudando parâmetros.
+- Startup, health, upload, autorização, reconexão e progressão automática nunca armam. O gateway não corrige pre-arm mudando parâmetros.
 - Upload, ACK, releitura/verificação e início são etapas separadas. `UPLOADED` não equivale a `VERIFIED`; apenas a comparação integral do conteúdo relido permite `VERIFIED`.
-- `VERIFIED` aguarda ação humana: `START` exige comando administrativo explícito, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true`, veículo já armado pelo operador e preflight/heartbeat ainda válidos. O gateway nunca arma.
+- `VERIFIED` permite uma solicitação humana dedicada de ARM normal somente depois de a missão ter sido reivindicada pelo gateway correspondente ao veículo. O request exige `reason`, `area_clear_confirmed=true`, `operator_present_confirmed=true` e `safety_switch_ready_confirmed=true`, sem campos extras.
+- ARM falha fechado se a origem não for `SITL` ou `HARDWARE_REAL`, se o snapshot estiver vencido/incompleto, se qualquer check de saúde/preflight falhar, se o modo não for `STABILIZE`, se o veículo já estiver armado ou se `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` ou `ALLOW_MISSION_START` não estiver verdadeiro. Os defaults permanecem falsos e aparecem no health como `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled`.
+- O gateway envia somente `MAV_CMD_COMPONENT_ARM_DISARM` normal, sem force/bypass, mudança de parâmetro ou desativação de safety/pre-arm. `202`/recebimento não prova armamento; a conclusão exige ACK correlacionado e heartbeat novo com `armed=true`.
+- ARM não altera a missão para execução e nunca aciona `START`. O início exige comando administrativo posterior, heartbeat armado ainda fresco, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e preflight válido. Após falha, timeout, restart ou desarmamento, não existe rearmamento automático.
 - `PAUSE` só é aceita durante execução/retorno permitido; `CONTINUE` só é aceita em `PAUSED`. Ambas exigem `ALLOW_FLIGHT_COMMANDS=true`, comando fresco, ACK MAVLink e auditoria.
 - Após início, ArduPilot/telemetria comandam o estado físico; cliente e painel não inventam progresso por relógio local.
 - `DELIVERY_CONFIRMED` registra que a etapa/comando do mecanismo foi alcançada; não prova saída, recebimento ou integridade física do pacote. Missão conclui somente após retorno/pouso conforme evidência, e a entrega real continua exigindo registro operacional.
@@ -84,7 +87,7 @@
 
 ## Auditoria e idempotência
 
-- Operações críticas recebem idempotency/event ID.
+- Operações críticas recebem idempotency/event ID. ARM conserva a mesma chave durante retries ambíguos e registra solicitante, motivo, confirmações, missão/veículo/gateway, snapshot, ACK, heartbeat e resultado sem dados MAVLink brutos.
 - Eventos guardam metadados mínimos; senha, JWT, chave, dados bancários e MAVLink bruto não são persistidos.
 - Telemetria com timestamp antigo não substitui snapshot atual.
 - Toda divergência operacional é registrada; nunca se converte erro em sucesso para a apresentação.

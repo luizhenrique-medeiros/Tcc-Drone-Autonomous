@@ -87,6 +87,7 @@ class VehicleHealthSnapshot(Base):
     mission_upload_enabled: Mapped[bool | None] = mapped_column(Boolean)
     flight_commands_enabled: Mapped[bool | None] = mapped_column(Boolean)
     mission_start_enabled: Mapped[bool | None] = mapped_column(Boolean)
+    vehicle_arm_enabled: Mapped[bool | None] = mapped_column(Boolean)
     connection_error: Mapped[str | None] = mapped_column(String(2000))
     critical_state_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(

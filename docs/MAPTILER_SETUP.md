@@ -41,10 +41,14 @@ Não use uma URL completa como valor de uma variável `*_API_KEY`. Nunca version
 
 A chave recebida nesta sessão foi publicada em uma conversa. Ela serve apenas para a validação local atual e deve ser rotacionada no painel do MapTiler antes de qualquer apresentação pública.
 
+Na inspeção de 20/08, Web, Android e Server estavam preenchidas, porém com o mesmo valor. Isso é
+um risco atual: não existe isolamento entre superfícies enquanto compartilharem a credencial.
+
 1. crie uma chave Web e limite as origens HTTP usadas, por exemplo `http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:5174` e `http://127.0.0.1:5174`;
 2. crie uma chave Android separada e valide o `User-Agent` real das requisições no aparelho antes de aplicar uma regra compatível;
 3. crie uma chave somente de servidor para a Search API; em hospedagem, considere credencial de serviço com assinatura HMAC;
-4. configure quotas/alertas e revogue a chave exposta depois que as substitutas forem testadas.
+4. substitua as três variáveis no `.env` ignorado e reconstrua/teste cada superfície;
+5. configure quotas/alertas e revogue a chave exposta somente depois que as substitutas forem testadas.
 
 Uma chave Web sempre pode ser observada no navegador. O `.env` evita que ela entre no Git, mas a proteção efetiva é a restrição de origem e a rotação. Consulte [autenticação por chave](https://docs.maptiler.com/cloud/api/authentication-key/), [proteção de chaves](https://docs.maptiler.com/guides/maps-apis/maps-platform/how-to-protect-your-map-key/) e [credenciais assinadas](https://docs.maptiler.com/guides/maps-apis/maps-platform/how-to-use-credentials-to-securely-sign-requests-to-maptiler-cloud-api/).
 

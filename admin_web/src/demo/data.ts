@@ -56,6 +56,7 @@ export const DEMO_HEALTH: VehicleHealth = {
   last_heartbeat_at: null,
   mission_upload_enabled: false,
   flight_commands_enabled: false,
+  vehicle_arm_enabled: false,
   mission_start_enabled: false,
   connection_error: null,
   authorization_limits: {

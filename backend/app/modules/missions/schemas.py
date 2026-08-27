@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from app.core.enums import (
     AuthorizationStatus,
@@ -92,6 +92,32 @@ class SafetyActionRequest(BaseModel):
     reason: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
+class VehicleArmRequest(BaseModel):
+    """Explicit confirmations required for a normal, checked ARM request."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: str = Field(min_length=10, max_length=1000)
+    area_clear_confirmed: StrictBool
+    operator_present_confirmed: StrictBool
+    safety_switch_ready_confirmed: StrictBool
+
+    @model_validator(mode="after")
+    def require_all_confirmations(self) -> VehicleArmRequest:
+        missing = [
+            name
+            for name in (
+                "area_clear_confirmed",
+                "operator_present_confirmed",
+                "safety_switch_ready_confirmed",
+            )
+            if not getattr(self, name)
+        ]
+        if missing:
+            raise ValueError("Todas as confirmações presenciais devem ser verdadeiras")
+        return self
+
+
 class PreflightChecklist(BaseModel):
     area_and_conditions_clear: bool
     aircraft_and_payload_inspected: bool
@@ -159,6 +185,11 @@ class GatewayCommandRead(BaseModel):
     acknowledged_at: datetime | None
     completed_at: datetime | None
     result_detail: str | None
+
+
+class VehicleArmResult(BaseModel):
+    mission: AdminMissionRead
+    command: GatewayCommandRead
 
 
 class GatewayCommandAck(BaseModel):

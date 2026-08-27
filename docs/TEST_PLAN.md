@@ -13,7 +13,7 @@ Teste em camada inferior não comprova camada superior.
 
 ## Backend
 
-Cobrir cadastro/login/RBAC, propriedade, pontos válidos/inválidos inclusive coordenada mundial distante que chega a `PENDING_ADMIN_APPROVAL`, PostGIS, dinheiro, submit/cancel, exclusão de `DRAFT` da listagem, listagem própria paginada, grupos active/history, ordenação, detalhe estrangeiro `404`, itens/valores/ponto/imagem opcional, milestones sanitizados, approve/reject/motivo, missão/versionamento/exportação/revisão, autorização separada/TTL/uso único/idempotência, persistência do registro de autorização após reload/claim, snapshot vencido/incompleto, telemetria antiga/provenance, WebSocket próprio/estrangeiro e erros. Para localizações salvas, cobrir lista vazia, primeira/segunda/terceira criação, quarta recusada, CRUD próprio, recurso alheio não enumerável, nome 1–40, endereço ausente, coordenadas inválidas, `user_id` sem autoridade, provider/tipo e quatro flags persistidos, rejeição de confirmação falsa ou tipo inválido, confirmação atual no pedido e cópia fiel para `DeliveryPoint`.
+Cobrir cadastro/login/RBAC, propriedade, pontos válidos/inválidos inclusive coordenada mundial distante que chega a `PENDING_ADMIN_APPROVAL`, PostGIS, dinheiro, submit/cancel, exclusão de `DRAFT` da listagem, listagem própria paginada, grupos active/history, ordenação, detalhe estrangeiro `404`, itens/valores/ponto/imagem opcional, milestones sanitizados, approve/reject/motivo, missão/versionamento/exportação/revisão, autorização separada/TTL/uso único/idempotência, persistência do registro de autorização após reload/claim, ARM dedicado/payload estrito/gates/ACK + heartbeat, snapshot vencido/incompleto, telemetria antiga/provenance, WebSocket próprio/estrangeiro e erros. Para localizações salvas, cobrir lista vazia, primeira/segunda/terceira criação, quarta recusada, CRUD próprio, recurso alheio não enumerável, nome 1–40, endereço ausente, coordenadas inválidas, `user_id` sem autoridade, provider/tipo e quatro flags persistidos, rejeição de confirmação falsa ou tipo inválido, confirmação atual no pedido e cópia fiel para `DeliveryPoint`.
 
 Em PostgreSQL isolado, executar `upgrade`, `alembic check`, `downgrade` e novo `upgrade`. O limite de três exige ainda teste paralelo com sessões/conexões independentes: ambas as requisições devem passar pelo `FOR NO KEY UPDATE` da linha do usuário e o estado final nunca pode exceder três. SQLite em memória não comprova esse lock. Nunca testar downgrade destrutivo no banco do usuário sem backup.
 
@@ -23,7 +23,7 @@ Cobrir formulários, restauração/expiração da sessão, catálogo/carrinho, r
 
 ## Admin
 
-Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, os três gates independentes, checks automáticos `PASS/WARNING/BLOCKING`, exatamente três confirmações humanas, ausência da frase, modal final, warning não bloqueante, blocker impeditivo, idempotência/duplo clique, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, `START`/`PAUSE`/`CONTINUE`, RTL e abortamento.
+Cobrir proteção de rota, fila/vazio/erro, detalhe/mapa, configuração MapTiler, loading/timeout/erro/retry/fallback, rota/marcadores/fit bounds, atribuição/logo, approve/reject, export/revisão, health stale/UNKNOWN/null, os quatro gates independentes, checks automáticos `PASS/WARNING/BLOCKING`, exatamente três confirmações humanas da autorização, ausência da frase, modal final, warning não bloqueante, blocker impeditivo, idempotência/duplo clique, WebSocket/ACK/reconexão/coalescência, alertas/dedupe/cooldown, ARM dedicado, `START`/`PAUSE`/`CONTINUE`, RTL e abortamento.
 
 ## MapTiler e MapLibre
 
@@ -62,19 +62,78 @@ Esses cenários são requisitos de validação e não integram a evidência acum
 
 ## Gateway
 
-Cobrir configuração segura, fake, heartbeat, normalização, preflight, rejeição de missão acima de `MAX_MISSION_DISTANCE_M`, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura e `VERIFIED`, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, idade de comando, gates independentes, `START`, `PAUSE`, `CONTINUE`, abortamento e RTL. Confirmar que `START` não arma, exige identidade/frescor/link, veículo já armado e os dois gates locais; `CONTINUE` só é aceito após `PAUSED`; e falha HTTP depois de `PAUSE`/`CONTINUE` confirmado é reconciliada sem reenviar o comando físico.
+Cobrir configuração segura, fake, heartbeat, normalização, preflight, rejeição de missão acima de `MAX_MISSION_DISTANCE_M`, timeout, claim concorrente, autorização expirada, hash/versão, upload ACK/erro, releitura e `VERIFIED`, mensagens de outro `sysid/compid`, versão do autopiloto, taxas de stream, telemetria ausente, reconexão, journal, idade de comando, gates independentes, ARM, `START`, `PAUSE`, `CONTINUE`, abortamento e RTL. Confirmar que `START` não arma, exige identidade/frescor/link, veículo já armado e os gates locais; `CONTINUE` só é aceito após `PAUSED`; e falha HTTP depois de `PAUSE`/`CONTINUE` confirmado é reconciliada sem reenviar o comando físico.
 
 Os testes Pymavlink usam conexão controlada em memória. Eles não abrem serial/UDP, não executam SITL e não se conectam a hardware.
 
+## ARM normal — cenários planejados
+
+Backend/API:
+
+- recusar não `ADMIN`, rota genérica `/commands/ARM`, missão diferente de `VERIFIED`, missão sem claim/veículo ou gateway divergente;
+- exigir `Idempotency-Key`, `reason` válido e exatamente `area_clear_confirmed=true`, `operator_present_confirmed=true` e `safety_switch_ready_confirmed=true`; rejeitar campo extra, falso e qualquer forma de force/bypass;
+- recusar `SIMULATION`, `UNKNOWN`, snapshot stale/incompleto, `armed=true`, modo diferente de `STABILIZE`, cada falha de GPS/EKF/bateria/home/geofence/RTL/preflight e cada gate falso ou nulo;
+- repetir chave/corpo sem duplicar, conflitar chave/corpo diferente e serializar concorrência para manter no máximo um comando crítico aberto;
+- rejeitar primeiro ACK de gateway diferente, conclusão sem `ACKNOWLEDGED` e `COMPLETED` sem heartbeat posterior fresco do mesmo veículo, origem permitida e `armed=true`;
+- validar migração a partir do head anterior, coluna `vehicle_arm_enabled`, largura do enum de comando e roundtrip isolado de upgrade/downgrade/upgrade.
+
+Admin:
+
+- esconder/desabilitar a ação e explicar cada blocker de missão, claim, identidade, origem, staleness, health/preflight, modo, estado armado e gates;
+- mostrar resumo operacional, motivo e confirmações presenciais; exigir hold de dois segundos e não oferecer force/bypass;
+- conservar a mesma idempotency key após resposta ambígua, tratar `202` como pendente e só indicar armamento quando o snapshot canônico novo/fresco trouxer `armed=true`;
+- após timeout/erro, não apresentar sucesso nem reenviar automaticamente; manter `START` bloqueado até a confirmação física.
+
+Gateway/adaptador:
+
+- provar defaults falsos e exigir simultaneamente `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, além do reconhecimento explícito em hardware real;
+- recusar comando vencido, missão/veículo/gateway/fase divergente, origem inválida, heartbeat/health/preflight incompleto e modo diferente de `STABILIZE` sem transmitir; se o veículo armou depois do request, reconciliar o `PENDING` sem nova escrita;
+- verificar uma única transação normal `MAV_CMD_COMPONENT_ARM_DISARM` com `param1=1`, `param2=0`, demais parâmetros zero e ACK estritamente correlacionado; cobrir `IN_PROGRESS`, aceite final, rejeição e timeout;
+- exigir heartbeat posterior com `armed=true`, publicar o health antes de `COMPLETED` e comprovar que ARM não chama `START` nem muda a missão para execução;
+- reconciliar `PENDING` já armado sem escrita; após restart, concluir `ACKNOWLEDGED` apenas com heartbeat armado e falhar resultado falso/nulo como incerto, sem reenvio; desarmamento nunca aciona rearmamento.
+
+Esses cenários são requisitos de validação. Não entram nas evidências ou contagens datadas abaixo até que cada comando correspondente termine com sucesso no ambiente declarado.
+
 ## SITL
 
-Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenários: heartbeat, upload curto, início deliberado, chegada, retorno, perda de link, bateria/falha simulada, upload incorreto, abort/RTL e reconciliação. Rodar antes de Pixhawk.
+Registrar versão ArduPilot, comando, parâmetros não sensíveis e logs. Cenários: heartbeat, upload curto, ARM normal deliberado, confirmação por ACK + heartbeat, `START` separado, chegada, retorno, perda de link, bateria/falha simulada, upload incorreto, abort/RTL e reconciliação sem rearmamento. Rodar antes de Pixhawk.
 
 ## Hardware e voo
 
-Registrar data, local controlado, operador, hardware/firmware, checklist, missão/hash, logs Mission Planner/TLOG/dataflash e resultado real. Progressão: comunicação → sensores → upload desarmado → motores sem hélices → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno.
+Registrar data, local controlado, operador, hardware/firmware, checklist, missão/hash, logs Mission Planner/TLOG/dataflash e resultado real. Progressão: comunicação → sensores → upload desarmado → ARM normal e motores sem hélices → desarmamento/intervenção → voo manual → missão curta sem carga → RTL → carga leve/mecanismo → entrega e retorno. Nunca pular SITL nem tratar teste automatizado como autorização para hardware.
 
-## Evidência atual — 17 de agosto de 2026
+## Evidência atual — 21 de agosto de 2026
+
+| Evidência executada | Resultado | Limite honesto |
+|---|---|---|
+| suíte unificada | exit 0; backend 56, gateway 85, admin 112 e Flutter 98: **351 aprovados + 1 opt-in ignorado** | o skip PostgreSQL depende de ambiente opt-in; warning Starlette/httpx permanece |
+| qualidade | Ruff/format backend/gateway, ESLint, Flutter format 90/analyze e Compose config aprovados | análise estática não comprova runtime externo |
+| dependências | `pip check`/`pip-audit` em venvs e imagens: zero; `npm audit` full/prod: zero; `npm ci --dry-run`/`npm ls` OK | fotografia datada de 20/08 |
+| builds | Docker `--pull`, Vite, Flutter Web release, Wasm dry run e APK debug integrado aprovados | build não prova renderização visual, dispositivo ou voo |
+| HTTP/WebSocket | backend/admin/Flutter Web 200; CORS exato; catálogo retornou 4 produtos; WS `operations.connected` | JWTs efêmeros apenas; login admin atual seguiu 401 |
+| MapTiler | style 200 GL v8/40 camadas; reverse geocode 200/10 resultados | HTTP não prova mapa renderizado nem tiles completos |
+| serial direta passiva | cinco minutos COM7/57600, 129 snapshots reais, sys/component 1/1, `STABILIZE`, `armed=false` | receive-only; nenhum comando ou ACK operacional |
+| telemetria real | bateria 74–75%; GPS chegou fix 3/5 sats e terminou fix 1/0; REST/WS e staleness comprovados | EKF/preflight falsos; home/origin ausentes; `NO-GO` |
+| Mission Planner forwarding | UDP 14551 Inbound; diagnóstico expirou sem heartbeat | E2E não comprovado; requer Mavlink Mirror UDP Client/write off |
+| SITL | ambiente inspecionado | impossível nesta máquina: apenas `docker-desktop`, sem ArduPilot/MAVProxy |
+| upload, motor e voo | não executados; gates falsos | observar `armed=false` não é ensaio de motor |
+
+O source head passou a `0007_vehicle_arm_command` e o roundtrip foi executado apenas em banco
+temporário. O PostgreSQL vivo permaneceu no último snapshot em Alembic `0006`, com 1 pedido `COMPLETED`, 2
+`PENDING_ADMIN_APPROVAL`, nenhum comando de gateway e 34.179 snapshots. **Não aprovar, preparar,
+autorizar, reivindicar ou despachar** os dois pedidos pendentes.
+
+O controlador visual integrado não encontrou navegador, portanto nenhum HTTP 200, bundle, worker
+ou resposta MapTiler foi convertido em alegação de smoke visual. O login admin foi tentado e
+retornou 401; a conta não foi redefinida.
+
+Após a atualização compatível do lock, o rerun Flutter preservou os 98 testes. O Web release tem
+40 arquivos/43.303.798 bytes, tree manifest SHA-256
+`C7D6B483141E6CDA9B6AEC883E68BF5F9C6948B9EF355B0DE68BC4199B0322CD`; o APK debug tem
+195.252.860 bytes, SHA-256
+`0D1F104AB2D22605F901E7588B8DF16CF159D1149CE9F2F1880DDAA1F482B9F6`.
+
+## Evidência histórica — 17 de agosto de 2026
 
 | Evidência executada | Resultado | Limite honesto |
 |---|---|---|
@@ -86,13 +145,13 @@ Registrar data, local controlado, operador, hardware/firmware, checklist, missã
 | migração | `0006_mission_start_health` aplicada ao PostgreSQL real; head único e roundtrip SQLite aprovados | downgrade não executado no banco do usuário |
 | serial direta passiva, evidência anterior da mesma sessão | heartbeat real recebido duas vezes em COM7/57600: system/component 1/1, `STABILIZE`, desarmado | GPS, bateria, EKF, home, upload e comandos não foram obtidos/enviados |
 | gateway real limitado → backend | sete heartbeats normalizados aceitos com HTTP 200 em 15 s | não havia missão elegível nem comandos; nenhuma escrita MAVLink foi habilitada |
-| estado físico final | COM7 deixou de ser enumerada; snapshot persistido ficou offline/`ERROR`, com três gates falsos | é o estado atual, portanto nova comunicação depende de reconectar o link |
+| estado físico final | COM7 deixou de ser enumerada; snapshot persistido ficou offline/`ERROR`, com três gates falsos | era o estado daquela fotografia; foi superado pela sessão direta de 20/08 |
 | Mission Planner forwarding | listener Inbound conflitante identificado; diagnóstico UDP sem heartbeat | Mavlink Mirror ainda não foi validado |
 | SITL, upload, armamento, motor, voo | não executados | permanecem pendentes e separados |
 
-Total atual comprovado: **275 testes automatizados aprovados**, mais 1 opt-in ignorado. O rerun
+Total daquela fotografia: **275 testes automatizados aprovados**, mais 1 opt-in ignorado. O rerun
 orquestrado terminou com exit 0 em 107,5 s, usando seleção explícita do SDK oficial stable. O APK
-debug integrado atual, regenerado com `DEMO_MODE=false` e a configuração MapTiler do `.env`
+debug integrado daquela rodada, regenerado com `DEMO_MODE=false` e a configuração MapTiler do `.env`
 ignorado, possui 195.236.488 bytes e SHA-256
 `202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`.
 

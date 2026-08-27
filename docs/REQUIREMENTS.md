@@ -31,7 +31,8 @@
 - **RF-ADM-06:** visualizar checks automáticos recentes do veículo e da missão como `PASS`, `WARNING` ou `BLOCKING` antes da autorização.
 - **RF-ADM-07:** autorizar voo em endpoint separado, com três confirmações físicas, resumo final e área controlada, sem frase digitada.
 - **RF-ADM-08:** acompanhar telemetria/eventos e solicitar abortamento ou RTL com confirmação.
-- **RF-ADM-09:** solicitar `START`, `PAUSE` ou `CONTINUE` como comandos auditados e idempotentes, sem substituir os gates locais nem armar o veículo.
+- **RF-ADM-09:** solicitar `START`, `PAUSE` ou `CONTINUE` como comandos auditados e idempotentes, sem substituir os gates locais; `START` nunca arma o veículo.
+- **RF-ADM-10:** solicitar ARM normal somente pelo endpoint dedicado de uma missão `VERIFIED` e reivindicada, com motivo e três confirmações presenciais verdadeiras, e distinguir request aceito de armamento confirmado.
 
 ### Missão, gateway e hardware
 
@@ -39,8 +40,8 @@
 - **RF-MIS-02:** versionar missão, arquivo, hash, waypoints, autor da preparação e revisão.
 - **RF-MIS-03:** invalidar autorização se versão ou estado crítico mudar; expirar e consumir uma única vez.
 - **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
-- **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita e nunca armar no startup/health.
-- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um `START` administrativo separado para a missão autorizada.
+- **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita; startup, health, upload, autorização, reconexão e progressão automática nunca armam.
+- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL` ou `HARDWARE_REAL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
 - **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento.
 - **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
 - **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
@@ -49,7 +50,7 @@
 ### Auditoria
 
 - **RF-AUD-01:** registrar ator, pedido, missão, veículo, evento, severidade, timestamp e metadados não sensíveis.
-- **RF-AUD-02:** registrar decisão, rejeição, preparação, revisão, autorização, claim, upload, início, chegada, entrega, retorno, abortamento e falha.
+- **RF-AUD-02:** registrar decisão, rejeição, preparação, revisão, autorização, claim, upload, solicitação/ACK/resultado do armamento, início, chegada, entrega, retorno, abortamento e falha.
 
 ## Requisitos não funcionais
 
@@ -62,7 +63,7 @@
 - **RNF-07 Acessibilidade:** foco visível, labels, contraste WCAG AA e estado não comunicado apenas por cor.
 - **RNF-08 Manutenibilidade:** monólito modular, tokens centrais, componentes reutilizáveis e contratos tipados.
 - **RNF-09 Testabilidade:** unitários sem rede/hardware; integração, SITL e hardware em camadas separadas.
-- **RNF-10 Segurança operacional:** nenhuma ação automática de armamento, alteração de parâmetro ou supressão de pre-arm.
+- **RNF-10 Segurança operacional:** nenhuma ação automática de armamento, alteração de parâmetro ou supressão de pre-arm; o único armamento por software é uma ação humana explícita, normal e fail-closed, sem force/bypass e sem rearmamento automático.
 - **RNF-11 Concorrência:** a criação de localização salva bloqueia a linha do usuário com `FOR NO KEY UPDATE`, conta e insere na mesma transação, impedindo que requisições paralelas excedam três.
 - **RNF-12 Histórico e evidência:** cada pedido referencia seu próprio `DeliveryPoint`; uma `SavedLocation` é somente fonte para cópia transacional e nunca a fonte mutável do destino histórico. Provedor, tipo de mapa e confirmações vêm do fluxo realmente executado e não podem ser preenchidos por constantes para aparentar uma revisão inexistente.
 
@@ -92,7 +93,8 @@
 - **CA-22:** editar ou excluir uma localização salva depois de criar um pedido não altera coordenadas, endereço, instruções nem disponibilidade do destino histórico.
 - **CA-23:** mover o mapa após escolher uma localização salva altera somente o snapshot do novo pedido; atualizar o atalho exige ação explícita na tela de edição, e as duas confirmações atuais são solicitadas novamente depois da revisão.
 - **CA-24:** uma localização com nome e coordenadas válidas pode ser salva sem endereço textual, desde que `map_provider` seja o realmente usado, `map_type` seja `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` sejam verdadeiros; falha no salvamento opcional posterior não muda o resultado do pedido.
-- **CA-25:** `UPLOADED` só evolui para `VERIFIED` após releitura equivalente; `START` exige os dois gates locais e veículo já armado, `PAUSE` produz `PAUSED` após ACK e `CONTINUE` só sai de `PAUSED`. Nenhuma dessas ações arma o veículo.
+- **CA-25:** `UPLOADED` só evolui para `VERIFIED` após releitura equivalente; `START` exige os gates locais e heartbeat fresco com veículo já armado, `PAUSE` produz `PAUSED` após ACK e `CONTINUE` só sai de `PAUSED`. Nenhuma dessas ações arma o veículo.
+- **CA-26:** `POST /api/v1/admin/missions/{id}/arm` rejeita payload extra/falso, missão não `VERIFIED` ou não reivindicada, origem fora de `SITL|HARDWARE_REAL`, modo diferente de `STABILIZE`, saúde/preflight incompleto e qualquer gate fechado. `202` não significa armado; sucesso exige ACK correlacionado e heartbeat novo com `armed=true`, sem iniciar a missão nem permitir force/rearm automático.
 
 ## Matriz de rastreabilidade
 
@@ -106,7 +108,7 @@
 | RF-ADM-03 | orders, approvals, admin | `/admin/orders/{id}/approve|reject` | RBAC/transição/auditoria |
 | RF-ADM-04/05 | missions, admin | prepare/review/download | exportador e componente |
 | RF-ADM-06/07 | vehicles, approvals, admin | health/authorize-flight | checks automáticos, três confirmações, TTL e idempotência |
-| RF-ADM-08/09 | missions, gateway_commands, admin | commands/ACK | estados válidos, idade, gates locais e ausência de armamento automático |
+| RF-ADM-08/09/10 | missions, gateway_commands, admin | `/admin/missions/{id}/arm`, commands/ACK | estados válidos, payload estrito, idade, identidade, gates locais, ACK + heartbeat e ausência de armamento automático |
 | RF-GTW-01/03 | gateway, missions | authorized/claim/status | idempotência e timeout |
 | RF-GTW-04 | telemetry, WebSocket | telemetry/events/ws | normalização e ordenação |
 | RF-OPS-01 | gateway, documentação | configuração real/checklist | ensaio manual, nunca CI |

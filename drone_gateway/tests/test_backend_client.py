@@ -30,6 +30,43 @@ def healthy_vehicle() -> VehicleHealth:
 
 
 @pytest.mark.asyncio
+async def test_every_backend_request_sends_key_and_bound_gateway_identity() -> None:
+    captured_headers: httpx.Headers | None = None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_headers
+        captured_headers = request.headers
+        return httpx.Response(200, json={}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    settings = Settings(
+        _env_file=None,
+        gateway_api_key="test-bound-key",
+        gateway_id="gateway-bound-01",
+    )
+    async with httpx.AsyncClient(base_url="http://backend", transport=transport) as http:
+        client = BackendClient(settings, http)
+        await client._request(
+            "POST",
+            f"/api/v1/gateway/missions/{uuid4()}/events",
+            headers={
+                "X-Gateway-API-Key": "forged-key",
+                "X-Gateway-ID": "forged-gateway",
+            },
+            json={
+                "event_id": "identity-test",
+                "event_type": "IDENTITY_TEST",
+                "severity": "INFO",
+                "message": "identity headers",
+            },
+        )
+
+    assert captured_headers is not None
+    assert captured_headers["X-Gateway-API-Key"] == "test-bound-key"
+    assert captured_headers["X-Gateway-ID"] == "gateway-bound-01"
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_rejects_invalid_success_json() -> None:
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, text="not-json", request=request)

@@ -25,19 +25,30 @@ class BackendClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
         self._owns_client = client is None
+        self._gateway_headers = {
+            "X-Gateway-API-Key": settings.gateway_api_key.get_secret_value(),
+            "X-Gateway-ID": settings.gateway_id,
+            "User-Agent": "devcore-drone-gateway/0.1",
+        }
         self._client = client or httpx.AsyncClient(
             base_url=settings.api_base_url.rstrip("/"),
             timeout=settings.backend_timeout_seconds,
-            headers={
-                "X-Gateway-API-Key": settings.gateway_api_key.get_secret_value(),
-                "User-Agent": "devcore-drone-gateway/0.1",
-            },
+            headers=self._gateway_headers,
         )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         # httpx request keyword arguments are intentionally dynamic at this adapter boundary.
+        request_headers = {
+            **(kwargs.pop("headers", None) or {}),
+            **self._gateway_headers,
+        }
         try:
-            response = await self._client.request(method, path, **kwargs)
+            response = await self._client.request(
+                method,
+                path,
+                headers=request_headers,
+                **kwargs,
+            )
         except httpx.HTTPError as exc:
             raise BackendUnavailableError(f"Backend indisponível: {exc}") from exc
         if response.is_error:

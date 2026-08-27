@@ -2,7 +2,20 @@
 
 Este procedimento prepara a integração com a Pixhawk 6C sem armar, iniciar missão ou alterar parâmetros. O gateway é o único componente do projeto que usa Pymavlink. Backend, admin e Flutter recebem apenas contratos HTTP/WebSocket normalizados.
 
-## Estado observado em 17 de agosto de 2026
+## Estado observado em 20 de agosto de 2026
+
+- o Windows enumerou a interface CP210x como `COM7`, e o Mission Planner 1.3.83 identificou
+  Pixhawk 6C/ArduCopter 4.6.3 em 57600 baud;
+- diagnóstico e gateway host mantiveram uma sessão direta receive-only de 11:14:04Z a 11:19:05Z;
+- o veículo respondeu como `sysid=1`, `compid=1`, modo `STABILIZE`, `armed=false`;
+- foram publicados 129 snapshots `HARDWARE_REAL`; bateria ficou em 74–75%, GPS chegou a fix 3/5
+  satélites, mas terminou fix 1/0; EKF/preflight ficaram falsos e home/origin ausentes;
+- REST e WebSocket do admin observaram a origem real; após a parada, o snapshot ficou stale;
+- nenhum comando, ACK operacional, upload, start, armamento, ensaio de motor ou voo ocorreu;
+- UDP 14551 foi encontrado como Inbound; o diagnóstico de forwarding expirou sem heartbeat;
+- todos os gates permaneceram falsos e o resultado operacional foi `NO-GO`.
+
+## Evidência histórica — 17 de agosto de 2026
 
 - o Windows enumerou `COM7` como Silicon Labs CP210x, VID/PID `10C4:EA60`;
 - o Mission Planner 1.3.83 estava conectado em `COM7` a 57600 baud e mostrava Pixhawk 6C/ArduCopter 4.6.3;
@@ -11,7 +24,7 @@ Este procedimento prepara a integração com a Pixhawk 6C sem armar, iniciar mis
 - um ciclo integrado limitado publicou sete heartbeats no backend, sem envio de missão/comando;
 - o Mission Planner mantinha UDP 14551 como **Inbound**, não como espelhamento da serial;
 - um TLOG anterior contém MAVLink real de system `1`, component `1`, mas não equivale a heartbeat ao vivo no gateway;
-- no estado final, a COM7 não está enumerada, o Mission Planner está fechado, não há listeners 14550/14551 e o diagnóstico retorna `VEHICLE_PORT_NOT_FOUND`/exit 2;
+- no final daquele ensaio, a COM7 não estava enumerada, o Mission Planner estava fechado, não havia listeners 14550/14551 e o diagnóstico retornava `VEHICLE_PORT_NOT_FOUND`/exit 2;
 - nenhum upload, armamento, motor ou voo foi executado.
 
 ## Baseline obrigatório
@@ -26,6 +39,7 @@ REAL_HARDWARE_ACKNOWLEDGED=false
 ALLOW_MISSION_UPLOAD=false
 ALLOW_FLIGHT_COMMANDS=false
 ALLOW_MISSION_START=false
+ALLOW_VEHICLE_ARM=false
 ```
 
 Com `REAL_HARDWARE_ACKNOWLEDGED=false`, o modo físico fica somente em recepção. O diagnóstico também é sempre passivo por padrão. Nenhuma dessas etapas substitui bancada sem hélices e checklist.
@@ -73,7 +87,7 @@ Pixhawk 6C → COM7 → Mission Planner → UDP Client 127.0.0.1:14551
 
 ### Evitar o listener Inbound na UDP 14551
 
-1. Quando reabrir o Mission Planner, localize o AutoConnect **Mavlink alt port** configurado como UDP 14551, direção **Inbound**, e desabilite-o. Esse listener recebe datagramas para o Mission Planner; ele não encaminha dados da COM7. No estado final da auditoria não havia listener, pois o Mission Planner estava fechado.
+1. No Mission Planner, localize o AutoConnect **Mavlink alt port** configurado como UDP 14551, direção **Inbound**, e desabilite-o. Esse listener recebe datagramas para o Mission Planner; ele não encaminha dados da COM7. Foi essa topologia incorreta que expirou sem heartbeat em 20/08.
 2. Se a versão não expuser esse item na interface, feche o Mission Planner, faça backup de `Documents\Mission Planner\config.xml`, mude somente `Enabled` para `false` nessa entrada e reabra o programa.
 3. Confirme que nenhum processo está ouvindo na porta antes de iniciar o gateway:
 
@@ -91,7 +105,9 @@ A ferramenta oficial de forwarding do Mission Planner está descrita em [Advance
 
 ## Subir a integração
 
-Para hardware no Windows, execute o gateway no host. O container Linux do profile `gateway` é destinado a simulação/SITL e não deve tentar abrir a COM7.
+Para hardware no Windows, execute o gateway no host. O modo/conexão do container Linux vêm de
+`GATEWAY_CONTAINER_*`; ele define `GATEWAY_RUNTIME=container` e rejeita `real`, `direct` e
+`mission_planner_forward`. O launcher host é o único caminho aceito para COM7/forwarding.
 
 ```powershell
 docker compose up -d db backend admin
@@ -106,9 +122,10 @@ Abra:
 
 O painel deve mostrar a fonte `HARDWARE_REAL`, topologia, COM/endpoint, baud, system/component, idade do heartbeat, modo, armado, GPS, bateria, EKF, posição e motivo da falha. Ausência ou stale precisa bloquear prontidão.
 
-No snapshot final desta rodada, o esperado é `ERROR`, modo `direct`, `COM7`/57600,
-`connected=false`, `heartbeat=false` e os três gates falsos, porque a porta está ausente. Não use
-o heartbeat anterior para tornar esse snapshot saudável.
+Depois que o ensaio host é encerrado, o snapshot conserva a última amostra e deve mostrar
+`is_stale=true`; isso não invalida a telemetria observada, mas bloqueia prontidão atual. No ensaio
+de 20/08, mesmo durante o link, GPS final, EKF/preflight e ausência de home/origin mantiveram o
+resultado `NO-GO`.
 
 ## Liberar apenas upload em uma sessão posterior
 
@@ -118,7 +135,7 @@ Somente depois de heartbeat e telemetria ao vivo, SITL, revisão da rota e check
 2. registre a versão/hash autorizados;
 3. no modo encaminhado, habilite **Write access** no Mavlink Mirror;
 4. defina `REAL_HARDWARE_ACKNOWLEDGED=true` e `ALLOW_MISSION_UPLOAD=true`;
-5. mantenha `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false`;
+5. mantenha `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`;
 6. faça upload, aguarde `MISSION_ACK`, releia a missão e compare o conteúdo;
 7. reverta `ALLOW_MISSION_UPLOAD=false` ao terminar.
 
@@ -126,7 +143,9 @@ Somente depois de heartbeat e telemetria ao vivo, SITL, revisão da rota e check
 
 Não habilite início junto com upload. Em uma etapa posterior e distinta, `START` ainda exige
 `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true`, missão `VERIFIED`, heartbeat/preflight
-atuais e armamento físico pelo operador. O gateway não envia armamento. `PAUSE` e `CONTINUE`
+atuais e veículo armado. Quando a sessão autorizar o ARM administrativo, habilite também
+`ALLOW_VEHICLE_ARM=true`; o gateway enviará apenas o comando normal pelo endpoint dedicado e
+exigirá ACK + heartbeat armado. `START` nunca envia armamento implicitamente. `PAUSE` e `CONTINUE`
 exigem o gate geral de comandos e ACK do autopiloto.
 
 ## MAVLink Inspector

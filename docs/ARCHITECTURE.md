@@ -27,11 +27,11 @@ O Flutter roda em Android e Web, autentica clientes, apresenta o catálogo acad�
 
 ### Painel administrativo
 
-O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checks automáticos, três confirmações humanas, autorização de voo, telemetria e eventos. Checks usam `PASS`, `WARNING` e `BLOCKING`; a frase digitada não faz parte da autorização. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar `START`, `PAUSE`, `CONTINUE`, RTL ou abortamento, mas o backend e o gateway ainda validam estado, idade do comando e gates locais; nenhum botão arma o veículo.
+O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checks automáticos, três confirmações humanas, autorização de voo, telemetria e eventos. Checks usam `PASS`, `WARNING` e `BLOCKING`; a frase digitada não faz parte da autorização. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar armamento normal, `START`, `PAUSE`, `CONTINUE`, RTL ou abortamento, mas cada ação passa novamente por estado, idade, identidade, saúde e gates no backend e no gateway. O armamento usa endpoint e confirmação próprios, nunca é consequência de upload, health, autorização ou `START`.
 
 ### Backend
 
-O FastAPI concentra autenticação, autorização, regras, transações, PostGIS, auditoria e contratos de integração. O módulo de localizações salvas obtém o proprietário do JWT, exige as quatro confirmações verdadeiras na criação, persiste o provider/tipo e as flags reais, serializa a criação por cliente com lock transacional na linha de `users` e aplica o limite de três no servidor. Ao criar pedido a partir de um atalho, o backend exige as duas confirmações da revisão atual e copia seus dados para um novo `DeliveryPoint` na mesma transação do pedido; o snapshot usa provider/tipo persistidos e evidência atual, sem constantes que simulem confirmação. Os módulos separam router, schemas, service e persistência quando cada camada possui trabalho real. Modelos SQLAlchemy nunca são o contrato externo.
+O FastAPI concentra autenticação, autorização, regras, transações, PostGIS, auditoria e contratos de integração. Requests do gateway vinculam chave e `X-Gateway-ID` à identidade configurada; comandos críticos usam locks de missão/comando antes de transições e eventos. O módulo de localizações salvas obtém o proprietário do JWT, exige as quatro confirmações verdadeiras na criação, persiste o provider/tipo e as flags reais, serializa a criação por cliente com lock transacional na linha de `users` e aplica o limite de três no servidor. Ao criar pedido a partir de um atalho, o backend exige as duas confirmações da revisão atual e copia seus dados para um novo `DeliveryPoint` na mesma transação do pedido; o snapshot usa provider/tipo persistidos e evidência atual, sem constantes que simulem confirmação. Os módulos separam router, schemas, service e persistência quando cada camada possui trabalho real. Modelos SQLAlchemy nunca são o contrato externo.
 
 ### Banco
 
@@ -52,7 +52,7 @@ O cliente pode manter de zero a três atalhos, mas continua livre para usar qual
 
 ### Gateway e Mission Planner
 
-O gateway é o único código que abre MAVLink. Uma implementação fake permite teste rápido; SITL valida o protocolo; o adaptador real exige configuração explícita. O Mission Planner revisa o arquivo `QGC WPL 110`, monitora, calibra e fornece evidência operacional. Não há automação de cliques na sua interface.
+O gateway é o único código que abre MAVLink. Uma implementação fake permite teste rápido; SITL valida o protocolo; o adaptador real exige configuração explícita. O profile Docker usa configuração `GATEWAY_CONTAINER_*` separada e recusa modos de hardware; `direct` e `mission_planner_forward` executam somente no host Windows pelo launcher, que identifica `GATEWAY_RUNTIME=host`. `ALLOW_VEHICLE_ARM=false` é um gate independente e conservador: só uma solicitação administrativa dedicada, já persistida e auditada, pode chegar ao comando MAVLink normal de armamento. O Mission Planner revisa o arquivo `QGC WPL 110`, monitora, calibra e fornece evidência operacional. Não há automação de cliques na sua interface.
 
 ### Pixhawk 6C e drone
 
@@ -72,9 +72,10 @@ A Pixhawk/ArduPilot é a fonte de verdade física durante execução. O software
 10. Um snapshot recente, não nulo e com origem conhecida alimenta checks automáticos; o operador confirma somente área/condições, inspeção física do drone/carga e sua prontidão.
 11. A autorização fica ligada à versão, expira e é de uso único.
 12. O gateway reivindica a missão de forma idempotente, valida novamente, envia, recebe o ACK e relê o conteúdo. Só a comparação completa publica `VERIFIED`.
-13. `VERIFIED` aguarda o armamento físico pelo operador e uma solicitação administrativa `START`; o gateway exige separadamente os gates de comandos e de início. `PAUSE` e `CONTINUE` também são comandos auditados e ACK-aware.
-14. Telemetria e eventos atualizam backend, painel e `Meus pedidos`; uma desconexão conserva o último snapshot e aciona reconexão/refetch.
-15. Após o comando do mecanismo ser registrado — sem presumir entrega física — a missão retorna à origem e só conclui com a evidência operacional prevista; falhas permanecem falhas.
+13. Em `VERIFIED`, com a missão já reivindicada pelo gateway do mesmo veículo, o administrador pode solicitar o armamento normal por `POST /api/v1/admin/missions/{id}/arm`. Backend e gateway exigem origem `SITL` ou `HARDWARE_REAL`, snapshot fresco e completo, preflight aprovado, modo `STABILIZE` e os gates `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros. O aceite do request não comprova armamento: a conclusão exige `COMMAND_ACK` correlacionado e um heartbeat novo com `armed=true`.
+14. O armamento não inicia a missão. Uma ação administrativa posterior e separada solicita `START`; `PAUSE` e `CONTINUE` também são comandos auditados e ACK-aware. O sistema nunca usa force/bypass, nunca rearma automaticamente e não altera parâmetros para contornar pre-arm.
+15. Telemetria e eventos atualizam backend, painel e `Meus pedidos`; uma desconexão conserva o último snapshot e aciona reconexão/refetch.
+16. Após o comando do mecanismo ser registrado — sem presumir entrega física — a missão retorna à origem e só conclui com a evidência operacional prevista; falhas permanecem falhas.
 
 ## Autoridade em duas etapas
 
@@ -104,6 +105,7 @@ As transições válidas ficam no domínio, não nos routers ou componentes visu
 - Segredos vêm do ambiente; CORS é restrito; logs removem token, senha e chaves.
 - Heartbeat, GPS, EKF, bateria, geofence, RTL, origem, distância e área controlada são pré-condições.
 - Timeouts e reconexão têm limite; upload/claim/eventos possuem chaves de idempotência.
+- O ARM normal possui endpoint, chave de idempotência, confirmações presenciais, auditoria, ACK e heartbeat próprios; campo ausente, nulo, vencido ou divergente falha fechado.
 - Perda do backend não muda a autoridade do ArduPilot sobre um voo em execução.
 - Abortamento e RTL são decisões registradas; o sistema não altera parâmetros para esconder pre-arm.
 - Falha de mapa preserva o pedido e permite tentar novamente; sem mapa real não há confirmação operacional.

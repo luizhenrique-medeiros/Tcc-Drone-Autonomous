@@ -16,6 +16,11 @@ class MavlinkMode(StrEnum):
     MISSION_PLANNER_FORWARD = "mission_planner_forward"
 
 
+class GatewayRuntime(StrEnum):
+    HOST = "host"
+    CONTAINER = "container"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=("../.env", ".env"),
@@ -30,6 +35,7 @@ class Settings(BaseSettings):
     vehicle_identifier: str = "academic-vehicle-01"
     vehicle_name: str = "Drone acadêmico"
     autopilot_system: str = "ARDUPILOT"
+    gateway_runtime: GatewayRuntime = GatewayRuntime.HOST
 
     mavlink_mode: MavlinkMode = MavlinkMode.SIMULATION
     mavlink_connection: str = "udp:127.0.0.1:14550"
@@ -51,6 +57,7 @@ class Settings(BaseSettings):
     allow_mission_upload: bool = False
     allow_flight_commands: bool = False
     allow_mission_start: bool = False
+    allow_vehicle_arm: bool = False
 
     base_latitude: float = Field(default=-23.1175, ge=-90, le=90)
     base_longitude: float = Field(default=-46.5502, ge=-180, le=180)
@@ -143,8 +150,21 @@ class Settings(BaseSettings):
             raise ConfigurationError(
                 "MAVLINK_RECONNECT_INITIAL_SECONDS não pode exceder MAVLINK_RECONNECT_MAX_SECONDS."
             )
+        if self.allow_vehicle_arm and (
+            not self.allow_flight_commands or not self.allow_mission_start
+        ):
+            raise ConfigurationError(
+                "ALLOW_VEHICLE_ARM=true exige ALLOW_FLIGHT_COMMANDS=true "
+                "e ALLOW_MISSION_START=true."
+            )
         if self.allow_mission_start and not self.allow_flight_commands:
             raise ConfigurationError("ALLOW_MISSION_START=true exige ALLOW_FLIGHT_COMMANDS=true.")
+        if self.gateway_runtime is GatewayRuntime.CONTAINER and self.is_hardware_mode:
+            raise ConfigurationError(
+                "Modos MAVLink de hardware nao podem executar no container Linux. "
+                "Inicie banco/backend/admin no Docker e execute scripts/start_gateway.ps1 "
+                "no host Windows."
+            )
         connection = self.effective_mavlink_connection.lower().strip()
         network_prefixes = ("udp:", "udpin:", "udpout:", "tcp:", "tcpin:")
         if self.mavlink_mode is MavlinkMode.DIRECT and connection.startswith(network_prefixes):
@@ -164,7 +184,10 @@ class Settings(BaseSettings):
                 "serial upstream que pertence ao Mission Planner."
             )
         dangerous_operation_enabled = (
-            self.allow_mission_upload or self.allow_flight_commands or self.allow_mission_start
+            self.allow_mission_upload
+            or self.allow_flight_commands
+            or self.allow_mission_start
+            or self.allow_vehicle_arm
         )
         if self.is_hardware_mode and dangerous_operation_enabled:
             if self.real_hardware_confirmation_required and not self.real_hardware_acknowledged:

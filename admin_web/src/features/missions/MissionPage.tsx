@@ -8,6 +8,7 @@ import {
   Navigation,
   Pause,
   Play,
+  Power,
   Radio,
   RefreshCw,
   RotateCcw,
@@ -15,7 +16,7 @@ import {
   Satellite,
   ShieldCheck,
 } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
 import { SatelliteMap } from '../../components/SatelliteMap';
@@ -33,7 +34,9 @@ import { useOperationsStream } from '../../hooks/useOperationsStream';
 import {
   adminApi,
   getErrorMessage,
+  type ArmMissionInput,
   type FlightAuthorizationInput,
+  type GatewayCommand,
   type Mission,
   type Order,
   type Vehicle,
@@ -46,6 +49,13 @@ import {
   shortId,
 } from '../../utils/format';
 import { AutomaticPreflightChecks } from './AutomaticPreflightChecks';
+import { ArmVehicleDialog } from './ArmVehicleDialog';
+import {
+  getArmRequestReadiness,
+  getArmTrackingExpectation,
+  getArmTrackingOutcome,
+  type ArmTrackingExpectation,
+} from './arm-request-readiness';
 import {
   authorizationTitle,
   authorizationUsageMessage,
@@ -59,6 +69,12 @@ interface MissionPageData {
   vehicle: Vehicle | null;
   health: VehicleHealth | null;
   healthError: string;
+}
+
+interface ActiveArmRequest {
+  startedAt: number;
+  command: GatewayCommand;
+  expectation: ArmTrackingExpectation;
 }
 
 const flowStages = [
@@ -88,6 +104,8 @@ const getStage = (status: Mission['status']) => {
   return index < 0 ? 0 : index;
 };
 
+const ARM_CONFIRMATION_TIMEOUT_MS = 75_000;
+
 export function MissionPage() {
   const { missionId = '' } = useParams();
   const loader = useCallback(async (): Promise<MissionPageData> => {
@@ -115,10 +133,117 @@ export function MissionPage() {
   const [actionError, setActionError] = useState('');
   const [success, setSuccess] = useState('');
   const [authorizationOpen, setAuthorizationOpen] = useState(false);
+  const [armDialogOpen, setArmDialogOpen] = useState(false);
+  const [activeArmRequest, setActiveArmRequest] =
+    useState<ActiveArmRequest | null>(null);
+  const [trackedArmCommand, setTrackedArmCommand] =
+    useState<GatewayCommand | null>(null);
   const [criticalAction, setCriticalAction] = useState<
     'start' | 'pause' | 'continue' | 'rtl' | 'abort' | null
   >(null);
   const [criticalReason, setCriticalReason] = useState('');
+  const activeArmMissionId = activeArmRequest?.expectation.missionId ?? null;
+
+  useEffect(() => {
+    if (activeArmMissionId && activeArmMissionId !== missionId) {
+      setActiveArmRequest(null);
+      setTrackedArmCommand(null);
+    }
+  }, [activeArmMissionId, missionId]);
+
+  useEffect(() => {
+    if (
+      !activeArmRequest ||
+      activeArmRequest.expectation.missionId !== missionId
+    ) {
+      return undefined;
+    }
+
+    let stopped = false;
+    let pollTimer: number | undefined;
+    let latestCommand = activeArmRequest.command;
+    const remaining = Math.max(
+      0,
+      ARM_CONFIRMATION_TIMEOUT_MS -
+        (Date.now() - activeArmRequest.startedAt),
+    );
+
+    const stopWithTimeout = () => {
+      if (stopped) return;
+      stopped = true;
+      setActiveArmRequest(null);
+      setSuccess('');
+      setActionError(
+        `O comando de armamento permaneceu em ${latestCommand.status} ou não foi confirmado por telemetria fresca dentro do prazo. Verifique o ACK e as mensagens de pré-arm antes de tentar novamente.`,
+      );
+    };
+
+    if (remaining === 0) {
+      stopWithTimeout();
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(stopWithTimeout, remaining);
+
+    const poll = async () => {
+      const [pageResult, commandResult] = await Promise.allSettled([
+        loader(),
+        adminApi.getMissionCommand(
+          activeArmRequest.expectation.missionId,
+          activeArmRequest.expectation.commandId,
+        ),
+      ]);
+      if (stopped) return;
+
+      if (commandResult.status === 'fulfilled') {
+        latestCommand = commandResult.value;
+        setTrackedArmCommand(commandResult.value);
+        const outcome = getArmTrackingOutcome(
+          commandResult.value,
+          activeArmRequest.expectation,
+          pageResult.status === 'fulfilled' &&
+            pageResult.value.mission.id ===
+              activeArmRequest.expectation.missionId
+            ? pageResult.value.health
+            : null,
+        );
+        if (outcome.state === 'FAILED') {
+          stopped = true;
+          window.clearTimeout(timeout);
+          setActiveArmRequest(null);
+          setSuccess('');
+          setActionError(outcome.detail);
+          return;
+        }
+        if (outcome.state === 'CONFIRMED') {
+          stopped = true;
+          window.clearTimeout(timeout);
+          if (pageResult.status === 'fulfilled') {
+            setData(pageResult.value);
+          }
+          setActiveArmRequest(null);
+          setActionError('');
+          setSuccess(
+            'Armamento confirmado pelo comando concluído e por telemetria fresca. O START continua sujeito aos gates próprios.',
+          );
+          return;
+        }
+      }
+
+      if (pageResult.status === 'fulfilled') {
+        setData(pageResult.value);
+      }
+
+      pollTimer = window.setTimeout(() => void poll(), 1_500);
+    };
+
+    void poll();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timeout);
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+    };
+  }, [activeArmRequest, loader, missionId, setData]);
 
   if (isLoading && !data) return <StateView state="loading" />;
   if (error && !data) {
@@ -135,6 +260,7 @@ export function MissionPage() {
 
   const { mission, order, vehicle, health, healthError } = data;
   const readiness = getMissionReadiness(mission, health);
+  const armReadiness = getArmRequestReadiness(mission, vehicle, health);
   const activeStage = getStage(mission.status);
   const canStartReview = ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'].includes(
     mission.status,
@@ -159,6 +285,7 @@ export function MissionPage() {
     'RETURNING',
   ].includes(mission.status);
   const canRequestStart = mission.status === 'VERIFIED';
+  const canRequestArm = mission.status === 'VERIFIED';
   const canRequestPause = [
     'EXECUTING',
     'DESTINATION_REACHED',
@@ -223,6 +350,33 @@ export function MissionPage() {
     }
   };
 
+  const openArmDialog = async () => {
+    if (activeArmRequest !== null) return;
+    setIsActing(true);
+    setActionError('');
+    setSuccess('');
+    try {
+      const refreshed = await loader();
+      setData(refreshed);
+      const refreshedReadiness = getArmRequestReadiness(
+        refreshed.mission,
+        refreshed.vehicle,
+        refreshed.health,
+      );
+      if (!refreshedReadiness.ready) {
+        setActionError(
+          `Armamento bloqueado: ${refreshedReadiness.blockers.join(' ')}`,
+        );
+        return;
+      }
+      setArmDialogOpen(true);
+    } catch (refreshError) {
+      setActionError(getErrorMessage(refreshError));
+    } finally {
+      setIsActing(false);
+    }
+  };
+
   const runMissionAction = async (
     action: () => Promise<Mission>,
     successMessage: string,
@@ -262,6 +416,71 @@ export function MissionPage() {
       setSuccess('Autorização de uso único criada. O gateway ainda deve validar prazo, versão e saúde antes do upload.');
     } catch (authorizationError) {
       setActionError(getErrorMessage(authorizationError));
+    } finally {
+      setIsActing(false);
+    }
+  };
+
+  const handleArm = async (input: ArmMissionInput) => {
+    setIsActing(true);
+    setActionError('');
+    setSuccess('');
+    try {
+      const refreshed = await loader();
+      setData(refreshed);
+      const refreshedReadiness = getArmRequestReadiness(
+        refreshed.mission,
+        refreshed.vehicle,
+        refreshed.health,
+      );
+      if (!refreshedReadiness.ready) {
+        setActionError(
+          `Armamento bloqueado após revalidação: ${refreshedReadiness.blockers.join(' ')}`,
+        );
+        return;
+      }
+
+      const result = await adminApi.armMission(refreshed.mission.id, input);
+      if (
+        result.mission.id !== refreshed.mission.id ||
+        result.mission.vehicle_id !== refreshed.mission.vehicle_id
+      ) {
+        setActionError(
+          'A resposta do armamento não corresponde à missão e ao veículo revalidados.',
+        );
+        return;
+      }
+      const expectation = getArmTrackingExpectation(
+        result.command.id,
+        refreshed.mission,
+        refreshed.vehicle,
+      );
+      if (!expectation) {
+        setActionError(
+          'Não foi possível correlacionar o comando ao veículo da missão.',
+        );
+        return;
+      }
+
+      setData({ ...refreshed, mission: result.mission });
+      setArmDialogOpen(false);
+      setTrackedArmCommand(result.command);
+      const failure = getArmTrackingOutcome(
+        result.command,
+        expectation,
+        refreshed.health,
+      );
+      if (failure.state === 'FAILED') {
+        setActionError(failure.detail);
+        return;
+      }
+      setActiveArmRequest({
+        startedAt: Date.now(),
+        command: result.command,
+        expectation,
+      });
+    } catch (armError) {
+      setActionError(getErrorMessage(armError));
     } finally {
       setIsActing(false);
     }
@@ -316,7 +535,7 @@ export function MissionPage() {
         }
       />
       {success ? <Feedback tone="success" className="page-feedback">{success}</Feedback> : null}
-      {actionError && !authorizationOpen && !criticalAction ? (
+      {actionError && !authorizationOpen && !armDialogOpen && !criticalAction ? (
         <Feedback tone="error" className="page-feedback">{actionError}</Feedback>
       ) : null}
       {healthError ? (
@@ -487,6 +706,42 @@ export function MissionPage() {
                 <>
                   <Link className="button button--secondary" to={`/operations?mission=${mission.id}`}><Radio size={17} /> Abrir telemetria</Link>
                   <div className="critical-actions">
+                    {canRequestArm ? (
+                      <>
+                        <Button
+                          variant="warning"
+                          disabled={
+                            !armReadiness.ready ||
+                            activeArmRequest !== null ||
+                            isActing
+                          }
+                          aria-describedby="arm-request-state"
+                          onClick={() => void openArmDialog()}
+                        >
+                          <Power size={17} />{' '}
+                          {activeArmRequest !== null
+                            ? 'Aguardando armamento'
+                            : health?.armed === true
+                              ? 'Veículo armado'
+                              : 'Solicitar armamento'}
+                        </Button>
+                        {!armReadiness.ready || activeArmRequest !== null ? (
+                          <p
+                            className="arm-blocked-reason"
+                            id="arm-request-state"
+                            role="status"
+                          >
+                            {activeArmRequest !== null
+                              ? `Comando #${shortId(activeArmRequest.expectation.commandId)} em ${trackedArmCommand?.status ?? activeArmRequest.command.status}. O painel exige COMPLETED e telemetria do mesmo veículo posterior ao ACK.`
+                              : `Armamento indisponível: ${armReadiness.blockers.join(' ')}`}
+                          </p>
+                        ) : (
+                          <span id="arm-request-state" className="sr-only">
+                            Armamento padrão disponível após nova validação da saúde.
+                          </span>
+                        )}
+                      </>
+                    ) : null}
                     {canRequestStart ? <Button variant="primary" disabled={startCommandBlockedReason !== null} title={startCommandBlockedReason ?? undefined} onClick={() => { setCriticalReason(''); setCriticalAction('start'); }}><Play size={17} /> Solicitar START</Button> : null}
                     {canRequestPause ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('pause'); }}><Pause size={17} /> Pausar missão</Button> : null}
                     {canRequestContinue ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('continue'); }}><Play size={17} /> Continuar missão</Button> : null}
@@ -529,6 +784,18 @@ export function MissionPage() {
         error={actionError}
         onClose={() => setAuthorizationOpen(false)}
         onSubmit={handleAuthorize}
+      />
+
+      <ArmVehicleDialog
+        open={armDialogOpen}
+        mission={mission}
+        vehicle={vehicle}
+        health={health}
+        blockers={armReadiness.blockers}
+        isSubmitting={isActing}
+        error={armDialogOpen ? actionError : ''}
+        onClose={() => setArmDialogOpen(false)}
+        onSubmit={handleArm}
       />
 
       <Modal

@@ -49,6 +49,7 @@ app.add_middleware(
         "Content-Type",
         "Idempotency-Key",
         "X-Gateway-API-Key",
+        "X-Gateway-ID",
         "X-Request-ID",
     ],
     expose_headers=["Idempotency-Replayed", "X-Mission-SHA256", "Content-Disposition"],

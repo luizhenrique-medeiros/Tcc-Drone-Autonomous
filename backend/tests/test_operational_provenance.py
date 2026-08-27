@@ -6,10 +6,49 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.core.enums import OperationalSource
 from app.modules.telemetry.models import TelemetryLog
+from app.modules.telemetry.schemas import TelemetryCreate
 from app.modules.telemetry.service import telemetry_is_stale
 from app.modules.vehicles.models import VehicleHealthSnapshot
 from app.modules.vehicles.schemas import VehicleHealthInput
 from app.modules.vehicles.service import _critical_hash, health_to_read
+
+
+def test_gateway_authentication_binds_key_and_configured_identity(
+    client: TestClient,
+) -> None:
+    payload = {
+        "gateway_id": "gateway-sitl-1",
+        "vehicle_identifier": "identity-check-vehicle",
+        "source": "SITL",
+        "connected": True,
+        "heartbeat": True,
+    }
+    missing_identity = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers={"X-Gateway-API-Key": "test-gateway-key"},
+        json=payload,
+    )
+    assert missing_identity.status_code == 401
+
+    forged_identity = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers={
+            "X-Gateway-API-Key": "test-gateway-key",
+            "X-Gateway-ID": "outro-gateway",
+        },
+        json={**payload, "gateway_id": "outro-gateway"},
+    )
+    assert forged_identity.status_code == 401
+
+    mismatched_body = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers={
+            "X-Gateway-API-Key": "test-gateway-key",
+            "X-Gateway-ID": "gateway-sitl-1",
+        },
+        json={**payload, "gateway_id": "outro-gateway"},
+    )
+    assert mismatched_body.status_code == 403
 
 
 def test_health_preserves_unreceived_mavlink_values_as_null(
@@ -21,7 +60,7 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
         "/api/v1/gateway/heartbeat",
         headers=gateway_headers,
         json={
-            "gateway_id": "gateway-sitl-null",
+            "gateway_id": "gateway-sitl-1",
             "vehicle_identifier": "sitl-null-values",
             "vehicle_name": "SITL aguardando dados",
             "autopilot_system": "ArduPilot",
@@ -56,6 +95,7 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
             "mission_upload_enabled": None,
             "flight_commands_enabled": None,
             "mission_start_enabled": None,
+            "vehicle_arm_enabled": None,
             "connection_error": None,
         },
     )
@@ -75,6 +115,7 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
     assert body["health"]["heartbeat_age_seconds"] is None
     assert body["health"]["mission_upload_enabled"] is None
     assert body["health"]["mission_start_enabled"] is None
+    assert body["health"]["vehicle_arm_enabled"] is None
 
     health = client.get(
         f"/api/v1/admin/vehicles/{body['vehicle']['id']}/health",
@@ -95,7 +136,7 @@ def test_health_persists_and_exposes_sanitized_integration_diagnostics(
         "/api/v1/gateway/heartbeat",
         headers=gateway_headers,
         json={
-            "gateway_id": "gateway-real-1",
+            "gateway_id": "gateway-sitl-1",
             "vehicle_identifier": "pixhawk-6c-real",
             "vehicle_name": "Drone Pixhawk 6C",
             "autopilot_system": "ArduPilot",
@@ -131,6 +172,7 @@ def test_health_persists_and_exposes_sanitized_integration_diagnostics(
             "mission_upload_enabled": False,
             "flight_commands_enabled": False,
             "mission_start_enabled": False,
+            "vehicle_arm_enabled": False,
             "connection_error": None,
         },
     )
@@ -160,11 +202,12 @@ def test_health_persists_and_exposes_sanitized_integration_diagnostics(
     assert body["mission_upload_enabled"] is False
     assert body["flight_commands_enabled"] is False
     assert body["mission_start_enabled"] is False
+    assert body["vehicle_arm_enabled"] is False
     assert body["connection_error"] is None
     vehicles = client.get("/api/v1/admin/vehicles", headers=admin_headers)
     assert vehicles.status_code == 200
     listed = next(item for item in vehicles.json() if item["id"] == vehicle_id)
-    assert listed["gateway_id"] == "gateway-real-1"
+    assert listed["gateway_id"] == "gateway-sitl-1"
     assert listed["autopilot_system"] == "ArduPilot"
     assert listed["autopilot_version"] == "ArduCopter 4.6"
     assert listed["operational_source"] == "HARDWARE_REAL"
@@ -177,7 +220,7 @@ def test_unknown_source_blocks_authorization_and_changes_critical_hash(
     client: TestClient, gateway_headers: dict[str, str]
 ) -> None:
     base_payload = {
-        "gateway_id": "gateway-source-check",
+        "gateway_id": "gateway-sitl-1",
         "vehicle_identifier": "source-check-vehicle",
         "vehicle_name": "Source check",
         "autopilot_system": "ArduPilot",
@@ -212,6 +255,32 @@ def test_telemetry_freshness_is_recomputed_when_read() -> None:
     settings = Settings(_env_file=None, heartbeat_timeout_seconds=10)
 
     assert telemetry_is_stale(telemetry, settings) is True
+
+
+def test_health_and_telemetry_accept_all_standard_mavlink_gps_fix_types() -> None:
+    health = VehicleHealthInput.model_validate(
+        {
+            "gateway_id": "gateway-gps-contract",
+            "vehicle_identifier": "vehicle-gps-contract",
+            "source": "SITL",
+            "connected": True,
+            "heartbeat": True,
+            "gps_fix_type": 8,
+        }
+    )
+    telemetry = TelemetryCreate(
+        event_id="gps-fix-type-8",
+        vehicle_id=uuid4(),
+        source=OperationalSource.SITL,
+        latitude=-23.1175,
+        longitude=-46.5502,
+        relative_altitude_m=0,
+        ground_speed_m_s=0,
+        gps_fix_type=8,
+    )
+
+    assert health.gps_fix_type == 8
+    assert telemetry.gps_fix_type == 8
 
 
 def test_health_contract_exposes_configured_authorization_limits() -> None:

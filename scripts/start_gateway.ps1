@@ -9,6 +9,8 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $gatewayPath = Join-Path $projectRoot 'drone_gateway'
 $pythonCommand = Join-Path $gatewayPath '.venv\Scripts\python.exe'
 if (-not (Test-Path $pythonCommand)) { $pythonCommand = 'python' }
+$previousGatewayRuntime = $env:GATEWAY_RUNTIME
+$env:GATEWAY_RUNTIME = 'host'
 Push-Location $gatewayPath
 try {
     if ($DiagnoseOnly) {
@@ -21,4 +23,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Gateway encerrou com exit code $LASTEXITCODE." }
     }
 }
-finally { Pop-Location }
+finally {
+    Pop-Location
+    if ($null -eq $previousGatewayRuntime) {
+        Remove-Item Env:GATEWAY_RUNTIME -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:GATEWAY_RUNTIME = $previousGatewayRuntime
+    }
+}

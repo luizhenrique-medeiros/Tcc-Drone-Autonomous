@@ -19,7 +19,10 @@ if (-not $ConfirmSimulationMutation) {
 if (-not $AllowNonLocalTarget -and $targetUri.Host -notin @('localhost', '127.0.0.1', '::1')) {
     throw 'Destino não local bloqueado. O smoke não deve ser executado contra demo/produção; -AllowNonLocalTarget exige revisão explícita.'
 }
-if ([string]::IsNullOrWhiteSpace($AdminPassword) -or $AdminPassword -eq 'change_me') {
+if (
+    [string]::IsNullOrWhiteSpace($AdminPassword) -or
+    $AdminPassword.StartsWith('change_me', [System.StringComparison]::OrdinalIgnoreCase)
+) {
     throw 'Informe -AdminPassword ou ADMIN_INITIAL_PASSWORD; a senha padrão não é aceita.'
 }
 $api = "$($BaseUrl.TrimEnd('/'))/api/v1"

@@ -4,7 +4,10 @@
 
 Este documento prepara a integração, mas não confirma montagem. O único controlador explicitamente informado é a **Pixhawk 6C** com **ArduPilot**. Modelo de frame, GPS, rádio, receptor, ESC, motor, hélice, bateria, power module e mecanismo de entrega ainda precisam de part numbers e diagrama aprovados. Não se inventam pinagens nem parâmetros.
 
-Em 17 de agosto de 2026, o Windows enumerou `COM7` como **Silicon Labs CP210x USB to UART Bridge/CP2102**, VID/PID `10C4:EA60`, serial `0001`, driver assinado 6.7.6.2130. O Mission Planner 1.3.83 estava aberto em `COM7` a 57600 baud e indicava ArduCopter 4.6.3/Pixhawk 6C. Esses dados identificam o link visto no computador, mas não substituem conferência física da placa, do cabo e do rádio.
+Em 20 de agosto de 2026, o Windows enumerou `COM7` como interface **Silicon Labs CP210x**. O
+Mission Planner 1.3.83 identificou ArduCopter 4.6.3/Pixhawk 6C em 57600 baud. Esses dados
+identificam o link visto no computador, mas não substituem conferência física da placa, do cabo e
+do rádio.
 
 ## Inventário a confirmar
 
@@ -30,7 +33,7 @@ Em 17 de agosto de 2026, o Windows enumerou `COM7` como **Silicon Labs CP210x US
 7. Testar gateway apenas para leitura/heartbeat; depois upload sem armar.
 8. Testar motores individualmente sem hélices e com contenção/área segura.
 
-Antes do item 7, mantenha explicitamente `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false`. O primeiro ensaio do gateway recebe bytes/heartbeat/telemetria e fecha a conexão; não envia heartbeat de GCS, `COMMAND_LONG`, missão, mudança de modo ou armamento.
+Antes do item 7, mantenha explicitamente `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. O primeiro ensaio do gateway recebe bytes/heartbeat/telemetria e fecha a conexão; não envia heartbeat de GCS, `COMMAND_LONG`, missão, mudança de modo ou armamento.
 
 ## Pixhawk, ArduPilot e Mission Planner
 
@@ -57,14 +60,21 @@ Antes da bancada, registrar sem estimativa: revisão exata da Pixhawk, firmware/
 
 ### Diagnóstico passivo observado
 
-- na primeira tentativa, `COM7` existia, mas o Mission Planner mantinha a serial aberta e o Pymavlink recebeu acesso negado sem enviar bytes;
-- depois de liberar a porta, dois diagnósticos passivos receberam heartbeat real do autopiloto em `COM7`/57600: `sysid=1`, `compid=1`, modo `STABILIZE`, `armed=false`;
-- um ciclo integrado limitado de 15 segundos publicou sete heartbeats `HARDWARE_REAL` aceitos pelo backend, sem missão elegível nem comando pendente;
-- o modo passivo não enviou heartbeat GCS, pedido de intervalo, missão, comando, mudança de modo ou armamento; GPS, bateria, EKF, home e posição continuaram indisponíveis;
-- ao final, o link foi desconectado: não existe porta serial enumerada, Mission Planner está fechado e não há listeners UDP 14550/14551. O diagnóstico atual termina com `VEHICLE_PORT_NOT_FOUND`/exit 2;
-- o registro PnP remanescente aparece apenas como dispositivo histórico com status desconhecido; ele não equivale a uma COM disponível;
-- o snapshot final persistido é `HARDWARE_REAL`, `ERROR`, `direct`, `COM7`/57600, com upload/comandos/início falsos e erro de porta ausente;
-- forwarding 14551, upload, ACK/releitura, motor, armamento e voo permanecem não comprovados.
+- diagnóstico e gateway host abriram `COM7`/57600 diretamente, somente para recepção, entre
+  11:14:04Z e 11:19:05Z;
+- o alvo respondeu como `sysid=1`, `compid=1`, modo `STABILIZE` e `armed=false` durante todo o
+  período;
+- foram publicados 129 snapshots `HARDWARE_REAL`; REST e WebSocket do admin mostraram a origem
+  real e, após a parada, o snapshot ficou corretamente stale;
+- bateria ficou em 74–75%; GPS chegou a fix 3/5 satélites, mas terminou fix 1/0;
+- EKF/preflight permaneceram falsos e home/origin ausentes: o resultado é `NO-GO`;
+- o modo passivo não enviou heartbeat GCS, pedido de intervalo, missão, comando, mudança de modo
+  ou armamento; todos os gates ficaram falsos;
+- forwarding 14551 expirou sem heartbeat porque a porta estava configurada como Inbound;
+- upload, ACK/releitura, ensaio de motor, armamento e voo permanecem não comprovados.
+
+Em 17 de agosto, ensaios anteriores já haviam comprovado heartbeat direto e depois porta ausente;
+essa fotografia histórica não substitui a sessão mais completa de 20/08 nem a saúde atual.
 
 Acesso negado significa porta ocupada, não falha do autopiloto. Porta aberta sem bytes, bytes sem quadros MAVLink válidos e quadros sem heartbeat do alvo são falhas diferentes e devem ser registradas separadamente. Nenhuma delas autoriza escrita ou voo.
 
@@ -85,10 +95,12 @@ Definir retenção mecânica, massa/CG, comando, confirmação e estado seguro s
 - nenhuma pinagem validada;
 - nenhum frame/propulsão/bateria identificado;
 - `COM7`, 57600 baud e o descritor CP210x foram observados no Windows, mas o tipo físico do link USB/rádio ainda precisa ser confirmado;
-- o gateway obteve heartbeat real anteriormente em serial direta, mas a COM7 está ausente agora; esse êxito passado não torna o snapshot atual saudável;
+- o gateway recebeu telemetria real em serial direta, mas o processo foi encerrado e o snapshot
+  atual é stale; o êxito não torna o veículo preflight-ready;
 - o TLOG existente comprova apenas uma sessão anterior, não saúde atual do veículo;
 - frame, rádio, endpoint encaminhado em funcionamento e parâmetros `SERIALx_*` ainda não foram confirmados operacionalmente;
-- forwarding do Mission Planner, GPS/bateria/EKF/home ao vivo pelo gateway, upload e releitura não foram comprovados;
+- forwarding do Mission Planner, GPS final adequado, EKF/preflight, home/origin, upload e releitura
+  não foram comprovados;
 - nenhuma calibração, motor, voo manual, missão autônoma ou entrega real comprovados.
 
 Use [Checklist](PREFLIGHT_CHECKLIST.md), [Segurança](SECURITY.md) e [Plano de demonstração](DEMO_PLAN.md) para registrar evidências.

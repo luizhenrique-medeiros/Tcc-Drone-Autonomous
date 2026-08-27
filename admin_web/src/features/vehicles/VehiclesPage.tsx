@@ -319,6 +319,13 @@ export function VehiclesPage() {
                       />
                       <Diagnostic
                         icon={<ShieldCheck />}
+                        label="Armamento remoto"
+                        value={featureFlagLabel(health.vehicle_arm_enabled)}
+                        detail="Gate dedicado; esta página permanece somente leitura"
+                        ok={health.vehicle_arm_enabled === true}
+                      />
+                      <Diagnostic
+                        icon={<ShieldCheck />}
                         label="Início de missão"
                         value={featureFlagLabel(health.mission_start_enabled)}
                         detail="Flag independente publicada pelo gateway"
