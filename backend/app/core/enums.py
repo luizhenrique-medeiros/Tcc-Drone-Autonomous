@@ -92,6 +92,7 @@ class PaymentMethod(StrEnum):
 
 
 class GatewayCommandType(StrEnum):
+    ARM = "ARM"
     START = "START"
     PAUSE = "PAUSE"
     CONTINUE = "CONTINUE"

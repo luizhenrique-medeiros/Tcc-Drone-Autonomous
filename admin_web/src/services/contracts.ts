@@ -218,6 +218,7 @@ export interface VehicleHealth extends OperationalMetadata {
   last_heartbeat_at: string | null;
   mission_upload_enabled: boolean | null;
   flight_commands_enabled: boolean | null;
+  vehicle_arm_enabled: boolean | null;
   mission_start_enabled: boolean | null;
   connection_error: string | null;
   authorization_limits: VehicleAuthorizationLimits | null;
@@ -264,6 +265,37 @@ export interface FlightAuthorizationInput {
   checklist: HumanFlightConfirmations;
 }
 
+export interface ArmMissionInput {
+  reason: string;
+  area_clear_confirmed: true;
+  operator_present_confirmed: true;
+  safety_switch_ready_confirmed: true;
+}
+
+export type GatewayCommandStatus =
+  | 'PENDING'
+  | 'ACKNOWLEDGED'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface GatewayCommand {
+  id: string;
+  mission_id: string;
+  command: 'ARM' | 'START' | 'PAUSE' | 'CONTINUE' | 'ABORT' | 'RTL';
+  reason: string | null;
+  status: GatewayCommandStatus;
+  gateway_id: string | null;
+  requested_at: string;
+  acknowledged_at: string | null;
+  completed_at: string | null;
+  result_detail: string | null;
+}
+
+export interface ArmMissionResult {
+  mission: Mission;
+  command: GatewayCommand;
+}
+
 export interface AdminApi {
   login(input: LoginInput): Promise<AuthSession>;
   me(): Promise<AdminUser>;
@@ -276,6 +308,8 @@ export interface AdminApi {
   markMissionUnderReview(id: string): Promise<Mission>;
   markMissionReviewed(id: string): Promise<Mission>;
   authorizeFlight(id: string, input: FlightAuthorizationInput): Promise<Mission>;
+  armMission(id: string, input: ArmMissionInput): Promise<ArmMissionResult>;
+  getMissionCommand(missionId: string, commandId: string): Promise<GatewayCommand>;
   abortMission(id: string, reason: string): Promise<Mission>;
   requestRtl(id: string, reason: string): Promise<Mission>;
   requestMissionCommand(

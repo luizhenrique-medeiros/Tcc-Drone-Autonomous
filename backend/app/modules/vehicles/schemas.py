@@ -41,7 +41,7 @@ class VehicleHealthInput(BaseModel):
     source: OperationalSource = OperationalSource.UNKNOWN
     connected: bool
     heartbeat: bool
-    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=8)
     satellites: int | None = Field(default=None, ge=0, le=100)
     ekf_ok: bool | None = None
     battery_percent: float | None = Field(default=None, ge=0, le=100)
@@ -97,6 +97,7 @@ class VehicleHealthInput(BaseModel):
     mission_upload_enabled: bool | None = None
     flight_commands_enabled: bool | None = None
     mission_start_enabled: bool | None = None
+    vehicle_arm_enabled: bool | None = None
     connection_error: str | None = Field(default=None, max_length=2000)
 
     @field_validator("connection_endpoint", "serial_port", mode="before")
@@ -163,6 +164,7 @@ class VehicleHealthRead(BaseModel):
     mission_upload_enabled: bool | None
     flight_commands_enabled: bool | None
     mission_start_enabled: bool | None
+    vehicle_arm_enabled: bool | None
     connection_error: str | None
     critical_state_hash: str
     captured_at: datetime

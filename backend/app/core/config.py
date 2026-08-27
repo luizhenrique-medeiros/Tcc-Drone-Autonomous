@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     admin_initial_name: str = "Administrador"
 
     gateway_api_key: str = "development-gateway-key"
+    gateway_id: str = Field(default="dev-gateway-01", min_length=2, max_length=120)
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,"
         "http://localhost:5173,http://127.0.0.1:5173,"
@@ -73,6 +74,11 @@ class Settings(BaseSettings):
         if normalized and (len(normalized) != 2 or not normalized.isalpha()):
             raise ValueError("MAPS_SEARCH_COUNTRY deve ser um código ISO de duas letras")
         return normalized or None
+
+    @field_validator("gateway_id", mode="before")
+    @classmethod
+    def normalize_gateway_id(cls, value: object) -> str:
+        return str(value).strip()
 
     @field_validator("maptiler_server_api_key", mode="before")
     @classmethod

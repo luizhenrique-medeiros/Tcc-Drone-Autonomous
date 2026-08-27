@@ -31,6 +31,7 @@ from app.models import (
     OperationalSource,
     TelemetrySnapshot,
     UploadResult,
+    VehicleArmResult,
     VehicleEvent,
     VehicleHealth,
     VehiclePoll,
@@ -47,7 +48,10 @@ MISSION_PROGRESS_STATUSES = (
 
 
 class PymavlinkVehicleGateway:
-    """Thin pymavlink adapter. It never arms or changes vehicle parameters."""
+    """Thin pymavlink adapter with explicit, gated commands and no parameter writes."""
+
+    _ARM_MAX_SEND_ATTEMPTS = 3
+    _ARM_MAX_DRAIN_MESSAGES = 500
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -55,6 +59,7 @@ class PymavlinkVehicleGateway:
         # pymavlink builds dynamic dialect classes, so a static type is not available here.
         self._connection: Any | None = None
         self._connection_lock = asyncio.Lock()
+        self._arm_command_lock = asyncio.Lock()
         self._connection_state = ConnectionState.DISCONNECTED
         self._connection_error: str | None = None
         self._passive_connection = False
@@ -766,6 +771,7 @@ class PymavlinkVehicleGateway:
                 mission_upload_enabled=self._settings.allow_mission_upload,
                 flight_commands_enabled=self._settings.allow_flight_commands,
                 mission_start_enabled=self._settings.allow_mission_start,
+                vehicle_arm_enabled=self._settings.allow_vehicle_arm,
                 connection_error=self._connection_error,
             )
         except ValidationError as exc:
@@ -819,6 +825,197 @@ class PymavlinkVehicleGateway:
             verified=True,
             detail="Contagem e conteúdo foram relidos e comparados com a missão autorizada.",
         )
+
+    async def arm_vehicle(self) -> VehicleArmResult:
+        if not self._settings.allow_vehicle_arm:
+            raise UnsafeOperationError("ALLOW_VEHICLE_ARM não foi habilitado.")
+        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
+            raise UnsafeOperationError(
+                "Armamento exige ALLOW_FLIGHT_COMMANDS e ALLOW_MISSION_START habilitados."
+            )
+        if self._passive_connection:
+            raise UnsafeOperationError("Conexão receive-only não pode armar o veículo.")
+        async with self._arm_command_lock:
+            await asyncio.to_thread(self._prepare_arm_transaction)
+            self._require_live_heartbeat("armamento")
+            if not self._message_is_fresh("SYS_STATUS") or self._preflight_ok is not True:
+                raise UnsafeOperationError(
+                    "Armamento exige SYS_STATUS fresco com preflight aprovado."
+                )
+            if (self._mode or "").strip().upper() != "STABILIZE":
+                raise UnsafeOperationError("Armamento exige modo STABILIZE.")
+            if self._armed is True:
+                return VehicleArmResult(
+                    command_sent=False,
+                    command_acknowledged=False,
+                    armed_heartbeat_confirmed=True,
+                    external_state_reconciled=True,
+                )
+            await asyncio.to_thread(self._arm_vehicle_sync)
+            return VehicleArmResult(
+                command_sent=True,
+                command_acknowledged=True,
+                armed_heartbeat_confirmed=True,
+                external_state_reconciled=False,
+            )
+
+    def _prepare_arm_transaction(self) -> None:
+        connection = self._required_connection()
+        self._send_gcs_heartbeat_if_due()
+        for _ in range(self._ARM_MAX_DRAIN_MESSAGES):
+            message = connection.recv_match(blocking=False)
+            if message is None:
+                return
+            self._ingest_message(message)
+        raise UnsafeOperationError(
+            "Armamento bloqueado: a fila MAVLink não estabilizou antes da transação."
+        )
+
+    def _arm_vehicle_sync(self) -> None:
+        connection = self._required_connection()
+        mavlink = self._required_mavutil().mavlink
+        command = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+        accepted = mavlink.MAV_RESULT_ACCEPTED
+        first_heartbeat = self._last_heartbeat_monotonic
+        transaction_deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
+
+        for attempt in range(self._ARM_MAX_SEND_ATTEMPTS):
+            remaining = transaction_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                connection.mav.command_long_send(
+                    connection.target_system,
+                    connection.target_component,
+                    command,
+                    attempt,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            except (AttributeError, OSError, TypeError, ValueError) as exc:
+                raise VehicleConnectionError(
+                    "Falha ao enviar o comando MAVLink normal de armamento."
+                ) from exc
+
+            ack_deadline = min(
+                transaction_deadline,
+                time.monotonic() + self._settings.mission_protocol_step_timeout_seconds,
+            )
+            result, armed_heartbeat_seen = self._receive_strict_arm_ack(
+                command,
+                first_heartbeat=first_heartbeat,
+                deadline=ack_deadline,
+            )
+            if result is None:
+                if armed_heartbeat_seen:
+                    raise VehicleTimeoutError(
+                        "Heartbeat novo mostrou armed=true sem COMMAND_ACK correlacionado; "
+                        "o resultado é incerto e o comando não será reenviado."
+                    )
+                continue
+            if result != accepted:
+                if armed_heartbeat_seen:
+                    raise VehicleTimeoutError(
+                        "Heartbeat novo mostrou armed=true, mas o COMMAND_ACK rejeitou ARM; "
+                        "o estado é inconsistente, incerto e não será reenviado."
+                    )
+                raise UnsafeOperationError(f"Armamento rejeitado pelo veículo: {result}")
+            if self._wait_for_new_armed_heartbeat(
+                first_heartbeat,
+                deadline=transaction_deadline,
+            ):
+                return
+            if armed_heartbeat_seen:
+                raise VehicleTimeoutError(
+                    "COMMAND_ACK aceitou ARM, mas o heartbeat armado foi seguido por "
+                    "armed=false; o resultado final é incerto."
+                )
+            raise VehicleTimeoutError(
+                "ACK de armamento aceito, mas nenhum heartbeat novo confirmou armed=true."
+            )
+
+        raise VehicleTimeoutError(
+            "Timeout aguardando COMMAND_ACK estritamente correlacionado do armamento."
+        )
+
+    def _receive_strict_arm_ack(
+        self,
+        command: int,
+        *,
+        first_heartbeat: float | None,
+        deadline: float,
+    ) -> tuple[int | None, bool]:
+        connection = self._required_connection()
+        in_progress = self._required_mavutil().mavlink.MAV_RESULT_IN_PROGRESS
+        armed_heartbeat_seen = False
+        while time.monotonic() < deadline:
+            self._send_gcs_heartbeat_if_due()
+            message = connection.recv_match(
+                blocking=True,
+                timeout=max(0.01, deadline - time.monotonic()),
+            )
+            if message is None:
+                continue
+            if message.get_type() != "COMMAND_ACK":
+                self._ingest_message(message)
+                if (
+                    message.get_type() == "HEARTBEAT"
+                    and self._last_heartbeat_monotonic is not None
+                    and (
+                        first_heartbeat is None or self._last_heartbeat_monotonic > first_heartbeat
+                    )
+                    and self._armed is True
+                ):
+                    armed_heartbeat_seen = True
+                continue
+            if int(getattr(message, "command", -1)) != command:
+                continue
+            if not self._arm_ack_matches_transaction(message):
+                continue
+            result = int(message.result)
+            if result == in_progress:
+                continue
+            return result, armed_heartbeat_seen
+        return None, armed_heartbeat_seen
+
+    def _arm_ack_matches_transaction(self, message: Any) -> bool:
+        if not self._message_matches_target(message):
+            return False
+        connection = self._required_connection()
+        try:
+            return int(message.target_system) == int(connection.source_system) and int(
+                message.target_component
+            ) == int(connection.source_component)
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    def _wait_for_new_armed_heartbeat(
+        self,
+        first_heartbeat: float | None,
+        *,
+        deadline: float,
+    ) -> bool:
+        connection = self._required_connection()
+        while time.monotonic() < deadline:
+            if (
+                self._last_heartbeat_monotonic is not None
+                and (first_heartbeat is None or self._last_heartbeat_monotonic > first_heartbeat)
+                and self._armed is True
+            ):
+                return True
+            self._send_gcs_heartbeat_if_due()
+            message = connection.recv_match(
+                blocking=True,
+                timeout=max(0.01, deadline - time.monotonic()),
+            )
+            if message is not None:
+                self._ingest_message(message)
+        return False
 
     def _upload_sync(self, mission: AuthorizedMission) -> None:
         connection = self._required_connection()

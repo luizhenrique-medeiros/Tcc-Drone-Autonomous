@@ -9,7 +9,7 @@ Você é um **Engenheiro de Software Full-Stack Sênior e Especialista em Sistem
 - **Drone Integration:** Python 3.13, `pymavlink`, ArduPilot SITL / Pixhawk 6C.
 - **Architecture Style:** Monólito Modular no backend, com `drone_gateway` executado como aplicação separada.
 - **Primary Development Environment:** Windows 10/11, VS Code, Docker Desktop e WSL 2 para ArduPilot SITL.
-- **Data da Última Atualização:** 7 de agosto de 2026.
+- **Data da Última Atualização:** 20 de agosto de 2026.
 
 ### 1.1 Escopo vigente
 
@@ -157,6 +157,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Abstração:** Crie uma interface/protocolo `VehicleGateway` e implementações para SITL, conexão real e fake de testes.
 - **Padrão seguro:** O modo padrão deve ser `simulation`; conexão real exige configuração explícita.
 - **Arming:** Nunca arme o veículo real automaticamente durante inicialização, health check ou teste.
+- **ARM administrativo:** O único armamento remoto permitido é o ARM normal, solicitado explicitamente por administrador para missão `VERIFIED`, com os checks preservados, gate próprio falso por padrão, ACK correlacionado e heartbeat posterior; nunca ofereça force/bypass ou rearmamento automático.
 - **Missões:** Faça upload, confirmação e início como etapas separadas e registradas.
 - **Heartbeat:** Nenhuma ação deve ocorrer sem heartbeat válido.
 - **Pre-arm:** Respeite e registre falhas de pre-arm; não tente contorná-las alterando parâmetros automaticamente.
@@ -239,7 +240,7 @@ drone-delivery/
 │       ├── 0001-monolito-modular.md
 │       ├── 0002-postgresql-postgis.md
 │       ├── 0003-drone-gateway-separado.md
-│       └── 0004-sitl-primeiro.md
+│       └── 0004-sitl-antes-do-hardware.md
 │
 ├── backend/
 │   ├── app/
@@ -329,6 +330,13 @@ drone-delivery/
 │   ├── pubspec.yaml
 │   └── README.md
 │
+├── admin_web/
+│   ├── src/
+│   ├── tests/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── README.md
+│
 ├── infrastructure/
 │   ├── docker/
 │   └── postgres/
@@ -336,6 +344,7 @@ drone-delivery/
 │
 └── scripts/
     ├── bootstrap.ps1
+    ├── start_development.ps1
     ├── start_backend.ps1
     ├── start_gateway.ps1
     ├── start_sitl.sh
@@ -436,7 +445,9 @@ READY_FOR_AUTHORIZATION
 AUTHORIZED
 UPLOADING
 UPLOADED
+VERIFIED
 EXECUTING
+PAUSED
 DESTINATION_REACHED
 DELIVERY_CONFIRMED
 RETURNING
@@ -501,6 +512,9 @@ POST /api/v1/admin/missions/{mission_id}/mark-reviewed
 POST /api/v1/admin/missions/{mission_id}/authorize-flight
 POST /api/v1/admin/missions/{mission_id}/abort
 POST /api/v1/admin/missions/{mission_id}/request-rtl
+POST /api/v1/admin/missions/{mission_id}/commands/{action}
+GET  /api/v1/admin/vehicles
+GET  /api/v1/admin/vehicles/{vehicle_id}/health
 
 POST /api/v1/gateway/heartbeat
 GET  /api/v1/gateway/missions/authorized
@@ -509,6 +523,8 @@ POST /api/v1/gateway/missions/{mission_id}/upload-status
 POST /api/v1/gateway/missions/{mission_id}/status
 POST /api/v1/gateway/missions/{mission_id}/telemetry
 POST /api/v1/gateway/missions/{mission_id}/events
+GET  /api/v1/gateway/commands/pending
+POST /api/v1/gateway/commands/{command_id}/ack
 
 WS   /api/v1/ws/orders/{order_id}
 WS   /api/v1/ws/admin/operations
@@ -553,7 +569,7 @@ JWT_SECRET=change_me
 JWT_EXPIRE_MINUTES=60
 
 ADMIN_INITIAL_EMAIL=admin@example.local
-ADMIN_INITIAL_PASSWORD=change_me
+ADMIN_INITIAL_PASSWORD=change_me_admin_password
 
 MAP_PROVIDER=maptiler
 MAPTILER_STYLE_URL=https://api.maptiler.com/maps/hybrid-v4/style.json
@@ -561,10 +577,26 @@ MAPTILER_WEB_API_KEY=
 MAPTILER_ANDROID_API_KEY=
 MAPTILER_SERVER_API_KEY=
 
-GATEWAY_API_KEY=change_me
+GATEWAY_API_KEY=change_me_gateway_key
+GATEWAY_ID=dev-gateway-01
 MAVLINK_MODE=simulation
-MAVLINK_CONNECTION=udp:127.0.0.1:14550
+MAVLINK_CONNECTION=COM7
+MAVLINK_FORWARD_CONNECTION=udpin:127.0.0.1:14551
+MAVLINK_BAUD=57600
+GATEWAY_CONTAINER_MAVLINK_MODE=simulation
+GATEWAY_CONTAINER_MAVLINK_CONNECTION=udp:0.0.0.0:14550
+MAVLINK_SOURCE_SYSTEM_ID=254
+MAVLINK_SOURCE_COMPONENT_ID=190
+MAVLINK_TARGET_SYSTEM_ID=
+MAVLINK_TARGET_COMPONENT_ID=
+MAVLINK_DIALECT=ardupilotmega
+MAVLINK2_ENABLED=true
 REAL_HARDWARE_CONFIRMATION_REQUIRED=true
+REAL_HARDWARE_ACKNOWLEDGED=false
+ALLOW_MISSION_UPLOAD=false
+ALLOW_FLIGHT_COMMANDS=false
+ALLOW_MISSION_START=false
+ALLOW_VEHICLE_ARM=false
 
 DEFAULT_TAKEOFF_ALTITUDE_M=10
 # Limite operacional do gateway; não restringe salvar ou confirmar pedidos.
@@ -583,6 +615,7 @@ MISSION_COMMAND_TIMEOUT_SECONDS=15
 - Não use valores inseguros como fallback silencioso.
 - Configurações de voo real devem ficar separadas das configurações de simulação.
 - `MAVLINK_MODE=real` exige confirmação explícita e checklist externo; não deve ser ativado pelo código automaticamente.
+- O profile Docker usa variáveis `GATEWAY_CONTAINER_*` próprias e deve rejeitar `real`, `direct` e `mission_planner_forward`; COM/forwarding executam somente no host Windows.
 
 ---
 

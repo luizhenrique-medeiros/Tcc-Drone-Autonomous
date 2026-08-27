@@ -6,7 +6,9 @@ Esta lista contém apenas etapas que dependem de conta, credencial, rede, softwa
 
 Banco, JWT e gateway possuem valores locais no `.env` ignorado. `/health`, `/ready` e `/docs`
 respondem 200, porém a senha `ADMIN_INITIAL_PASSWORD` atual não corresponde ao hash da conta
-persistida: o login retorna `401`. Isso não indica banco vazio. Obtenha a senha vigente ou peça
+persistida: o login foi repetido em 20/08 e retorna `401`. Isso não indica banco vazio. Um JWT
+efêmero de cliente validou CORS/REST e retornou quatro produtos; ele não concede acesso admin.
+Obtenha a senha vigente ou peça
 autorização explícita antes de rotacionar; não copie qualquer valor para Git, documentação,
 screenshots ou histórico.
 
@@ -26,13 +28,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -ConfirmSimulationMutation
 ```
 
-Não use `change_me` nem enfraqueça a proteção do script.
+Não use nenhum valor com prefixo `change_me` nem enfraqueça a proteção do script; o smoke agora
+rejeita esse prefixo.
 
 Os pedidos controlados `27207fa7-df70-45b5-bb2f-d9279a0347f8` e `92198217-c06b-41f5-b91e-61b985b86803` permanecem `PENDING_ADMIN_APPROVAL`. **Não os aprove, não prepare missão, não autorize voo e não os despache.** Eles existem apenas como evidência de integração/persistência.
 
 ## Prioridade 1 — rotacionar e restringir MapTiler
 
-A credencial recebida foi exposta em conversa. Requests diretos e o smoke Web real responderam corretamente em 2026-08-07, mas isso não torna a chave segura nem valida Android.
+A credencial recebida foi exposta em conversa. Em 20/08, as três variáveis estavam presentes no
+`.env` ignorado, porém os valores de Web, Android e servidor eram iguais. Requests diretos e o
+smoke Web histórico responderam corretamente, mas isso não torna a chave segura, não valida
+Android e mantém exposição cruzada entre as três superfícies.
 
 Crie chaves substitutas antes de revogar a exposta:
 
@@ -58,10 +64,16 @@ Depois:
 3. reconstrua backend/admin e reinicie o Flutter com `-MapTilerConfigured`;
 4. valide separadamente Flutter Web, admin e Android;
 5. confira requests/erros no painel MapTiler;
-6. revogue a chave exposta;
+6. somente depois de substituir, rebuildar e validar as três superfícies, revogue a chave exposta;
 7. confirme que nenhum valor apareceu em logs, relatórios, screenshots, histórico ou commit.
 
-Dados externos ainda necessários: origens/domínios finais, `User-Agent` Android realmente observado, ambiente de hospedagem do backend e quotas escolhidas.
+Dados externos ainda necessários: três chaves efetivamente distintas, origens/domínios finais,
+`User-Agent` Android realmente observado, ambiente de hospedagem do backend e quotas escolhidas.
+
+Durante a inspeção da configuração externa do Mission Planner foi identificado, em cache, um
+token de sessão de um serviço aeronáutico. Nenhum valor ou nome de serviço é reproduzido. Após o
+trabalho, encerre a sessão e reautentique, ou revogue-a pelo serviço correspondente, para invalidar
+o token em cache.
 
 ## Prioridade 2 — revalidar Flutter Web após trocar a chave
 
@@ -79,7 +91,13 @@ Acesse:
 - admin React: `http://localhost:5173`;
 - FastAPI/OpenAPI: `http://localhost:8000/docs`.
 
-O ensaio visual de 7 de agosto confirmou cadastro/login, produtos, carrinho, pesquisa por Atibaia, mapa híbrido, câmera inicial, pan, reverse geocoding, confirmação segura, PIX simulado, criação do pedido e visualização no admin. Na rodada atual, admin/Flutter Web e assets responderam 200, os headers do admin e o MIME do worker foram conferidos, mas o controlador visual do navegador estava indisponível. Depois de instalar as chaves substitutas restritas e resolver o login admin, repita a validação e complete os cenários não cobertos:
+O ensaio visual de 7 de agosto confirmou cadastro/login, produtos, carrinho, pesquisa por Atibaia,
+mapa híbrido, câmera inicial, pan, reverse geocoding, confirmação segura, PIX simulado, criação do
+pedido e visualização no admin. Em 20/08, admin/Flutter Web e assets responderam 200, o worker
+respondeu como JavaScript, o WebSocket recebeu `operations.connected`, o preflight CORS foi aceito
+e o catálogo autenticado retornou quatro produtos. O controlador visual integrado não encontrou
+navegador, portanto isso não comprova login/mapa renderizado. Depois de instalar as três chaves
+substitutas restritas e resolver o login admin, repita a validação e complete os cenários não cobertos:
 
 1. login em larguras de celular e desktop, sem overflow horizontal;
 2. mapa MapLibre real com estilo híbrido MapTiler, atribuição e logo visíveis;
@@ -112,7 +130,7 @@ Neste computador, `wsl --list --verbose` mostrou apenas a distribuição interna
 1. Instale uma distribuição Ubuntu no WSL 2 e o ArduPilot conforme a documentação oficial.
 2. Inicie SITL pelo procedimento documentado.
 3. Configure `MAVLINK_MODE=sitl`, URL UDP e IDs realmente observados.
-4. Mantenha `ALLOW_MISSION_START=false` no primeiro teste de conexão e telemetria.
+4. Mantenha `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false` no primeiro teste de conexão e telemetria.
 5. Registre heartbeat, versão, GPS, EKF, bateria simulada, home e taxas de mensagens.
 6. Teste upload, releitura e hash da missão sem declarar voo físico.
 7. Habilite início somente em sessão deliberada e valide RTL, perda de link e reconciliação.
@@ -121,19 +139,20 @@ Neste computador, `wsl --list --verbose` mostrou apenas a distribuição interna
 
 Antes de iniciar, confirme hardware, firmware, frame, topologia do link, porta/baud, `sysid`/`compid`, alimentação e parâmetros já existentes. Não altere parâmetros automaticamente.
 
-Evidência anterior da rodada: após liberar a COM7/57600, dois diagnósticos passivos receberam
-heartbeat real `sysid=1`, `compid=1`, modo `STABILIZE` e `armed=false`; um ciclo limitado publicou
-sete heartbeats no backend sem escrita MAVLink. O forwarding não foi validado.
+Evidência atual de 20/08: a COM7 CP210x/57600 foi aberta em modo direto, receive-only, com Pixhawk
+6C/ArduCopter 4.6.3, `sysid=1`, `compid=1`, `STABILIZE` e `armed=false`. Em cinco minutos, o
+gateway publicou 129 snapshots `HARDWARE_REAL`; bateria ficou em 74–75%, GPS chegou a fix 3/5
+satélites e terminou fix 1/0, EKF/preflight permaneceram falsos e home/origin ausentes. REST e WS
+do admin viram a origem real; após a parada, `is_stale=true`. Nenhum comando, upload, start,
+armamento, ensaio de motor ou voo ocorreu; todos os gates permaneceram falsos.
 
-Estado atual: a COM7 não está enumerada; o dispositivo PnP aparece somente como histórico/estado
-desconhecido, o Mission Planner está fechado e não há listeners UDP 14550/14551. O diagnóstico
-passivo retorna exit 2/`VEHICLE_PORT_NOT_FOUND`, e o backend preserva snapshot `HARDWARE_REAL`,
-`ERROR`, `direct`, COM7/57600 com upload/comandos/início falsos.
+O forwarding não foi validado: UDP 14551 estava como Inbound e o diagnóstico expirou sem
+heartbeat. O próximo passo é corrigir somente essa topologia, ainda em receive-only.
 
 1. execute [PREFLIGHT_CHECKLIST.md](PREFLIGHT_CHECKLIST.md);
 2. remova as hélices;
-3. reconecte o cabo/link e confirme no Gerenciador de Dispositivos que a porta COM7 voltou;
-4. para serial direta, mantenha Mission Planner fechado e execute somente `scripts\start_gateway.ps1 -DiagnoseOnly`;
+3. confirme no Gerenciador de Dispositivos que a porta COM7 está enumerada;
+4. para repetir a serial direta, mantenha Mission Planner fechado e execute somente `scripts\start_gateway.ps1 -DiagnoseOnly`;
 5. para forwarding, abra o Mission Planner, desabilite o AutoConnect **Mavlink alt port** UDP 14551 `Inbound` e conecte em `COM7`, `57600`;
 6. abra `SETUP` → `Advanced` → `Mavlink Mirror`, escolha **UDP Client**, `127.0.0.1`, porta `14551`, com **Write access** desmarcado;
 7. execute `scripts\start_gateway.ps1 -DiagnoseOnly` e confirme heartbeat no gateway;
@@ -146,8 +165,8 @@ passivo retorna exit 2/`VEHICLE_PORT_NOT_FOUND`, e o backend preserva snapshot `
 ## Prioridade 6 — APK físico
 
 O APK debug integrado atual está em `mobile/build/app/outputs/flutter-apk/app-debug.apk`:
-195.236.488 bytes e SHA-256
-`202C72EE6397D6F5EE19012C08C2DE7E67FAD5FE18D60583CAB9B9D7C3EE9B6F`.
+195.252.860 bytes e SHA-256
+`0D1F104AB2D22605F901E7588B8DF16CF159D1149CE9F2F1880DDAA1F482B9F6`.
 Foi compilado com API 37, AGP 9.1.1 e Gradle 9.3.1, mas não foi instalado nesta rodada. Não há
 release atual nem keystore privada configurada.
 
@@ -160,13 +179,26 @@ release atual nem keystore privada configurada.
 7. Teste perda/retorno da rede.
 8. Registre aparelho, Android, build e resultado antes de afirmar que foi testado.
 
+## Prioridade 7 — atualizações do desktop
+
+Foram detectadas atualizações de Docker Desktop 4.87, WSL 2.7.12, VS Code e Java. Elas não foram
+instaladas automaticamente porque podem reiniciar serviços, alterar toolchains ou exigir decisão
+do usuário. Atualize cada ferramenta pelo canal oficial, reinicie quando solicitado e repita
+`docker compose config`, as suítes e os builds afetados. Android Studio continua sendo atualizado
+pelo próprio editor; não aceite licenças automaticamente. Docker Scout requer login e só pode ser
+incluído na auditoria depois da autenticação autorizada.
+
 ## Bloqueios externos atuais
 
-- a chave MapTiler recebida foi exposta e ainda precisa ser substituída/revogada;
+- as três variáveis MapTiler têm hoje o mesmo valor exposto; criar três chaves separadas/restritas,
+  substituir/rebuildar/validar e somente então revogar a antiga;
+- a sessão externa aeronáutica identificada em cache deve ser encerrada/reautenticada ou revogada;
 - Flutter Web deve ser revalidado depois da chave substituta restrita; Android ainda não teve runtime manual;
 - origens Web finais e `User-Agent` Android ainda precisam ser confirmados no painel MapTiler;
 - falta keystore para produzir APK release assinado/implantável;
+- atualizações do desktop acima aguardam instalação/reinício autorizados; Docker Scout aguarda login;
 - os pedidos controlados `27207fa7-df70-45b5-bb2f-d9279a0347f8` e `92198217-c06b-41f5-b91e-61b985b86803` devem permanecer sem despacho;
-- a COM7 foi validada anteriormente por heartbeat real, mas está ausente agora; o forwarding 14551 ainda depende da configuração manual acima;
+- COM7 e telemetria real foram validadas passivamente em 20/08, mas o veículo terminou sem GPS,
+  EKF, preflight ou home adequados; o forwarding 14551 ainda depende da configuração manual acima;
 - SITL depende da instalação de uma distribuição WSL 2 e do ArduPilot;
-- novo heartbeat no estado atual, GPS/bateria/EKF/home pelo gateway, upload na Pixhawk, motores, armamento e voo permanecem não executados.
+- upload na Pixhawk, ensaio de motores, armamento e voo permanecem não executados.

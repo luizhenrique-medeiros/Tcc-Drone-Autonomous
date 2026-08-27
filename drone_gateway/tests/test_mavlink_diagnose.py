@@ -50,6 +50,7 @@ async def test_default_diagnostic_only_lists_ports_and_never_opens_endpoint(
     )
 
     assert not report["connection_attempted"]
+    assert not report["telemetry_received"]
     assert report["status"] == "unavailable"
     assert report["effective_connection"] == "udpin:127.0.0.1:14551"
     assert report["serial_port"] == "COM7"
@@ -67,6 +68,7 @@ async def test_connect_diagnostic_forces_passive_flags_and_reports_real_health(
             assert not settings.allow_mission_upload
             assert not settings.allow_flight_commands
             assert not settings.allow_mission_start
+            assert not settings.allow_vehicle_arm
 
         async def connect(self, *, passive: bool = False) -> None:
             calls.passive = passive
@@ -96,7 +98,8 @@ async def test_connect_diagnostic_forces_passive_flags_and_reports_real_health(
 
     assert calls.passive is True
     assert calls.closed
-    assert report["status"] == "real_telemetry"
+    assert report["telemetry_received"] is True
+    assert report["status"] == "sitl_telemetry"
 
 
 def test_human_formatter_prints_unknown_fields_as_unavailable(
@@ -107,11 +110,13 @@ def test_human_formatter_prints_unknown_fields_as_unavailable(
         "topology": "direct",
         "effective_connection": "COM7",
         "serial_port": "COM7",
-        "status": "real_telemetry",
+        "status": "hardware_real_telemetry",
+        "telemetry_received": True,
         "autopilot_system": "ARDUPILOT",
         "guidance": "guidance",
         "serial_ports": [],
         "health": {
+            "source": "HARDWARE_REAL",
             "mavlink_system_id": 1,
             "mavlink_component_id": 1,
             "autopilot_version": None,
@@ -134,6 +139,7 @@ def test_human_formatter_prints_unknown_fields_as_unavailable(
     mavlink_diagnose._print_human(report)
 
     output = capsys.readouterr().out
+    assert "Origem operacional: HARDWARE_REAL" in output
     assert "System/component: 1/1" in output
     assert "Autopilot/version: ARDUPILOT/indisponível" in output
     assert "GPS fix/satélites: indisponível/indisponível" in output
@@ -151,6 +157,7 @@ def test_cli_exits_nonzero_when_connect_does_not_obtain_heartbeat(
             "effective_connection": "COM7",
             "serial_port": "COM7",
             "status": "unavailable",
+            "telemetry_received": False,
             "autopilot_system": "ARDUPILOT",
             "guidance": "porta ocupada ou sem heartbeat",
             "serial_ports": [],

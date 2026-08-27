@@ -277,6 +277,20 @@ export const demoApi: AdminApi = {
     });
     return updateMission(mission);
   },
+  async armMission() {
+    await wait();
+    throw new ApiError(
+      'Armamento indisponível no modo demonstração; nenhum veículo foi acionado.',
+      409,
+    );
+  },
+  async getMissionCommand() {
+    await wait();
+    throw new ApiError(
+      'Comandos físicos não existem no modo demonstração.',
+      404,
+    );
+  },
   async abortMission(id, reason) {
     await wait();
     const current = findMission(id);

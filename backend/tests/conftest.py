@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 os.environ["AUTO_CREATE_SCHEMA"] = "true"
 os.environ["JWT_SECRET"] = "test-secret-that-is-not-used-outside-tests"
 os.environ["GATEWAY_API_KEY"] = "test-gateway-key"
+os.environ["GATEWAY_ID"] = "gateway-sitl-1"
 os.environ["ADMIN_INITIAL_EMAIL"] = "admin@example.local"
 os.environ["ADMIN_INITIAL_PASSWORD"] = "Admin-pass-123"
 
@@ -30,7 +31,10 @@ def client() -> Generator[TestClient]:
 
 @pytest.fixture
 def gateway_headers() -> dict[str, str]:
-    return {"X-Gateway-API-Key": "test-gateway-key"}
+    return {
+        "X-Gateway-API-Key": "test-gateway-key",
+        "X-Gateway-ID": "gateway-sitl-1",
+    }
 
 
 def register_and_login(client: TestClient, email: str = "cliente@example.com") -> dict[str, str]:

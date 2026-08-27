@@ -27,12 +27,14 @@ from app.modules.missions.schemas import (
     FlightAuthorizationCreate,
     GatewayCommandAck,
     MissionAuthorizationRead,
+    VehicleArmRequest,
 )
 from app.modules.orders.models import Order
+from app.modules.system_events.models import SystemEvent
 from app.modules.system_events.service import record_event
 from app.modules.users.models import User
 from app.modules.vehicles.models import Vehicle, VehicleHealthSnapshot
-from app.modules.vehicles.service import health_failures, latest_health
+from app.modules.vehicles.service import health_failures, health_is_stale, latest_health
 
 
 def _authorization_to_read(
@@ -632,10 +634,22 @@ def request_safety_action(
     admin: User,
     action: str,
     reason: str | None = None,
+    settings: Settings | None = None,
     *,
     commit: bool = True,
 ) -> Mission:
     command_type = GatewayCommandType(action)
+    if command_type == GatewayCommandType.ARM:
+        raise InvalidStateError("O armamento exige o fluxo dedicado e suas confirmações")
+    locked_mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not locked_mission:
+        raise NotFoundError("Missão não encontrada")
+    mission = locked_mission
     allowed_states_by_command = {
         GatewayCommandType.START: {MissionStatus.VERIFIED},
         GatewayCommandType.PAUSE: {
@@ -666,6 +680,109 @@ def request_safety_action(
     allowed_states = allowed_states_by_command[command_type]
     if mission.status not in allowed_states:
         raise InvalidStateError("A ação de segurança não é válida para o estado atual")
+    open_commands = list(
+        session.scalars(
+            select(GatewayCommand)
+            .where(
+                GatewayCommand.mission_id == mission.id,
+                GatewayCommand.status.in_(
+                    {GatewayCommandStatus.PENDING, GatewayCommandStatus.ACKNOWLEDGED}
+                ),
+            )
+            .order_by(GatewayCommand.requested_at)
+            .with_for_update()
+        )
+    )
+    if command_type == GatewayCommandType.ABORT:
+        acknowledged_arm = next(
+            (
+                command
+                for command in open_commands
+                if command.command == GatewayCommandType.ARM
+                and command.status == GatewayCommandStatus.ACKNOWLEDGED
+            ),
+            None,
+        )
+        if acknowledged_arm:
+            raise ConflictError(
+                "ABORT bloqueado: o resultado físico do ARM reconhecido ainda é incerto"
+            )
+        unrelated = [
+            command
+            for command in open_commands
+            if command.command not in {GatewayCommandType.ARM, GatewayCommandType.ABORT}
+        ]
+        if unrelated:
+            raise ConflictError("A missão já possui outro comando crítico em andamento")
+        now = datetime.now(UTC)
+        for pending_arm in (
+            command
+            for command in open_commands
+            if command.command == GatewayCommandType.ARM
+            and command.status == GatewayCommandStatus.PENDING
+        ):
+            pending_arm.status = GatewayCommandStatus.FAILED
+            pending_arm.completed_at = now
+            pending_arm.result_detail = (
+                "ARM cancelado por solicitação ABORT antes do reconhecimento do gateway."
+            )
+            record_event(
+                session,
+                actor_type="ADMIN",
+                actor_user_id=admin.id,
+                order_id=mission.order_id,
+                mission_id=mission.id,
+                vehicle_id=mission.vehicle_id,
+                event_type="ARM_CANCELLED_BY_ABORT",
+                message=pending_arm.result_detail,
+                severity=EventSeverity.CRITICAL,
+                metadata={
+                    "command_id": str(pending_arm.id),
+                    "reason": reason,
+                },
+            )
+        if any(command.command == GatewayCommandType.ABORT for command in open_commands):
+            if commit:
+                session.commit()
+            return mission
+    elif open_commands:
+        if all(command.command == command_type for command in open_commands):
+            return mission
+        raise ConflictError("A missão já possui outro comando crítico em andamento")
+
+    if command_type == GatewayCommandType.START:
+        if settings is None:
+            raise InvalidStateError("Configuração do backend indisponível para validar START")
+        if not mission.vehicle_id or not mission.claimed_by_gateway:
+            raise ConflictError("START exige missão vinculada a veículo e gateway")
+        vehicle = session.get(Vehicle, mission.vehicle_id)
+        identity_matches = (
+            vehicle is not None
+            and vehicle.gateway_id == mission.claimed_by_gateway
+            and mission.claimed_by_gateway == settings.gateway_id
+        )
+        snapshot = latest_health(session, mission.vehicle_id)
+        failures = [
+            failure
+            for failure in health_failures(snapshot, settings)
+            if failure != "VEHICLE_ALREADY_ARMED"
+        ]
+        if not identity_matches:
+            failures.append("GATEWAY_IDENTITY_MISMATCH")
+        if snapshot.source.value not in {"SITL", "HARDWARE_REAL"}:
+            failures.append("OPERATIONAL_SOURCE_NOT_ALLOWED")
+        if snapshot.armed is not True:
+            failures.append("VEHICLE_NOT_ARMED")
+        if snapshot.flight_commands_enabled is not True:
+            failures.append("FLIGHT_COMMANDS_DISABLED")
+        if snapshot.mission_start_enabled is not True:
+            failures.append("MISSION_START_DISABLED")
+        if failures:
+            raise ConflictError(
+                "O estado real do veículo não permite solicitar START",
+                fields={"preflight": ",".join(dict.fromkeys(failures))},
+            )
+
     existing = session.scalar(
         select(GatewayCommand).where(
             GatewayCommand.mission_id == mission.id,
@@ -706,8 +823,118 @@ def request_safety_action(
     return mission
 
 
+def request_vehicle_arm(
+    session: Session,
+    mission: Mission,
+    admin: User,
+    payload: VehicleArmRequest,
+    settings: Settings,
+    *,
+    commit: bool = True,
+) -> tuple[Mission, GatewayCommand]:
+    """Queue one normal ARM request after a fresh, fail-closed safety review."""
+
+    locked_mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not locked_mission:
+        raise NotFoundError("Missão não encontrada")
+    mission = locked_mission
+    if mission.status != MissionStatus.VERIFIED:
+        raise InvalidStateError("O armamento só pode ser solicitado para missão verificada")
+    if not mission.vehicle_id or not mission.claimed_by_gateway:
+        raise ConflictError("A missão verificada não está vinculada a um gateway e veículo")
+
+    vehicle = session.get(Vehicle, mission.vehicle_id)
+    if (
+        not vehicle
+        or vehicle.gateway_id != mission.claimed_by_gateway
+        or mission.claimed_by_gateway != settings.gateway_id
+    ):
+        raise ConflictError("O gateway da missão não corresponde ao veículo vinculado")
+
+    snapshot = latest_health(session, mission.vehicle_id)
+    if snapshot.source.value not in {"SITL", "HARDWARE_REAL"}:
+        raise ConflictError("Armamento remoto só é permitido em SITL ou hardware real identificado")
+
+    disabled_gates = [
+        name
+        for name, enabled in (
+            ("VEHICLE_ARM_DISABLED", snapshot.vehicle_arm_enabled),
+            ("FLIGHT_COMMANDS_DISABLED", snapshot.flight_commands_enabled),
+            ("MISSION_START_DISABLED", snapshot.mission_start_enabled),
+        )
+        if enabled is not True
+    ]
+    failures = [*health_failures(snapshot, settings), *disabled_gates]
+    if (snapshot.flight_mode or "").upper() != "STABILIZE":
+        failures.append("ARMING_MODE_NOT_ALLOWED")
+    if failures:
+        raise ConflictError(
+            "O estado real do veículo não permite solicitar armamento",
+            fields={"preflight": ",".join(dict.fromkeys(failures))},
+        )
+
+    open_command = session.scalar(
+        select(GatewayCommand)
+        .where(
+            GatewayCommand.mission_id == mission.id,
+            GatewayCommand.status.in_(
+                {GatewayCommandStatus.PENDING, GatewayCommandStatus.ACKNOWLEDGED}
+            ),
+        )
+        .with_for_update()
+    )
+    if open_command:
+        raise ConflictError("A missão já possui um comando crítico em andamento")
+
+    command = GatewayCommand(
+        mission_id=mission.id,
+        requested_by_id=admin.id,
+        command=GatewayCommandType.ARM,
+        reason=payload.reason,
+        status=GatewayCommandStatus.PENDING,
+    )
+    session.add(command)
+    session.flush()
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        vehicle_id=mission.vehicle_id,
+        event_type="ARM_REQUESTED",
+        message="Administrador solicitou armamento normal; aguarda ACK e heartbeat armado",
+        severity=EventSeverity.CRITICAL,
+        metadata={
+            "command_id": str(command.id),
+            "gateway_id": mission.claimed_by_gateway,
+            "health_snapshot_id": str(snapshot.id),
+            "reason": payload.reason,
+            "area_clear_confirmed": payload.area_clear_confirmed,
+            "operator_present_confirmed": payload.operator_present_confirmed,
+            "safety_switch_ready_confirmed": payload.safety_switch_ready_confirmed,
+        },
+    )
+    if commit:
+        session.commit()
+        session.refresh(command)
+    return mission, command
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def acknowledge_gateway_command(
-    session: Session, command: GatewayCommand, payload: GatewayCommandAck
+    session: Session,
+    command: GatewayCommand,
+    payload: GatewayCommandAck,
+    settings: Settings,
 ) -> GatewayCommand:
     if payload.status not in {
         GatewayCommandStatus.ACKNOWLEDGED,
@@ -715,28 +942,112 @@ def acknowledge_gateway_command(
         GatewayCommandStatus.FAILED,
     }:
         raise InvalidStateError("O gateway não pode definir este estado de comando")
-    _event, created = record_event(
-        session,
-        event_id=payload.event_id,
-        actor_type="GATEWAY",
-        mission_id=command.mission_id,
-        event_type=f"GATEWAY_COMMAND_{payload.status.value}",
-        message=payload.detail or f"Comando {command.command.value}: {payload.status.value}",
-        severity=(
-            EventSeverity.ERROR
-            if payload.status == GatewayCommandStatus.FAILED
-            else EventSeverity.INFO
-        ),
-        metadata={"command_id": str(command.id), "gateway_id": payload.gateway_id},
+    locked_command = session.scalar(
+        select(GatewayCommand)
+        .where(GatewayCommand.id == command.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if not created:
-        return command
+    if not locked_command:
+        raise NotFoundError("Comando não encontrado")
+    command = locked_command
+    mission = session.get(Mission, command.mission_id)
+    if not mission:
+        raise NotFoundError("Missão do comando não encontrada")
+    if mission.claimed_by_gateway != payload.gateway_id:
+        raise ConflictError("O comando pertence a outro gateway")
     if command.gateway_id and command.gateway_id != payload.gateway_id:
-        session.rollback()
         raise ConflictError("O comando já foi assumido por outro gateway")
+    event_type = f"GATEWAY_COMMAND_{payload.status.value}"
+    event_message = payload.detail or f"Comando {command.command.value}: {payload.status.value}"
+    event_severity = (
+        EventSeverity.ERROR if payload.status == GatewayCommandStatus.FAILED else EventSeverity.INFO
+    )
+    event_metadata: dict[str, str | int | float | bool | None] = {
+        "command_id": str(command.id),
+        "gateway_id": payload.gateway_id,
+    }
+    existing_event = session.scalar(
+        select(SystemEvent).where(SystemEvent.event_id == payload.event_id)
+    )
+    if existing_event:
+        replay_metadata = existing_event.event_metadata
+        if (
+            replay_metadata.get("command_id") != str(command.id)
+            or replay_metadata.get("gateway_id") != payload.gateway_id
+        ):
+            replay_metadata = event_metadata
+        _event, created = record_event(
+            session,
+            event_id=payload.event_id,
+            actor_type="GATEWAY",
+            order_id=mission.order_id,
+            mission_id=command.mission_id,
+            vehicle_id=mission.vehicle_id,
+            event_type=event_type,
+            message=event_message,
+            severity=event_severity,
+            metadata=replay_metadata,
+        )
+        if not created:
+            return command
+    if (
+        command.command == GatewayCommandType.ARM
+        and payload.status == GatewayCommandStatus.COMPLETED
+    ):
+        if command.status != GatewayCommandStatus.ACKNOWLEDGED:
+            raise InvalidStateError("O armamento deve ser reconhecido antes da conclusão")
+        if not mission.vehicle_id or command.acknowledged_at is None:
+            raise ConflictError("A missão não possui veículo vinculado")
+        vehicle = session.get(Vehicle, mission.vehicle_id)
+        if not vehicle or vehicle.gateway_id != payload.gateway_id:
+            raise ConflictError("A identidade do veículo não corresponde ao gateway do comando")
+        snapshot = latest_health(session, mission.vehicle_id)
+        acknowledged_at = _as_utc(command.acknowledged_at)
+        received_at = _as_utc(snapshot.received_at)
+        last_heartbeat_at = (
+            _as_utc(snapshot.last_heartbeat_at) if snapshot.last_heartbeat_at is not None else None
+        )
+        if (
+            health_is_stale(snapshot, settings)
+            or not snapshot.connected
+            or not snapshot.heartbeat
+            or snapshot.armed is not True
+            or snapshot.source.value not in {"SITL", "HARDWARE_REAL"}
+            or received_at <= acknowledged_at
+            or last_heartbeat_at is None
+            or last_heartbeat_at <= acknowledged_at
+        ):
+            raise ConflictError(
+                "ARM só pode ser concluído após heartbeat novo e fresco confirmando armed=true"
+            )
+        event_metadata.update(
+            {
+                "health_snapshot_id": str(snapshot.id),
+                "health_received_at": received_at.isoformat(),
+                "last_heartbeat_at": last_heartbeat_at.isoformat(),
+                "acknowledged_at": acknowledged_at.isoformat(),
+                "source": snapshot.source.value,
+                "connected": snapshot.connected,
+                "heartbeat": snapshot.heartbeat,
+                "armed": snapshot.armed,
+            }
+        )
     if command.status in {GatewayCommandStatus.COMPLETED, GatewayCommandStatus.FAILED}:
         session.rollback()
         raise InvalidStateError("O comando já está encerrado")
+    record_event(
+        session,
+        event_id=payload.event_id,
+        actor_type="GATEWAY",
+        order_id=mission.order_id,
+        mission_id=command.mission_id,
+        vehicle_id=mission.vehicle_id,
+        event_type=event_type,
+        message=event_message,
+        severity=event_severity,
+        metadata=event_metadata,
+    )
     now = datetime.now(UTC)
     if payload.status == GatewayCommandStatus.ACKNOWLEDGED:
         if command.status != GatewayCommandStatus.PENDING:

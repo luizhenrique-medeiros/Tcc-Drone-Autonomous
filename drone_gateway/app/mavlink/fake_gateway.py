@@ -10,6 +10,7 @@ from app.models import (
     OperationalSource,
     TelemetrySnapshot,
     UploadResult,
+    VehicleArmResult,
     VehicleEvent,
     VehicleHealth,
     VehiclePoll,
@@ -17,6 +18,8 @@ from app.models import (
 
 
 class FakeVehicleGateway:
+    """In-memory simulator/test double; it never represents hardware evidence."""
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._connected = False
@@ -24,6 +27,8 @@ class FakeVehicleGateway:
         self._active_mission_id: str | None = None
         self._mission_paused = False
         self._progress_tick = 0
+        self._armed = False
+        self._flight_mode = "STABILIZE"
 
     @property
     def connection_state(self) -> ConnectionState:
@@ -50,8 +55,8 @@ class FakeVehicleGateway:
             ekf_ok=True,
             battery_percent=88,
             battery_voltage=22.6,
-            flight_mode="STANDBY",
-            armed=False,
+            flight_mode=self._flight_mode,
+            armed=self._armed,
             preflight_ok=True,
             rtl_configured=True,
             geofence_enabled=True,
@@ -66,6 +71,7 @@ class FakeVehicleGateway:
             mission_upload_enabled=self._settings.allow_mission_upload,
             flight_commands_enabled=self._settings.allow_flight_commands,
             mission_start_enabled=self._settings.allow_mission_start,
+            vehicle_arm_enabled=self._settings.allow_vehicle_arm,
         )
 
     async def drain_events(self) -> list[VehicleEvent]:
@@ -95,6 +101,32 @@ class FakeVehicleGateway:
             item_count=len(mission.waypoints),
             verified=True,
             detail="Conteúdo fake relido e verificado.",
+        )
+
+    async def arm_vehicle(self) -> VehicleArmResult:
+        if not self._settings.allow_vehicle_arm:
+            raise UnsafeOperationError("ALLOW_VEHICLE_ARM não foi habilitado.")
+        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
+            raise UnsafeOperationError(
+                "Armamento fake exige ALLOW_FLIGHT_COMMANDS e ALLOW_MISSION_START habilitados."
+            )
+        if not self._connected:
+            raise VehicleTimeoutError("Heartbeat fake não está válido.")
+        if self._flight_mode != "STABILIZE":
+            raise UnsafeOperationError("Armamento exige modo STABILIZE.")
+        if self._armed:
+            return VehicleArmResult(
+                command_sent=False,
+                command_acknowledged=False,
+                armed_heartbeat_confirmed=True,
+                external_state_reconciled=True,
+            )
+        self._armed = True
+        return VehicleArmResult(
+            command_sent=True,
+            command_acknowledged=True,
+            armed_heartbeat_confirmed=True,
+            external_state_reconciled=False,
         )
 
     async def start_mission(self, mission: AuthorizedMission) -> None:

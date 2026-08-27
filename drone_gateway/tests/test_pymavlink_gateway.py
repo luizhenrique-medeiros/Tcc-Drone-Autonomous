@@ -16,6 +16,7 @@ from app.core.exceptions import (
 )
 from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
 from app.models import AuthorizedMission, ConnectionState, MissionStatus, MissionWaypoint
+from app.telemetry.normalizer import normalize_telemetry
 
 
 class FakeMessage:
@@ -31,6 +32,7 @@ class FakeMessage:
         self._source_system = source_system
         self._source_component = source_component
         self.target_system = 254
+        self.target_component = 190
         self.mission_type = 0
         for name, value in fields.items():
             setattr(self, name, value)
@@ -99,6 +101,7 @@ def fake_mavutil() -> SimpleNamespace:
         MAV_CMD_MISSION_START=300,
         MAV_CMD_DO_PAUSE_CONTINUE=193,
         MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
+        MAV_CMD_COMPONENT_ARM_DISARM=400,
         MAV_RESULT_ACCEPTED=0,
         MAV_RESULT_IN_PROGRESS=5,
         MAVLINK_MSG_ID_SYS_STATUS=1,
@@ -109,7 +112,10 @@ def fake_mavutil() -> SimpleNamespace:
         MAVLINK_MSG_ID_HOME_POSITION=242,
         MAVLINK_MSG_ID_MISSION_CURRENT=42,
     )
-    return SimpleNamespace(mavlink=constants, mode_string_v10=lambda message: "AUTO")
+    return SimpleNamespace(
+        mavlink=constants,
+        mode_string_v10=lambda message: getattr(message, "mode_string", "AUTO"),
+    )
 
 
 def mission_with_one_waypoint(*, label: str | None = None) -> AuthorizedMission:
@@ -248,6 +254,35 @@ def configured_gateway(
     return gateway, connection
 
 
+def configured_arm_gateway(
+    messages: list[FakeMessage] | None = None,
+    *,
+    mode: str = "STABILIZE",
+    preflight_ok: bool = True,
+    timeout: float = 0.08,
+    step_timeout: float = 0.02,
+) -> tuple[PymavlinkVehicleGateway, AckAfterCommandConnection]:
+    gateway = PymavlinkVehicleGateway(
+        Settings(
+            _env_file=None,
+            allow_vehicle_arm=True,
+            allow_flight_commands=True,
+            allow_mission_start=True,
+            mission_command_timeout_seconds=timeout,
+            mission_protocol_step_timeout_seconds=step_timeout,
+        )
+    )
+    connection = AckAfterCommandConnection(messages)
+    gateway._connection = connection
+    gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._mode = mode
+    gateway._armed = False
+    gateway._preflight_ok = preflight_ok
+    gateway._last_message_monotonic["SYS_STATUS"] = time.monotonic()
+    return gateway, connection
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "expected_endpoint"),
@@ -304,6 +339,7 @@ async def test_unacknowledged_hardware_connect_is_receive_only_and_reports_topol
     assert not health.mission_upload_enabled
     assert not health.flight_commands_enabled
     assert not health.mission_start_enabled
+    assert not health.vehicle_arm_enabled
     await gateway.close()
     assert connection.closed
 
@@ -425,6 +461,169 @@ async def test_upload_and_flight_commands_require_flags_and_live_heartbeat() -> 
 
 
 @pytest.mark.asyncio
+async def test_arm_sends_only_normal_command_and_requires_strict_ack_plus_new_heartbeat() -> None:
+    gateway, connection = configured_arm_gateway(
+        [
+            FakeMessage("COMMAND_ACK", source_system=99, command=400, result=0),
+            FakeMessage("COMMAND_ACK", command=400, result=0, target_system=99),
+            FakeMessage("COMMAND_ACK", command=400, result=0, target_component=99),
+            FakeMessage("COMMAND_ACK", command=400, result=0),
+            FakeMessage("HEARTBEAT", base_mode=128),
+        ]
+    )
+
+    result = await gateway.arm_vehicle()
+
+    arm_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 400
+    ]
+    assert len(arm_calls) == 1
+    assert arm_calls[0][3] == 0
+    assert arm_calls[0][4] == 1
+    assert arm_calls[0][5:] == (0, 0, 0, 0, 0, 0)
+    assert gateway._armed is True
+    assert result.command_sent
+    assert result.command_acknowledged
+    assert result.armed_heartbeat_confirmed
+    assert not result.external_state_reconciled
+
+
+@pytest.mark.asyncio
+async def test_arm_is_blocked_by_gate_mode_and_stale_or_failed_preflight() -> None:
+    disabled = PymavlinkVehicleGateway(Settings(_env_file=None))
+    with pytest.raises(UnsafeOperationError, match="ALLOW_VEHICLE_ARM"):
+        await disabled.arm_vehicle()
+
+    inconsistent, inconsistent_connection = configured_arm_gateway()
+    inconsistent._settings = inconsistent._settings.model_copy(
+        update={"allow_mission_start": False}
+    )
+    with pytest.raises(UnsafeOperationError, match="ALLOW_MISSION_START"):
+        await inconsistent.arm_vehicle()
+    assert not any(name == "command_long_send" for name, _ in inconsistent_connection.mav.calls)
+
+    wrong_mode, wrong_mode_connection = configured_arm_gateway(mode="AUTO")
+    with pytest.raises(UnsafeOperationError, match="STABILIZE"):
+        await wrong_mode.arm_vehicle()
+    assert not any(name == "command_long_send" for name, _ in wrong_mode_connection.mav.calls)
+
+    failed_preflight, _ = configured_arm_gateway(preflight_ok=False)
+    with pytest.raises(UnsafeOperationError, match="preflight aprovado"):
+        await failed_preflight.arm_vehicle()
+
+    stale_preflight, _ = configured_arm_gateway()
+    stale_preflight._last_message_monotonic["SYS_STATUS"] = (
+        time.monotonic() - stale_preflight._settings.mavlink_telemetry_stale_seconds - 0.1
+    )
+    with pytest.raises(UnsafeOperationError, match="SYS_STATUS fresco"):
+        await stale_preflight.arm_vehicle()
+
+
+@pytest.mark.asyncio
+async def test_arm_accepted_ack_without_new_armed_heartbeat_is_not_success() -> None:
+    gateway, _connection = configured_arm_gateway(
+        [FakeMessage("COMMAND_ACK", command=400, result=0)],
+        timeout=0.03,
+        step_timeout=0.01,
+    )
+
+    with pytest.raises(VehicleTimeoutError, match="heartbeat novo"):
+        await gateway.arm_vehicle()
+
+
+@pytest.mark.asyncio
+async def test_arm_new_armed_then_disarmed_heartbeat_without_ack_is_never_resent() -> None:
+    gateway, connection = configured_arm_gateway(
+        [
+            FakeMessage("HEARTBEAT", base_mode=128, mode_string="STABILIZE"),
+            FakeMessage("HEARTBEAT", base_mode=0, mode_string="STABILIZE"),
+        ],
+        timeout=0.06,
+        step_timeout=0.02,
+    )
+
+    with pytest.raises(VehicleTimeoutError, match="resultado é incerto"):
+        await gateway.arm_vehicle()
+
+    arm_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 400
+    ]
+    assert len(arm_calls) == 1
+    assert gateway._armed is False
+
+
+@pytest.mark.asyncio
+async def test_arm_preparation_race_reports_external_state_without_sending_command() -> None:
+    gateway, _ = configured_arm_gateway()
+    connection = FakeConnection([FakeMessage("HEARTBEAT", base_mode=128, mode_string="STABILIZE")])
+    gateway._connection = connection
+
+    result = await gateway.arm_vehicle()
+
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+    assert not result.command_sent
+    assert not result.command_acknowledged
+    assert result.armed_heartbeat_confirmed
+    assert result.external_state_reconciled
+
+
+@pytest.mark.asyncio
+async def test_arm_drains_preexisting_ack_before_starting_transaction() -> None:
+    gateway, _ = configured_arm_gateway(timeout=0.04, step_timeout=0.01)
+    connection = FakeConnection([FakeMessage("COMMAND_ACK", command=400, result=0)])
+    gateway._connection = connection
+
+    with pytest.raises(VehicleTimeoutError, match="COMMAND_ACK"):
+        await gateway.arm_vehicle()
+
+    arm_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 400
+    ]
+    assert [arguments[3] for arguments in arm_calls] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+async def test_arm_terminal_rejection_is_not_retried() -> None:
+    gateway, connection = configured_arm_gateway(
+        [FakeMessage("COMMAND_ACK", command=400, result=4)]
+    )
+
+    with pytest.raises(UnsafeOperationError, match="rejeitado"):
+        await gateway.arm_vehicle()
+
+    arm_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 400
+    ]
+    assert len(arm_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_arm_missing_ack_has_bounded_same_transaction_retries() -> None:
+    gateway, connection = configured_arm_gateway(
+        timeout=0.06,
+        step_timeout=0.01,
+    )
+
+    with pytest.raises(VehicleTimeoutError, match="COMMAND_ACK"):
+        await gateway.arm_vehicle()
+
+    arm_calls = [
+        arguments
+        for name, arguments in connection.mav.calls
+        if name == "command_long_send" and arguments[2] == 400
+    ]
+    assert [arguments[3] for arguments in arm_calls] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
 async def test_pause_and_continue_use_command_long_and_require_ack() -> None:
     settings = Settings(_env_file=None, allow_flight_commands=True)
     gateway = PymavlinkVehicleGateway(settings)
@@ -532,6 +731,30 @@ async def test_health_keeps_unreceived_mavlink_values_null_and_filters_other_veh
     assert health.battery_percent is None
     assert health.flight_mode is None
     assert health.armed is None
+
+
+@pytest.mark.asyncio
+async def test_health_and_telemetry_accept_all_standard_mavlink_gps_fix_types() -> None:
+    gateway, _connection = configured_gateway()
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(FakeMessage("GPS_RAW_INT", fix_type=8, satellites_visible=14))
+
+    health = await gateway.read_health()
+    telemetry = normalize_telemetry(
+        latitude_e7=-231175000,
+        longitude_e7=-465502000,
+        relative_altitude_mm=0,
+        velocity_x_cm_s=0,
+        velocity_y_cm_s=0,
+        battery_percent=80,
+        gps_fix_type=8,
+        satellites=14,
+        flight_mode="STANDBY",
+        armed=False,
+    )
+
+    assert health.gps_fix_type == 8
+    assert telemetry.gps_fix_type == 8
 
 
 @pytest.mark.asyncio

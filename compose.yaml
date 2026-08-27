@@ -29,6 +29,7 @@ services:
       DATABASE_URL: postgresql+psycopg://${DATABASE_USER:-drone_user}:${DATABASE_PASSWORD:-change_me}@db:5432/${DATABASE_NAME:-drone_delivery}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-development-gateway-key}
+      GATEWAY_ID: ${GATEWAY_ID:-dev-gateway-01}
     depends_on:
       db:
         condition: service_healthy
@@ -64,8 +65,9 @@ services:
         required: false
     environment:
       API_BASE_URL: http://backend:8000
-      MAVLINK_MODE: ${MAVLINK_MODE:-simulation}
-      MAVLINK_CONNECTION: ${MAVLINK_CONNECTION:-COM7}
+      GATEWAY_RUNTIME: container
+      MAVLINK_MODE: ${GATEWAY_CONTAINER_MAVLINK_MODE:-simulation}
+      MAVLINK_CONNECTION: ${GATEWAY_CONTAINER_MAVLINK_CONNECTION:-udp:0.0.0.0:14550}
       MAVLINK_FORWARD_CONNECTION: ${MAVLINK_FORWARD_CONNECTION:-udpin:127.0.0.1:14551}
       MAVLINK_BAUD: ${MAVLINK_BAUD:-57600}
       MAVLINK_SOURCE_SYSTEM_ID: ${MAVLINK_SOURCE_SYSTEM_ID:-254}
@@ -77,7 +79,9 @@ services:
       ALLOW_MISSION_UPLOAD: ${ALLOW_MISSION_UPLOAD:-false}
       ALLOW_FLIGHT_COMMANDS: ${ALLOW_FLIGHT_COMMANDS:-false}
       ALLOW_MISSION_START: ${ALLOW_MISSION_START:-false}
+      ALLOW_VEHICLE_ARM: ${ALLOW_VEHICLE_ARM:-false}
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-development-gateway-key}
+      GATEWAY_ID: ${GATEWAY_ID:-dev-gateway-01}
       GATEWAY_JOURNAL_PATH: /var/lib/drone-gateway/journal.json
     volumes:
       - gateway_state:/var/lib/drone-gateway

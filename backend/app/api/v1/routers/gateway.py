@@ -7,7 +7,7 @@ from sqlalchemy import and_, or_, select
 
 from app.api.dependencies import AppSettings, DatabaseSession, GatewayAuth
 from app.core.enums import GatewayCommandStatus, MissionStatus
-from app.core.exceptions import DomainError, InvalidStateError, NotFoundError
+from app.core.exceptions import AuthorizationError, DomainError, InvalidStateError, NotFoundError
 from app.core.websocket import manager
 from app.modules.missions.models import GatewayCommand, Mission
 from app.modules.missions.schemas import (
@@ -39,6 +39,16 @@ from app.modules.vehicles.service import health_to_read, record_heartbeat
 router = APIRouter(prefix="/gateway", tags=["Gateway"])
 
 
+def _require_gateway_identity(authenticated_gateway_id: str, supplied_gateway_id: str) -> None:
+    if supplied_gateway_id != authenticated_gateway_id:
+        raise AuthorizationError("A identidade informada não corresponde ao gateway autenticado")
+
+
+def _require_claimed_gateway(mission: Mission, authenticated_gateway_id: str) -> None:
+    if mission.claimed_by_gateway != authenticated_gateway_id:
+        raise AuthorizationError("A missão pertence a outro gateway")
+
+
 async def _broadcast_mission(mission: Mission) -> None:
     payload = {
         "type": "mission.status",
@@ -57,8 +67,9 @@ async def heartbeat(
     payload: VehicleHealthInput,
     session: DatabaseSession,
     settings: AppSettings,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> VehicleHeartbeatResult:
+    _require_gateway_identity(authenticated_gateway_id, payload.gateway_id)
     vehicle, health, failures = record_heartbeat(session, payload, settings)
     response = VehicleHeartbeatResult(
         vehicle=VehicleRead.model_validate(vehicle),
@@ -79,7 +90,7 @@ async def heartbeat(
 )
 def authorized_missions(
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    _authenticated_gateway_id: GatewayAuth,
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[Mission]:
     missions = session.scalars(
@@ -108,8 +119,9 @@ async def claim(
     payload: GatewayClaim,
     session: DatabaseSession,
     settings: AppSettings,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> GatewayClaimResult:
+    _require_gateway_identity(authenticated_gateway_id, payload.gateway_id)
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
@@ -132,7 +144,7 @@ async def upload_status(
     mission_id: UUID,
     payload: GatewayUploadStatus,
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> Mission:
     if payload.status not in {
         MissionStatus.UPLOADING,
@@ -144,6 +156,7 @@ async def upload_status(
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
+    _require_claimed_gateway(mission, authenticated_gateway_id)
     result, _created = apply_gateway_status(
         session, mission, payload.status, payload.event_id, payload.detail
     )
@@ -160,11 +173,12 @@ async def mission_status(
     mission_id: UUID,
     payload: GatewayMissionStatus,
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> Mission:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
+    _require_claimed_gateway(mission, authenticated_gateway_id)
     result, _created = apply_gateway_status(
         session, mission, payload.status, payload.event_id, payload.detail
     )
@@ -182,11 +196,12 @@ async def telemetry(
     payload: TelemetryCreate,
     session: DatabaseSession,
     settings: AppSettings,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> object:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
+    _require_claimed_gateway(mission, authenticated_gateway_id)
     result, created = record_telemetry(session, mission, payload, settings)
     response = telemetry_to_read(result, settings)
     if created:
@@ -208,11 +223,12 @@ async def gateway_event(
     mission_id: UUID,
     payload: GatewayEventCreate,
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
 ) -> object:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
+    _require_claimed_gateway(mission, authenticated_gateway_id)
     event, created = record_event(
         session,
         event_id=payload.event_id,
@@ -244,10 +260,11 @@ async def gateway_event(
 )
 def pending_commands(
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    authenticated_gateway_id: GatewayAuth,
     gateway_id: str = Query(min_length=2, max_length=120),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[GatewayCommand]:
+    _require_gateway_identity(authenticated_gateway_id, gateway_id)
     return list(
         session.scalars(
             select(GatewayCommand)
@@ -277,12 +294,14 @@ async def acknowledge_command(
     command_id: UUID,
     payload: GatewayCommandAck,
     session: DatabaseSession,
-    _gateway: GatewayAuth,
+    settings: AppSettings,
+    authenticated_gateway_id: GatewayAuth,
 ) -> GatewayCommand:
+    _require_gateway_identity(authenticated_gateway_id, payload.gateway_id)
     command = session.get(GatewayCommand, command_id)
     if not command:
         raise NotFoundError("Comando não encontrado")
-    result = acknowledge_gateway_command(session, command, payload)
+    result = acknowledge_gateway_command(session, command, payload, settings)
     await manager.broadcast_admin(
         {
             "type": "gateway.command",

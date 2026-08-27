@@ -37,6 +37,7 @@ def _base_report(settings: Settings) -> dict[str, Any]:
         "receive_only": True,
         "serial_ports": [asdict(port) for port in list_serial_ports()],
         "connection_attempted": False,
+        "telemetry_received": False,
         "status": "unavailable",
         "guidance": (
             "Por padrão nenhuma porta é aberta. Use --connect para apenas receber heartbeat "
@@ -62,6 +63,7 @@ async def diagnose(
             "allow_mission_upload": False,
             "allow_flight_commands": False,
             "allow_mission_start": False,
+            "allow_vehicle_arm": False,
         }
     )
     gateway = PymavlinkVehicleGateway(safe_settings)
@@ -73,7 +75,10 @@ async def diagnose(
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(min(0.2, max(0.0, deadline - asyncio.get_running_loop().time())))
             health = await gateway.read_health()
-        report["status"] = "real_telemetry" if health.heartbeat else "unavailable"
+        report["telemetry_received"] = health.heartbeat
+        report["status"] = (
+            f"{health.source.value.lower()}_telemetry" if health.heartbeat else "unavailable"
+        )
         report["health"] = health.model_dump(mode="json")
     except GatewayError as exc:
         report["status"] = "unavailable"
@@ -104,6 +109,7 @@ def _print_human(report: dict[str, Any]) -> None:
         print(f"Erro: {error}")
     health = report.get("health")
     if isinstance(health, dict):
+        print(f"Origem operacional: {_display(health.get('source'))}")
         print(
             "System/component: "
             f"{_display(health.get('mavlink_system_id'))}/"
@@ -174,7 +180,7 @@ def main() -> None:
             observe_seconds=args.observe_seconds,
         )
     )
-    failed_connection = args.connect and report["status"] != "real_telemetry"
+    failed_connection = args.connect and not report["telemetry_received"]
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

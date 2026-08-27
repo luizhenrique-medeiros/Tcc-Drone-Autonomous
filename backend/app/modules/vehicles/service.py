@@ -48,6 +48,7 @@ def _critical_hash(payload: VehicleHealthInput) -> str:
         "mission_upload_enabled": payload.mission_upload_enabled,
         "flight_commands_enabled": payload.flight_commands_enabled,
         "mission_start_enabled": payload.mission_start_enabled,
+        "vehicle_arm_enabled": payload.vehicle_arm_enabled,
         "connection_error": payload.connection_error,
     }
     return hashlib.sha256(json.dumps(critical, sort_keys=True).encode()).hexdigest()
@@ -159,6 +160,7 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         mission_upload_enabled=snapshot.mission_upload_enabled,
         flight_commands_enabled=snapshot.flight_commands_enabled,
         mission_start_enabled=snapshot.mission_start_enabled,
+        vehicle_arm_enabled=snapshot.vehicle_arm_enabled,
         connection_error=snapshot.connection_error,
         critical_state_hash=snapshot.critical_state_hash,
         captured_at=snapshot.captured_at,
@@ -228,6 +230,7 @@ def record_heartbeat(
         mission_upload_enabled=payload.mission_upload_enabled,
         flight_commands_enabled=payload.flight_commands_enabled,
         mission_start_enabled=payload.mission_start_enabled,
+        vehicle_arm_enabled=payload.vehicle_arm_enabled,
         connection_error=payload.connection_error,
         critical_state_hash=_critical_hash(payload),
         captured_at=now,

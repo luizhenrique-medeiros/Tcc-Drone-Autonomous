@@ -2,15 +2,19 @@
 
 ## Confiança e direção
 
-O gateway chama a API por HTTPS/rede controlada usando `X-Gateway-API-Key`; nunca acessa PostgreSQL. O backend decide elegibilidade/autorização; ArduPilot decide estado físico em execução. Todo request crítico carrega correlação e identificador idempotente.
+O gateway chama a API por HTTPS/rede controlada usando `X-Gateway-API-Key` e `X-Gateway-ID`;
+o backend vincula a identidade ao `GATEWAY_ID` configurado e não confia no ID autodeclarado do
+payload. O gateway nunca acessa PostgreSQL. O backend decide elegibilidade/autorização; ArduPilot
+decide estado físico em execução. Todo request crítico carrega correlação e identificador idempotente.
 
 ## Ciclo
 
 ```text
 heartbeat → listar AUTHORIZED → claim atômico → preflight local
 → upload started → MAVLink upload/ACK → UPLOADED
-→ releitura/comparação → VERIFIED → operador arma fisicamente
-→ START administrativo + revalidação → EXECUTING
+→ releitura/comparação → VERIFIED → ARM administrativo normal
+→ COMMAND_ACK + heartbeat armed → START administrativo separado
+→ revalidação → EXECUTING
 → PAUSE/CONTINUE opcionais → telemetria/eventos → entrega → retorno → conclusão
 ```
 
@@ -18,7 +22,7 @@ heartbeat → listar AUTHORIZED → claim atômico → preflight local
 
 O aceite mundial do ponto no checkout não amplia o raio operacional: antes de upload ou início, o gateway rejeita a missão cuja rota ou waypoints excedam `MAX_MISSION_DISTANCE_M`.
 
-Solicitações administrativas de `START`, `PAUSE`, `CONTINUE`, `RTL` ou `ABORT` viram comandos persistidos. O gateway consulta `/gateway/commands/pending`, rejeita comando acima de `GATEWAY_COMMAND_MAX_AGE_SECONDS`, acusa recebimento e publica `COMPLETED` ou `FAILED` por `event_id`; a transição física da missão continua sendo reportada separadamente. Um comando para missão que o processo não reconhece como ativa falha e exige intervenção, em vez de agir sobre veículo incerto.
+Solicitações administrativas de ARM, `START`, `PAUSE`, `CONTINUE`, `RTL` ou `ABORT` viram comandos persistidos. ARM só entra por `POST /api/v1/admin/missions/{id}/arm`; o endpoint genérico recusa essa ação. O gateway consulta `/gateway/commands/pending`, rejeita comando acima de `GATEWAY_COMMAND_MAX_AGE_SECONDS`, acusa recebimento e publica `COMPLETED` ou `FAILED` por `event_id`; a transição física da missão continua sendo reportada separadamente. Um comando para missão que o processo não reconhece como ativa falha e exige intervenção, em vez de agir sobre veículo incerto.
 
 ## DTO de saúde
 
@@ -57,11 +61,12 @@ Solicitações administrativas de `START`, `PAUSE`, `CONTINUE`, `RTL` ou `ABORT`
   "mission_upload_enabled": false,
   "flight_commands_enabled": false,
   "mission_start_enabled": false,
+  "vehicle_arm_enabled": false,
   "connection_error": null
 }
 ```
 
-`source` é sempre um dos valores `UNKNOWN`, `SIMULATION`, `SITL` ou `HARDWARE_REAL`; somente o gateway determina essa origem a partir do modo configurado. `received_at` é carimbado no servidor e `is_stale` é derivado do limite de frescor. Ausência/desatualização não vira `connected=true`. Campo desconhecido é `null` e falha na verificação que o exige.
+`source` é sempre um dos valores `UNKNOWN`, `SIMULATION`, `SITL` ou `HARDWARE_REAL`; somente o gateway determina essa origem a partir do modo configurado. `received_at` é carimbado no servidor e `is_stale` é derivado do limite de frescor. Ausência/desatualização não vira `connected=true`. Campo desconhecido é `null` e falha na verificação que o exige. `gps_fix_type` aceita todo o enum `GPS_FIX_TYPE` padronizado pelo MAVLink, de `0` a `8`; a elegibilidade continua exigindo valor `3` ou superior e o mínimo configurado de satélites.
 
 ## Telemetria normalizada
 
@@ -70,13 +75,31 @@ Solicitações administrativas de `START`, `PAUSE`, `CONTINUE`, `RTL` ou `ABORT`
 ## Estado e mapeamento
 
 - upload: `UPLOADING → UPLOADED` somente após ACK; `UPLOADED → VERIFIED` somente após releitura/comparação integral; timeout, ACK negativo ou divergência nunca viram sucesso;
-- início: `VERIFIED → EXECUTING` exige `START` persistido, heartbeat/preflight atuais, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e veículo já armado pelo operador; o gateway não arma;
+- armamento: missão permanece `VERIFIED`/em espera; ARM normal exige missão ativa/reivindicada, heartbeat/preflight atuais, origem `SITL` ou `HARDWARE_REAL`, modo `STABILIZE`, veículo desarmado e `ALLOW_VEHICLE_ARM=true`, `ALLOW_FLIGHT_COMMANDS=true` e `ALLOW_MISSION_START=true`; receber/persistir o comando não significa que o veículo armou;
+- início: `VERIFIED → EXECUTING` exige `START` persistido, heartbeat/preflight atuais, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e heartbeat já confirmando `armed=true`; `START` não inclui ARM;
 - pausa: estados executáveis → `PAUSED` somente após ACK de `MAV_CMD_DO_PAUSE_CONTINUE`; `CONTINUE` só é permitido em `PAUSED` e retorna a `EXECUTING` após ACK;
 - execução: `DESTINATION_REACHED` exige o item de destino; `DELIVERY_CONFIRMED` significa somente que a sequência `MAV_CMD_DO_GRIPPER` foi alcançada/ultrapassada e **não comprova a entrega física do pacote**; `RETURNING` exige o início do retorno; `COMPLETED` exige `LAND` final alcançado, veículo desarmado e posição fresca próxima da origem;
 - abortamento: `ABORTED` registra comando/resultado/estado físico;
 - RTL é comando operacional e evento; não deve falsificar entrega/conclusão.
 
 O gateway propõe no máximo uma transição operacional por ciclo, não pula revisão/autorização e não reenvia missão terminal/consumida. O progresso e o `event_id` pendente ficam em journal atômico persistente para retomada idempotente.
+
+## Armamento normal
+
+O backend só cria ARM para missão `VERIFIED`, já reivindicada pelo gateway ligado ao mesmo veículo, e depois de validar o payload administrativo estrito, o snapshot fresco/completo e os três gates operacionais. O gateway repete identidade, fase, idade, origem, saúde, preflight, modo e gates antes de transmitir. Qualquer valor ausente, nulo, stale ou divergente falha fechado.
+
+Antes da escrita MAVLink, o gateway persiste `ACKNOWLEDGED`, distinguindo “recebi a solicitação” de “o veículo armou”. A única transmissão permitida é:
+
+```text
+MAV_CMD_COMPONENT_ARM_DISARM
+param1 = 1   # arm normal
+param2 = 0   # sem force/bypass
+param3..7 = 0
+```
+
+Não há comando de safety-off, mudança de modo, alteração de parâmetro nem valor mágico de force. O ACK é aceito somente quando corresponde ao comando e aos alvos da transação; `MAV_RESULT_IN_PROGRESS` mantém a espera pelo resultado final. `MAV_RESULT_ACCEPTED` ainda não conclui ARM: o gateway aguarda um heartbeat posterior do autopiloto alvo com `MAV_MODE_FLAG_SAFETY_ARMED`, publica imediatamente esse health no backend e só então solicita `COMPLETED`. O backend também exige esse snapshot novo/fresco com `armed=true` e origem permitida antes de aceitar a conclusão.
+
+Retry de transporte, quando aplicável, é limitado à mesma transação ainda sem resultado. Depois de timeout, ACK negativo, falha ou resultado incerto, não há nova tentativa lógica nem rearmamento automático. Na reconciliação, ARM `PENDING` que encontra `armed=true` é concluído sem nova escrita; ARM `ACKNOWLEDGED` após restart só conclui se o heartbeat atual confirma `armed=true`, caso contrário falha como resultado incerto e não é reenviado. Desarmamento posterior atualiza telemetria/evento e nunca dispara ARM.
 
 ## Timeouts, retry e reconexão
 
@@ -86,17 +109,22 @@ O gateway propõe no máximo uma transição operacional por ciclo, não pula re
 - após queda do backend, o ArduPilot mantém a missão; ao reconectar, o gateway publica snapshot e reconcilia sem reexecutar;
 - se `PAUSE`/`CONTINUE` foi confirmado pelo veículo e a publicação HTTP falhou, a fase persistida
   permite concluir o mesmo comando `ACKNOWLEDGED` sem reenviá-lo ao autopiloto;
+- se ARM ficou `ACKNOWLEDGED`, a retomada usa apenas heartbeat para reconciliar; ausência de `armed=true` falha sem reenvio;
 - perda MAVLink gera alerta e segue failsafe/configuração do veículo, nunca alteração automática de parâmetros.
 
 Um componente MAVLink difunde heartbeat periodicamente, normalmente perto de 1 Hz. O gateway usa o heartbeat recebido do alvo para presença/frescor e não confunde seu próprio heartbeat de GCS com o do autopiloto. No diagnóstico somente leitura não há transmissão do gateway. Quando uma sessão bidirecional for autorizada, heartbeat de GCS usa source system/component próprios e não altera o alvo configurado.
 
 `MAV_CMD_SET_MESSAGE_INTERVAL` é um comando e exige `COMMAND_ACK`; não faz parte do diagnóstico passivo. Em operação bidirecional, Mission Planner ou gateway deve ser o único responsável pelas taxas para evitar disputa com `REQUEST_DATA_STREAM`. Todo comando permitido casa o ACK com comando/alvo; `MAV_RESULT_ACCEPTED` é aceite, `MAV_RESULT_IN_PROGRESS` exige aguardar o ACK final, e ausência/resultado negativo após retry é falha.
 
-No Mission Protocol, upload segue `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` → `MISSION_ACK` aceito. A verificação baixa a missão com `MISSION_REQUEST_LIST` → `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` e emite o ACK final do receptor. Tipo, sequência, contagem e alvo são conferidos; `MISSION_REQUEST`/`MISSION_ITEM` são legados e não são originados pelo gateway. Toda espera possui timeout/retry limitado; como referência de interoperabilidade, a especificação recomenda 1500 ms no geral, 250 ms para itens e no máximo cinco tentativas. Esgotamento cancela a operação e retorna a idle sem publicar sucesso.
+No Mission Protocol, upload segue `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` → `MISSION_ACK` aceito. A verificação baixa a missão com `MISSION_REQUEST_LIST` → `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` e emite o ACK final do receptor. Tipo, sequência, contagem e alvo são conferidos; `MISSION_REQUEST`/`MISSION_ITEM` são legados e não são originados pelo gateway, mas um `MISSION_REQUEST` legado recebido durante o upload é atendido com `MISSION_ITEM_INT`. Toda espera possui timeout/retry limitado; como referência de interoperabilidade, a especificação recomenda 1500 ms no geral, 250 ms para itens e no máximo cinco tentativas. Esgotamento cancela a operação e retorna a idle sem publicar sucesso.
 
 ## Modos
 
 `simulation` usa fake determinístico, sem socket, e publica `SIMULATION`. `sitl` usa Pymavlink com conexão de desenvolvimento e publica `SITL`. Para compatibilidade, `real` continua representando hardware com conexão explícita; as duas topologias reais preferidas são `direct` e `mission_planner_forward`, ambas publicando `HARDWARE_REAL` somente a partir de amostras ao vivo. O mesmo DTO é usado, mas evidências permanecem rotuladas; valor ausente ou legado é `UNKNOWN` e nunca recebe prontidão operacional.
+
+No Compose, `GATEWAY_RUNTIME=container` usa variáveis `GATEWAY_CONTAINER_*` separadas e recusa
+`real`, `direct` e `mission_planner_forward`. O launcher Windows define runtime host; somente ele
+pode abrir COM7 ou o endpoint local encaminhado pelo Mission Planner.
 
 ```text
 direct:
@@ -114,11 +142,17 @@ mission_planner_forward:
 
 No estado observado, o Mission Planner possuía um listener AutoConnect **Mavlink alt port**, UDP 14551, direção **Inbound**. Ele recebe tráfego destinado ao Mission Planner e não encaminha a `COM7`; precisa ser desabilitado para o gateway conseguir fazer bind em `udpin:127.0.0.1:14551`. O mirror só é iniciado depois de o Mission Planner conectar à `COM7` a 57600.
 
-O baseline de leitura mantém `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false`. Nesse estado, não se envia heartbeat de GCS, pedido de intervalo, missão, comando, modo ou armamento. Registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** no mirror e definir `ALLOW_MISSION_UPLOAD=true` requer sessão posterior autorizada e permite somente upload/releitura desarmados; `ALLOW_FLIGHT_COMMANDS=false` e `ALLOW_MISSION_START=false` continuam bloqueando comandos e início. Mesmo em etapa futura, o software não envia armamento.
+O baseline de leitura mantém `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. Nesse estado, não se envia heartbeat de GCS, pedido de intervalo, missão, comando, modo ou armamento. Registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** no mirror e definir `ALLOW_MISSION_UPLOAD=true` requer sessão posterior autorizada e permite somente upload/releitura desarmados; os outros três gates continuam falsos. Uma sessão posterior de ARM exige habilitar deliberadamente `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, além de satisfazer todos os checks; esses valores nunca são inferidos de ambiente, conexão ou estado da UI.
 
 No adaptador MAVLink, `MAVLINK_TARGET_SYSTEM_ID` e `MAVLINK_TARGET_COMPONENT_ID` filtram globalmente todas as mensagens operacionais. Fora do diagnóstico passivo e somente com escrita autorizada, o gateway pode solicitar `AUTOPILOT_VERSION` e intervalos dos tipos de telemetria necessários, sem alterar parâmetros de segurança. A conexão serial usa porta e baud explícitos; `python -m app.tools.list_ports` lista candidatas sem selecionar uma automaticamente.
 
-Para auditoria, cada amostra registra fonte e frescor. Em 17 de agosto de 2026, a primeira tentativa direta encontrou a COM7 ocupada pelo Mission Planner. Depois de liberar a porta, dois diagnósticos passivos receberam heartbeat real de `sysid=1`, `compid=1`, modo `STABILIZE` e `armed=false`; um ciclo limitado publicou sete heartbeats normalizados no backend. Não foram solicitados intervalos nem enviados missão/comandos. Ao final, o link foi desconectado: não havia porta serial nem listeners UDP 14550/14551, o Mission Planner estava fechado e o diagnóstico terminou com `VEHICLE_PORT_NOT_FOUND`/exit 2. O snapshot atual é `HARDWARE_REAL`, `ERROR`, modo `direct`, COM7/57600 e três gates falsos. Forwarding, GPS/bateria/EKF/home ao vivo, upload/releitura, armamento e voo permanecem não comprovados.
+Para auditoria, cada amostra registra fonte e frescor. Em 20 de agosto de 2026, uma sessão
+receive-only direta em COM7/57600 publicou 129 snapshots `HARDWARE_REAL`: alvo `1/1`,
+`STABILIZE`, `armed=false`, bateria 74–75%, GPS máximo fix 3/5 satélites e final fix 1/0,
+EKF/preflight falsos e home/origin ausentes. REST/WS refletiram a origem e, após parar,
+`is_stale=true`. Nenhum intervalo, missão, comando ou byte de escrita foi enviado. O forwarding
+14551 expirou sem heartbeat porque estava configurado como Inbound. Upload/releitura, ensaio de
+motor, armamento e voo permanecem não comprovados.
 
 ## Abortamento e RTL
 

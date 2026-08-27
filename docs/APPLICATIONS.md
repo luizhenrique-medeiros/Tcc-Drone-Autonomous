@@ -47,7 +47,7 @@ O mapa administrativo usa MapLibre GL JS e o estilo `MAPTILER_STYLE_URL`. `MAPTI
   -MapTilerConfigured
 ```
 
-O perfil `local_web` usa `http://127.0.0.1:8000` e publica em `http://127.0.0.1:5174`; no emulador Android, `10.0.2.2` alcança o host. Dispositivo físico exige IP LAN explícito e a API exposta conscientemente com `API_BIND_ADDRESS=0.0.0.0`.
+O perfil `local_web` usa `http://localhost:8000` e publica em `http://localhost:5174`; no emulador Android, `10.0.2.2` alcança o host. Dispositivo físico exige IP LAN explícito e a API exposta conscientemente com `API_BIND_ADDRESS=0.0.0.0`.
 
 `MAP_PROVIDER=maptiler` seleciona a integração. As chaves `MAPTILER_WEB_API_KEY`, `MAPTILER_ANDROID_API_KEY` e `MAPTILER_SERVER_API_KEY` ficam somente no ambiente/configuração local, nunca no Git. Web é restrita por origem; Android deve usar chave separada e só restringir o `User-Agent` depois de observá-lo/validá-lo no aparelho; servidor não é reutilizado nos clientes.
 
@@ -64,7 +64,7 @@ python -m venv .venv
 
 `simulation` é o padrão. `sitl` usa UDP. No Windows, `direct` abre a porta configurada em `MAVLINK_CONNECTION`; `mission_planner_forward` recebe o mirror configurado em `MAVLINK_FORWARD_CONNECTION`. O valor legado `real` continua aceito, mas as duas topologias explícitas são preferidas.
 
-Hardware inicia somente em recepção com `REAL_HARDWARE_ACKNOWLEDGED=false`. Upload, comandos e start são gates separados por `ALLOW_MISSION_UPLOAD`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, todos falsos por padrão. `ALLOW_MISSION_START=true` também exige o gate geral de comandos. O gateway nunca arma: `START` requer veículo já armado pelo operador; `PAUSE`/`CONTINUE` exigem ACK e estado compatível. Consulte [setup Mission Planner/Pixhawk](MISSION_PLANNER_SETUP.md).
+Hardware inicia somente em recepção com `REAL_HARDWARE_ACKNOWLEDGED=false`. Upload, ARM normal, comandos e start são gates separados por `ALLOW_MISSION_UPLOAD`, `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, todos falsos por padrão. ARM só entra pelo fluxo administrativo dedicado de uma missão `VERIFIED`, exige os três gates de atuação verdadeiros e confirmação por ACK + heartbeat; `START` continua separado e nunca arma implicitamente. `PAUSE`/`CONTINUE` exigem ACK e estado compatível. Consulte [setup Mission Planner/Pixhawk](MISSION_PLANNER_SETUP.md).
 
 ## Compose
 
@@ -74,4 +74,9 @@ Hardware inicia somente em recepção com `REAL_HARDWARE_ACKNOWLEDGED=false`. Up
 docker compose --profile gateway up --build
 ```
 
-O profile Docker é adequado a `simulation`/SITL. Para `COM7` ou forwarding local no Windows, execute `scripts/start_gateway.ps1` no host; o container Linux não deve disputar a serial do Mission Planner. Testes automatizados nunca abrem hardware.
+No profile Docker, modo e conexão vêm exclusivamente de `GATEWAY_CONTAINER_MAVLINK_MODE` e `GATEWAY_CONTAINER_MAVLINK_CONNECTION`. A configuração versionada usa `simulation` e `udp:0.0.0.0:14550`; o processo recusa `real`, `direct` ou `mission_planner_forward` quando `GATEWAY_RUNTIME=container`. Para `COM7` ou forwarding local no Windows, execute `scripts/start_gateway.ps1` no host; o container Linux não disputa a serial do Mission Planner. Testes automatizados nunca abrem hardware.
+
+Para desenvolvimento completo, `scripts/start_development.ps1` sobe DB/backend/admin e inicia
+Flutter Web em primeiro plano; gateway não inicia por padrão. O gateway simulado exige os dois
+switches `-IncludeSimulationGateway -ConfirmSimulationGateway`. Use `-ValidateOnly` para validar
+sem iniciar serviços. Hardware continua em um segundo terminal pelo launcher host.

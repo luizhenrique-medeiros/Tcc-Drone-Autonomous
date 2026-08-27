@@ -43,6 +43,7 @@ describe('adaptação de dados operacionais', () => {
       heartbeat_age_seconds: null,
       current_latitude: null,
       mission_upload_enabled: null,
+      vehicle_arm_enabled: null,
       mission_start_enabled: null,
       authorization_limits: null,
     });
@@ -90,6 +91,7 @@ describe('adaptação de dados operacionais', () => {
         current_altitude_m: 12.5,
         mission_upload_enabled: false,
         flight_commands_enabled: false,
+        vehicle_arm_enabled: true,
         mission_start_enabled: false,
         connection_error: null,
       }),
@@ -108,6 +110,7 @@ describe('adaptação de dados operacionais', () => {
       current_altitude_m: 12.5,
       mission_upload_enabled: false,
       flight_commands_enabled: false,
+      vehicle_arm_enabled: true,
       mission_start_enabled: false,
       connection_error: null,
     });

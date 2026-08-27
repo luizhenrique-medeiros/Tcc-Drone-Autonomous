@@ -151,6 +151,13 @@ Referrer-Policy foram conferidos. O navegador visual estava indisponível, porta
 HTTP não repetem o smoke de mapa/tiles. A futura chave restrita ainda exige novo smoke Web e
 Android.
 
+Em 20 de agosto, o style respondeu 200 como JSON GL v8 `Satellite Hybrid` com 40 camadas, e o
+reverse geocoding respondeu 200 com 10 resultados. Admin/worker e Flutter Web também responderam
+200; o WebSocket recebeu `operations.connected`, mas não havia navegador integrado para validar
+renderização/console/tiles. As três variáveis MapTiler estavam presentes, porém compartilhavam o
+mesmo valor exposto; criar três chaves separadas/restritas, rebuildar e validar antes de revogar a
+antiga continua obrigatório.
+
 ## Testes esperados
 
 - backend: URL, ordem longitude/latitude, query, parser GeoJSON, país opcional, 403/429/timeout e filtragem da chave em erros/logs;

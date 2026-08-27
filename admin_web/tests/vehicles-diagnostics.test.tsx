@@ -48,6 +48,7 @@ describe('diagnóstico de integração do veículo', () => {
       heartbeat_age_seconds: 0.4,
       mission_upload_enabled: false,
       flight_commands_enabled: false,
+      vehicle_arm_enabled: false,
       mission_start_enabled: false,
     });
   });
@@ -64,9 +65,10 @@ describe('diagnóstico de integração do veículo', () => {
     expect(screen.getByText(/SYSID 1/)).toBeInTheDocument();
     expect(screen.getByText('Upload de missão')).toBeInTheDocument();
     expect(screen.getByText('Comandos de voo')).toBeInTheDocument();
+    expect(screen.getByText('Armamento remoto')).toBeInTheDocument();
     expect(screen.getByText('Início de missão')).toBeInTheDocument();
     expect(screen.getByText('WebSocket')).toBeInTheDocument();
-    expect(screen.getAllByText('DESABILITADO')).toHaveLength(3);
+    expect(screen.getAllByText('DESABILITADO')).toHaveLength(4);
 
     act(() => streamMock.onUpdate?.());
     await waitFor(() => expect(apiMocks.getVehicleHealth).toHaveBeenCalledTimes(2));

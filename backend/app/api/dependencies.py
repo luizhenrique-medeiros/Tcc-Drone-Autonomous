@@ -64,11 +64,15 @@ CustomerUser = Annotated[User, Depends(require_customer)]
 def require_gateway(
     settings: AppSettings,
     x_gateway_api_key: Annotated[str | None, Header(alias="X-Gateway-API-Key")] = None,
-) -> None:
+    x_gateway_id: Annotated[str | None, Header(alias="X-Gateway-ID")] = None,
+) -> str:
     if not x_gateway_api_key or not hmac.compare_digest(
         x_gateway_api_key, settings.gateway_api_key
     ):
         raise AuthenticationError("Credencial do gateway inválida")
+    if not x_gateway_id or not hmac.compare_digest(x_gateway_id, settings.gateway_id):
+        raise AuthenticationError("Identidade do gateway inválida")
+    return settings.gateway_id
 
 
-GatewayAuth = Annotated[None, Depends(require_gateway)]
+GatewayAuth = Annotated[str, Depends(require_gateway)]

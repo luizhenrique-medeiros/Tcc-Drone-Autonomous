@@ -6,6 +6,7 @@ from app.models import (
     MissionStatus,
     MissionVerificationResult,
     UploadResult,
+    VehicleArmResult,
     VehicleEvent,
     VehicleHealth,
     VehiclePoll,
@@ -32,6 +33,8 @@ class VehicleGateway(Protocol):
     ) -> UploadResult: ...
 
     async def verify_mission(self, mission: AuthorizedMission) -> MissionVerificationResult: ...
+
+    async def arm_vehicle(self) -> VehicleArmResult: ...
 
     async def start_mission(self, mission: AuthorizedMission) -> None: ...
 

@@ -18,7 +18,7 @@ class TelemetryCreate(BaseModel):
     relative_altitude_m: float = Field(ge=-100, le=1000)
     ground_speed_m_s: float = Field(ge=0, le=200)
     battery_percent: float | None = Field(default=None, ge=0, le=100)
-    gps_fix_type: int | None = Field(default=None, ge=0, le=6)
+    gps_fix_type: int | None = Field(default=None, ge=0, le=8)
     satellites: int | None = Field(default=None, ge=0, le=100)
     flight_mode: str | None = Field(default=None, max_length=40)
     armed: bool | None = None

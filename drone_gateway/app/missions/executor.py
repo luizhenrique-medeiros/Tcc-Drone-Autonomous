@@ -28,6 +28,7 @@ from app.models import (
     GatewayCommandType,
     HeartbeatResponse,
     MissionStatus,
+    OperationalSource,
     TelemetrySnapshot,
     VehicleEvent,
     VehicleHealth,
@@ -195,8 +196,18 @@ class MissionExecutor:
             raise ConfigurationError(
                 f"Fase desconhecida no journal do gateway: {record.phase}."
             ) from exc
+        claim = record.claim
+        if phase in {
+            ActivePhase.VERIFIED_PENDING_REPORT,
+            ActivePhase.WAITING_OPERATOR_ARM,
+        }:
+            claim = claim.model_copy(
+                update={
+                    "mission": claim.mission.model_copy(update={"status": MissionStatus.VERIFIED})
+                }
+            )
         return ActiveMission(
-            claim=record.claim,
+            claim=claim,
             phase=phase,
             pending_event_id=record.pending_event_id,
             upload_detail=record.upload_detail,
@@ -255,6 +266,10 @@ class MissionExecutor:
         if (
             heartbeat.vehicle.identifier != self._settings.vehicle_identifier
             or heartbeat.vehicle.gateway_id != self._settings.gateway_id
+            or (
+                self._backend_vehicle_id is not None
+                and heartbeat.vehicle.id != self._backend_vehicle_id
+            )
         ):
             raise BackendContractError(
                 "Heartbeat retornou identidade de veículo ou gateway diferente da solicitada."
@@ -364,6 +379,14 @@ class MissionExecutor:
                     "Gateway não possui esta missão como ativa; "
                     "intervenção do operador é necessária."
                 ),
+            )
+            return
+        if command.command is GatewayCommandType.ARM:
+            await self._process_arm_command(
+                command,
+                active,
+                health,
+                authorization_eligible=authorization_eligible,
             )
             return
         if command.command is GatewayCommandType.START and active.phase in {
@@ -537,6 +560,195 @@ class MissionExecutor:
         except GatewayError as exc:
             await self._backend.acknowledge_command(
                 command.id, GatewayCommandStatus.FAILED, detail=str(exc)
+            )
+
+    async def _process_arm_command(
+        self,
+        command: GatewayCommand,
+        active: ActiveMission,
+        health: VehicleHealth,
+        *,
+        authorization_eligible: bool,
+    ) -> None:
+        if command.status is GatewayCommandStatus.ACKNOWLEDGED:
+            if health.connected and health.heartbeat and health.armed is True:
+                await self._publish_arm_confirmation_health(health)
+                detail = (
+                    "Armamento confirmado por heartbeat após reinício; "
+                    "estado reconciliado sem reenvio."
+                )
+                status = GatewayCommandStatus.COMPLETED
+            else:
+                detail = (
+                    "Resultado anterior de ARM é incerto e armed=true não foi confirmado; "
+                    "o gateway não reenviará o comando automaticamente."
+                )
+                status = GatewayCommandStatus.FAILED
+            await self._backend.acknowledge_command(command.id, status, detail=detail)
+            return
+
+        requested_at = command.requested_at
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+        if self._now() - requested_at > timedelta(
+            seconds=self._settings.gateway_command_max_age_seconds
+        ):
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="Comando ARM expirado; solicite uma nova ação administrativa.",
+            )
+            return
+
+        armable_phases = {
+            ActivePhase.VERIFIED_PENDING_REPORT,
+            ActivePhase.WAITING_OPERATOR_ARM,
+        }
+        if (
+            active.phase not in armable_phases
+            or active.claim.mission.status is not MissionStatus.VERIFIED
+        ):
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail=(
+                    "ARM exige missão VERIFIED na fase local VERIFIED_PENDING_REPORT/"
+                    "WAITING_OPERATOR_ARM."
+                ),
+            )
+            return
+        if not (
+            self._settings.allow_vehicle_arm
+            and self._settings.allow_flight_commands
+            and self._settings.allow_mission_start
+        ):
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail=(
+                    "ARM exige ALLOW_VEHICLE_ARM, ALLOW_FLIGHT_COMMANDS e "
+                    "ALLOW_MISSION_START habilitados."
+                ),
+            )
+            return
+        if not health.connected or not health.heartbeat:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="ARM bloqueado: heartbeat MAVLink válido não está disponível.",
+            )
+            return
+
+        if health.armed is True:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.ACKNOWLEDGED,
+                detail=(
+                    "ARM reconciliado com veículo já armado; nenhum comando MAVLink foi enviado."
+                ),
+            )
+            await self._publish_arm_confirmation_health(health)
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.COMPLETED,
+                detail="Veículo já estava armado; estado reconciliado sem envio MAVLink.",
+            )
+            return
+
+        preflight = evaluate_preflight(
+            health,
+            active.claim,
+            self._settings,
+            now=self._now(),
+        )
+        if (
+            not authorization_eligible
+            or not self._mission_matches_vehicle(active.claim.mission)
+            or health.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}
+            or (health.flight_mode or "").strip().upper() != "STABILIZE"
+            or not preflight.passed
+        ):
+            failures = list(preflight.failures)
+            if not authorization_eligible:
+                failures.append("BACKEND_NOT_ELIGIBLE")
+            if not self._mission_matches_vehicle(active.claim.mission):
+                failures.append("VEHICLE_MISMATCH")
+            if health.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}:
+                failures.append("OPERATIONAL_SOURCE_NOT_ALLOWED")
+            if (health.flight_mode or "").strip().upper() != "STABILIZE":
+                failures.append("ARMING_MODE_NOT_ALLOWED")
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail="ARM bloqueado pelo preflight final: " + ", ".join(dict.fromkeys(failures)),
+            )
+            return
+
+        await self._backend.acknowledge_command(
+            command.id,
+            GatewayCommandStatus.ACKNOWLEDGED,
+            detail="ARM recebido pelo gateway; nenhuma confirmação implica armamento.",
+        )
+
+        try:
+            arm_result = await self._vehicle.arm_vehicle()
+            confirmed_health = await self._vehicle.read_health()
+            if confirmed_health.armed is not True:
+                raise VehicleTimeoutError(
+                    "Adaptador retornou sem heartbeat confirmando armed=true."
+                )
+            if arm_result.command_sent:
+                if (
+                    not arm_result.command_acknowledged
+                    or not arm_result.armed_heartbeat_confirmed
+                    or arm_result.external_state_reconciled
+                ):
+                    raise UnsafeOperationError(
+                        "Adaptador retornou evidência inconsistente para ARM enviado."
+                    )
+                completion_detail = (
+                    "COMMAND_ACK correlacionado e heartbeat novo confirmaram armed=true."
+                )
+            else:
+                if (
+                    arm_result.command_acknowledged
+                    or not arm_result.armed_heartbeat_confirmed
+                    or not arm_result.external_state_reconciled
+                ):
+                    raise UnsafeOperationError(
+                        "Adaptador retornou reconciliação inconsistente de ARM externo."
+                    )
+                completion_detail = (
+                    "Heartbeat mostrou armamento externo durante a preparação; "
+                    "estado reconciliado sem enviar ARM e sem alegar COMMAND_ACK."
+                )
+        except GatewayError as exc:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail=f"ARM não foi confirmado: {exc}",
+            )
+            return
+
+        await self._publish_arm_confirmation_health(confirmed_health)
+        await self._backend.acknowledge_command(
+            command.id,
+            GatewayCommandStatus.COMPLETED,
+            detail=completion_detail,
+        )
+
+    async def _publish_arm_confirmation_health(self, health: VehicleHealth) -> None:
+        if not health.connected or not health.heartbeat or health.armed is not True:
+            raise VehicleTimeoutError(
+                "Publicação de ARM exige heartbeat fresco confirmando armed=true."
+            )
+        heartbeat = await self._backend.heartbeat(health)
+        if (
+            heartbeat.vehicle.identifier != self._settings.vehicle_identifier
+            or heartbeat.vehicle.gateway_id != self._settings.gateway_id
+        ):
+            raise BackendContractError(
+                "Heartbeat pós-armamento retornou identidade de veículo ou gateway diferente."
             )
 
     async def _claim_and_stage(
@@ -770,6 +982,13 @@ class MissionExecutor:
             )
             active.pending_event_id = uuid4()
             active.phase = ActivePhase.VERIFIED_PENDING_REPORT
+            active.claim = active.claim.model_copy(
+                update={
+                    "mission": active.claim.mission.model_copy(
+                        update={"status": MissionStatus.VERIFIED}
+                    )
+                }
+            )
             self._save_active()
             await self._continue_active(
                 health,
@@ -823,6 +1042,13 @@ class MissionExecutor:
                     self._save_active()
                 return
             active.phase = ActivePhase.VERIFIED_PENDING_REPORT
+            active.claim = active.claim.model_copy(
+                update={
+                    "mission": active.claim.mission.model_copy(
+                        update={"status": MissionStatus.VERIFIED}
+                    )
+                }
+            )
             active.pending_event_id = uuid4()
             active.upload_detail = verification.detail
             active.verification_failure_reported = False
@@ -848,9 +1074,8 @@ class MissionExecutor:
                 event_type="MISSION_VERIFIED_WAITING_OPERATOR_ARM",
                 severity="WARNING",
                 message=(
-                    "Missão enviada e verificada. O gateway nunca arma automaticamente; "
-                    "o início exige flags locais, armamento pelo operador e comando "
-                    "administrativo START explícito."
+                    "Missão enviada e verificada. Armamento e início continuam separados: "
+                    "cada ação exige seu gate local e comando administrativo explícito."
                 ),
             )
             return
