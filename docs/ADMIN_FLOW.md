@@ -22,7 +22,7 @@ Uma ação posterior prepara missão, exibe versão/hash/waypoints e oferece dow
 
 ## Saúde automática, confirmações físicas e segunda decisão
 
-Antes de autorizar, `AutomaticPreflightChecks` mostra conexão, origem da evidência, idade do heartbeat, modo, armamento, GPS/satélites, EKF, bateria, home, geofence, RTL, origem/destino/distância/altitude, versão e resultados preflight. Campo desconhecido é `--`, nunca zero/`false`. Cada linha é `PASS`, `WARNING` ou `BLOCKING`; snapshot vencido, origem desconhecida, campo obrigatório nulo, desconexão ou condição técnica insegura são bloqueantes. Um aviso permanece visível, mas não simula falha nem bloqueia quando o backend não o define como crítico. Os mínimos de GPS e bateria e a faixa de aviso de bateria chegam no próprio contrato de saúde; o React não mantém cópias desses limites configuráveis.
+Antes de autorizar, `AutomaticPreflightChecks` mostra conexão, origem da evidência, idade do heartbeat, modo, armamento, GPS/satélites, EKF, home, geofence, RTL, origem/destino/distância/altitude, versão e resultados preflight. Campo desconhecido é `--`, nunca zero/`false`. Cada linha é `PASS`, `WARNING` ou `BLOCKING`; snapshot vencido, origem desconhecida, campo obrigatório nulo, desconexão ou condição técnica insegura são bloqueantes. Um aviso permanece visível, mas não simula falha nem bloqueia quando o backend não o define como crítico. Os mínimos de GPS e bateria e a faixa de aviso de bateria chegam no próprio contrato de saúde; o React não mantém cópias desses limites configuráveis.
 
 O operador confirma somente três grupos que dependem de inspeção humana:
 

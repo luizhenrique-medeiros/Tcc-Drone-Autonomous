@@ -3,6 +3,20 @@ import { formatDateTime } from '../../utils/format';
 
 type MissionAuthorization = NonNullable<Mission['authorization']>;
 
+export const hasCurrentClaimAuthorization = (mission: Mission) => {
+  const authorization = mission.authorization;
+  return Boolean(
+    authorization?.status === 'CONSUMED' &&
+      authorization.consumed_at &&
+      authorization.mission_version === mission.version &&
+      Date.parse(authorization.expires_at) > Date.now(),
+  );
+};
+
+export const canAuthorizeMission = (mission: Mission) =>
+  mission.status === 'READY_FOR_AUTHORIZATION' ||
+  (mission.status === 'VERIFIED' && !hasCurrentClaimAuthorization(mission));
+
 export const authorizationTitle = (authorization: MissionAuthorization) => {
   const status =
     authorization.status ??

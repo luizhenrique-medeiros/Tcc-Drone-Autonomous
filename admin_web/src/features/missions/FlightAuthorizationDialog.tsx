@@ -132,7 +132,7 @@ export function FlightAuthorizationDialog({
   return (
     <Modal
       open={open}
-      title="Autorizar esta missão?"
+      title={mission.status === 'VERIFIED' ? 'Renovar autorização desta missão?' : 'Autorizar esta missão?'}
       onClose={onClose}
       closeDisabled={isSubmitting}
       footer={
@@ -145,7 +145,7 @@ export function FlightAuthorizationDialog({
             loading={isSubmitting}
             disabled={!canSubmit}
           >
-            <ShieldCheck size={18} /> Autorizar missão
+            <ShieldCheck size={18} /> {mission.status === 'VERIFIED' ? 'Renovar autorização' : 'Autorizar missão'}
           </Button>
         </>
       }
@@ -156,6 +156,8 @@ export function FlightAuthorizationDialog({
           <p>
             Ela fica vinculada à versão {mission.version}, ao veículo e ao operador abaixo.
             O backend repetirá as validações antes de emitir a autorização.
+            {mission.status === 'VERIFIED' &&
+              ' A rota verificada será preservada, sem novo upload. Esta renovação não arma nem inicia a missão.'}
           </p>
         </Feedback>
 

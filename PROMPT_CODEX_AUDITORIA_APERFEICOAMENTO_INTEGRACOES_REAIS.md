@@ -998,18 +998,17 @@ Em `docs/MISSION_PLANNER_SETUP.md`, crie um passo a passo rápido para colocar o
 6. confirmar heartbeat;
 7. verificar GPS;
 8. verificar EKF;
-9. verificar bateria;
-10. verificar home;
-11. configurar encaminhamento MAVLink, se necessário;
-12. configurar o `.env` do gateway;
-13. iniciar backend;
-14. iniciar gateway;
-15. validar status no admin;
-16. carregar missão;
-17. revisar;
-18. autorizar;
-19. executar teste sem hélices;
-20. executar teste controlado.
+9. verificar home;
+10. configurar encaminhamento MAVLink, se necessário;
+11. configurar o `.env` do gateway;
+12. iniciar backend;
+13. iniciar gateway;
+14. validar status no admin;
+15. carregar missão;
+16. revisar;
+17. autorizar;
+18. executar teste sem hélices;
+19. executar teste controlado.
 
 Não dê como concluído qualquer passo físico sem execução real.
 

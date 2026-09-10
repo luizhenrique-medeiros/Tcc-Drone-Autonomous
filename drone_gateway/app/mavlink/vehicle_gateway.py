@@ -5,6 +5,7 @@ from app.models import (
     ConnectionState,
     MissionStatus,
     MissionVerificationResult,
+    TelemetrySnapshot,
     UploadResult,
     VehicleArmResult,
     VehicleEvent,
@@ -25,6 +26,8 @@ class VehicleGateway(Protocol):
     async def connect(self) -> None: ...
 
     async def read_health(self) -> VehicleHealth: ...
+
+    async def read_telemetry(self) -> TelemetrySnapshot: ...
 
     async def drain_events(self) -> list[VehicleEvent]: ...
 

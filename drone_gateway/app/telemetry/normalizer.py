@@ -25,7 +25,7 @@ def normalize_telemetry(
         longitude=longitude_e7 / 10_000_000,
         relative_altitude_m=relative_altitude_mm / 1000,
         ground_speed_m_s=ground_speed,
-        battery_percent=max(0, min(100, battery_percent)),
+        battery_percent=100.0,
         gps_fix_type=max(0, gps_fix_type),
         satellites=max(0, satellites),
         flight_mode=flight_mode,

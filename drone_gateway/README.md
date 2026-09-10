@@ -6,6 +6,12 @@ receive-only e não autorizam upload nem comandos de voo.
 
 ## Segurança
 
+Para reconexão supervisionada no Windows, use `scripts/start_connections.ps1`
+conforme [Desenvolvimento](../docs/DEVELOPMENT.md). O supervisor inicia este
+gateway com `-ObserveOnly`, sem liberar upload, ARM ou START, e preserva o
+journal. A telemetria da missão `VERIFIED` é publicada enquanto aguarda operador;
+renovar autorização vencida no painel não envia comandos físicos.
+
 - o gateway nunca arma no startup, heartbeat, diagnóstico ou progressão automática; `ARM`
   existe somente como comando administrativo explícito e usa o armamento normal do ArduPilot;
 - `REAL_HARDWARE_ACKNOWLEDGED=false` torna `real`, `direct` e

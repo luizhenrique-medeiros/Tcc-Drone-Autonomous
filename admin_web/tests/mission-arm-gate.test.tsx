@@ -4,7 +4,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_ORDERS } from '../src/demo/data';
 import { MissionPage } from '../src/features/missions/MissionPage';
-import { readyHealth, readyMission, readyVehicle } from './fixtures';
+import { currentClaimAuthorization, readyHealth, readyMission, readyVehicle } from './fixtures';
 
 const apiMocks = vi.hoisted(() => ({
   getMission: vi.fn(),
@@ -48,6 +48,7 @@ const renderMissionWithNavigation = () =>
   );
 
 const verifiedArmMission = {
+  authorization: currentClaimAuthorization,
   ...readyMission,
   id: 'mission-arm',
   order_id: DEMO_ORDERS[0].id,
@@ -69,6 +70,14 @@ const pendingArmCommand = {
 };
 
 describe('barreira visual do armamento', () => {
+  it('oferece renovacao e bloqueia ARM com autorizacao consumida vencida', async () => {
+    apiMocks.getMission.mockResolvedValue({ ...verifiedArmMission,
+      authorization: { ...currentClaimAuthorization, expires_at: '2000-01-01T00:00:00Z' },
+    });
+    renderMission();
+    expect(await screen.findByRole('button', { name: 'Renovar autorização' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Solicitar armamento' })).toBeDisabled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     apiMocks.getMission.mockResolvedValue(verifiedArmMission);

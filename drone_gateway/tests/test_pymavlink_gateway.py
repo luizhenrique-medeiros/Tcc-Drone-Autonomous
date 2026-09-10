@@ -83,6 +83,17 @@ class AckAfterCommandConnection(FakeConnection):
         return super().recv_match(**kwargs)
 
 
+class QueuedArmConnection(AckAfterCommandConnection):
+    def __init__(self, backlog: list[FakeMessage], replies: list[FakeMessage]) -> None:
+        super().__init__(replies)
+        self.backlog = deque(backlog)
+
+    def recv_match(self, **kwargs: object) -> FakeMessage | None:
+        if kwargs.get("blocking") is False and self.backlog:
+            return self.backlog.popleft()
+        return super().recv_match(**kwargs)
+
+
 def fake_mavutil() -> SimpleNamespace:
     constants = SimpleNamespace(
         MAV_MISSION_ACCEPTED=0,
@@ -606,6 +617,185 @@ async def test_arm_terminal_rejection_is_not_retried() -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_consumes_burst_instead_of_publishing_old_head_of_queue() -> None:
+    gateway, connection = configured_gateway(
+        [FakeMessage("HEARTBEAT", base_mode=0, mode_string="STABILIZE")]
+        + [FakeMessage("ATTITUDE") for _ in range(1_200)]
+        + [
+            FakeMessage("GPS_RAW_INT", fix_type=3, satellites_visible=24),
+            FakeMessage("HEARTBEAT", base_mode=128, mode_string="AUTO"),
+        ]
+    )
+
+    health = await gateway.read_health()
+
+    assert not connection.messages
+    assert health.connected
+    assert health.satellites == 24
+    assert health.armed is True
+    assert health.flight_mode == "AUTO"
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("burst_size", [500, 501, 2_500])
+async def test_arm_consumes_finite_burst_and_requires_post_send_ack(burst_size: int) -> None:
+    gateway, _ = configured_arm_gateway(timeout=1, step_timeout=0.05)
+    connection = QueuedArmConnection(
+        [FakeMessage("ATTITUDE") for _ in range(burst_size)]
+        + [FakeMessage("COMMAND_ACK", command=400, result=0)],
+        [
+            FakeMessage("COMMAND_ACK", command=400, result=0),
+            FakeMessage("HEARTBEAT", base_mode=128, mode_string="STABILIZE"),
+        ],
+    )
+    gateway._connection = connection
+
+    result = await gateway.arm_vehicle()
+
+    assert not connection.backlog
+    assert result.command_sent and result.command_acknowledged
+    assert result.armed_heartbeat_confirmed
+    arm_calls = [args for name, args in connection.mav.calls if name == "command_long_send"]
+    assert len(arm_calls) == 1
+    assert arm_calls[0][2:] == (400, 0, 1, 0, 0, 0, 0, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_arm_large_burst_old_ack_is_not_confirmation_or_reason_to_resend() -> None:
+    gateway, _ = configured_arm_gateway(timeout=0.08, step_timeout=0.02)
+    connection = QueuedArmConnection(
+        [FakeMessage("ATTITUDE") for _ in range(700)]
+        + [FakeMessage("COMMAND_ACK", command=400, result=0)],
+        [FakeMessage("HEARTBEAT", base_mode=128, mode_string="STABILIZE")],
+    )
+    gateway._connection = connection
+
+    with pytest.raises(VehicleTimeoutError, match="resultado é incerto"):
+        await gateway.arm_vehicle()
+
+    assert not connection.backlog
+    assert len([name for name, _ in connection.mav.calls if name == "command_long_send"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail_state", ["preflight_failed", "wrong_mode", "already_armed"])
+async def test_arm_checks_latest_state_after_large_burst(tail_state: str) -> None:
+    gateway, _ = configured_arm_gateway(timeout=1)
+    tail = {
+        "preflight_failed": FakeMessage(
+            "SYS_STATUS",
+            battery_remaining=80,
+            voltage_battery=15000,
+            onboard_control_sensors_health=0,
+        ),
+        "wrong_mode": FakeMessage("HEARTBEAT", base_mode=0, mode_string="AUTO"),
+        "already_armed": FakeMessage("HEARTBEAT", base_mode=128, mode_string="STABILIZE"),
+    }[tail_state]
+    connection = FakeConnection([FakeMessage("ATTITUDE") for _ in range(700)] + [tail])
+    gateway._connection = connection
+
+    if tail_state == "already_armed":
+        result = await gateway.arm_vehicle()
+        assert result.external_state_reconciled and not result.command_sent
+    else:
+        with pytest.raises(UnsafeOperationError, match=r"preflight|STABILIZE"):
+            await gateway.arm_vehicle()
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["health", "arm"])
+async def test_receive_drain_deadline_blocks_continuous_stream_without_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    clock = [1_000.0]
+
+    class ContinuousConnection(FakeConnection):
+        read_count = 0
+
+        def recv_match(self, **kwargs: object) -> FakeMessage:
+            assert kwargs.get("blocking") is False
+            self.read_count += 1
+            clock[0] += 0.02
+            return FakeMessage("HEARTBEAT", base_mode=0, mode_string="STABILIZE")
+
+    gateway, _ = configured_arm_gateway(timeout=0.08)
+    connection = ContinuousConnection()
+    gateway._connection = connection
+    monkeypatch.setattr(
+        "app.mavlink.pymavlink_gateway.time",
+        SimpleNamespace(monotonic=lambda: clock[0]),
+    )
+
+    if operation == "arm":
+        with pytest.raises(UnsafeOperationError, match="fila MAVLink"):
+            await gateway.arm_vehicle()
+    else:
+        health = await gateway.read_health()
+        assert not health.connected and not health.heartbeat
+        assert health.connection_state is ConnectionState.STALE
+        assert "fila MAVLink" in (health.connection_error or "")
+    assert connection.read_count <= 6
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
+async def test_receive_drain_packet_cap_fails_closed_then_recovers_when_queue_empties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.mavlink.pymavlink_gateway.time",
+        SimpleNamespace(monotonic=lambda: 1_000.0),
+    )
+    gateway, connection = configured_gateway(
+        [FakeMessage("HEARTBEAT", base_mode=0, mode_string="STABILIZE")]
+        + [FakeMessage("ATTITUDE") for _ in range(10_100)]
+    )
+
+    health = await gateway.read_health()
+    assert not health.connected and not health.heartbeat
+    assert health.armed is None
+    assert health.connection_state is ConnectionState.STALE
+    assert len(connection.messages) == 101
+    with pytest.raises(VehicleTimeoutError, match="heartbeat"):
+        await gateway.upload_mission(mission_with_one_waypoint(), "unused")
+
+    connection.messages.append(FakeMessage("HEARTBEAT", base_mode=0, mode_string="STABILIZE"))
+    health = await gateway.read_health()
+    assert health.connected and health.armed is False
+    assert health.connection_error is None
+    assert not connection.messages
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
+async def test_arm_packet_cap_blocks_unending_fast_stream_without_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ContinuousConnection(FakeConnection):
+        read_count = 0
+
+        def recv_match(self, **kwargs: object) -> FakeMessage:
+            assert kwargs.get("blocking") is False
+            self.read_count += 1
+            return FakeMessage("ATTITUDE")
+
+    gateway, _ = configured_arm_gateway()
+    connection = ContinuousConnection()
+    gateway._connection = connection
+    monkeypatch.setattr(
+        "app.mavlink.pymavlink_gateway.time",
+        SimpleNamespace(monotonic=lambda: 1_000.0),
+    )
+    with pytest.raises(UnsafeOperationError, match="nenhum ARM foi enviado"):
+        await gateway.arm_vehicle()
+    assert connection.read_count == 10_000
+    assert not any(name == "command_long_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
 async def test_arm_missing_ack_has_bounded_same_transaction_retries() -> None:
     gateway, connection = configured_arm_gateway(
         timeout=0.06,
@@ -700,6 +890,239 @@ def test_upload_filters_source_and_verifies_downloaded_content() -> None:
     assert "mission_clear_all_send" not in call_names
 
 
+def downloaded_waypoint(
+    waypoint: MissionWaypoint,
+    *,
+    message_type: str = "MISSION_ITEM_INT",
+    **changes: object,
+) -> FakeMessage:
+    scale = 10_000_000 if message_type == "MISSION_ITEM_INT" else 1
+    fields: dict[str, object] = {
+        "seq": waypoint.sequence,
+        "frame": waypoint.frame,
+        "command": waypoint.command,
+        "current": 0,
+        "autocontinue": waypoint.autocontinue,
+        "param1": waypoint.param1,
+        "param2": waypoint.param2,
+        "param3": waypoint.param3,
+        "param4": waypoint.param4,
+        "x": round(waypoint.latitude * scale) if scale != 1 else waypoint.latitude,
+        "y": round(waypoint.longitude * scale) if scale != 1 else waypoint.longitude,
+        "z": waypoint.altitude_m,
+    }
+    fields.update(changes)
+    return FakeMessage(message_type, **fields)
+
+
+@pytest.mark.parametrize("message_type", ["MISSION_ITEM_INT", "MISSION_ITEM"])
+@pytest.mark.parametrize("frames", [(0, 5), (3, 6), (10, 11)])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_readback_accepts_only_equivalent_global_frames(
+    message_type: str, frames: tuple[int, int], reverse: bool
+) -> None:
+    expected_frame, actual_frame = frames[::-1] if reverse else frames
+    waypoint = canonical_mission().waypoints[2].model_copy(update={"frame": expected_frame})
+    gateway, _connection = configured_gateway()
+
+    gateway._verify_downloaded_waypoint(
+        downloaded_waypoint(waypoint, message_type=message_type, frame=actual_frame), waypoint
+    )
+
+
+@pytest.mark.parametrize("current", [0, 1])
+def test_readback_current_is_runtime_state(current: int) -> None:
+    waypoint = canonical_mission().waypoints[2].model_copy(update={"current": 1 - current})
+    gateway, _connection = configured_gateway()
+
+    gateway._verify_downloaded_waypoint(downloaded_waypoint(waypoint, current=current), waypoint)
+
+
+@pytest.mark.parametrize("frame", [0, 2, 3, 6])
+def test_readback_gripper_accepts_nonpositional_frame_without_ignoring_parameters(
+    frame: int,
+) -> None:
+    waypoint = canonical_mission().waypoints[4]
+    gateway, _connection = configured_gateway()
+    actual = downloaded_waypoint(waypoint, frame=frame, x=0, y=0, z=0)
+
+    gateway._verify_downloaded_waypoint(actual, waypoint)
+    actual.param2 = 1
+    with pytest.raises(MissionUploadError, match="param2"):
+        gateway._verify_downloaded_waypoint(actual, waypoint)
+
+
+@pytest.mark.parametrize("message_type", ["MISSION_ITEM_INT", "MISSION_ITEM"])
+@pytest.mark.parametrize(("sequence", "field"), [(3, "param3"), (6, "param4")])
+def test_readback_accepts_arducopter_default_direction_encoding(
+    sequence: int, field: str, message_type: str
+) -> None:
+    waypoint = canonical_mission().waypoints[sequence]
+    assert getattr(waypoint, field) == 0
+    gateway, _connection = configured_gateway()
+
+    gateway._verify_downloaded_waypoint(
+        downloaded_waypoint(waypoint, message_type=message_type, **{field: 1.0}), waypoint
+    )
+
+
+@pytest.mark.parametrize(("sequence", "field"), [(3, "param3"), (6, "param4")])
+@pytest.mark.parametrize("value", [-1.0, 2.0, float("nan"), float("inf")])
+def test_readback_rejects_other_default_direction_changes(
+    sequence: int, field: str, value: float
+) -> None:
+    waypoint = canonical_mission().waypoints[sequence]
+    gateway, _connection = configured_gateway()
+
+    with pytest.raises(MissionUploadError, match=field):
+        gateway._verify_downloaded_waypoint(
+            downloaded_waypoint(waypoint, **{field: value}), waypoint
+        )
+
+
+@pytest.mark.parametrize(("sequence", "field"), [(3, "param3"), (6, "param4")])
+@pytest.mark.parametrize("planned", [-1.0, 2.0])
+def test_readback_does_not_normalize_nondefault_planned_parameters(
+    sequence: int, field: str, planned: float
+) -> None:
+    waypoint = canonical_mission().waypoints[sequence].model_copy(update={field: planned})
+    gateway, _connection = configured_gateway()
+
+    with pytest.raises(MissionUploadError, match=field):
+        gateway._verify_downloaded_waypoint(downloaded_waypoint(waypoint, **{field: 1.0}), waypoint)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seq", 3),
+        ("frame", 0),
+        ("frame", 5),
+        ("frame", 10),
+        ("frame", 11),
+        ("frame", 2),
+        ("command", 21),
+        ("current", 2),
+        ("autocontinue", 0),
+        ("param1", 1.0),
+        ("param2", 1.0),
+        ("param3", 1.0),
+        ("param4", 1.0),
+        ("param4", float("nan")),
+        ("x", -231190000),
+        ("y", -465520000),
+        ("z", 10.1),
+        ("z", float("nan")),
+    ],
+)
+def test_readback_still_rejects_changed_mission_content(field: str, value: object) -> None:
+    waypoint = canonical_mission().waypoints[2]
+    gateway, _connection = configured_gateway()
+    changes = {"frame": 6, field: value}
+
+    with pytest.raises(MissionUploadError):
+        gateway._verify_downloaded_waypoint(downloaded_waypoint(waypoint, **changes), waypoint)
+
+
+def ingest_test_home(gateway: PymavlinkVehicleGateway, waypoint: MissionWaypoint) -> None:
+    gateway._ingest_message(
+        FakeMessage(
+            "HOME_POSITION",
+            latitude=round(waypoint.latitude * 10_000_000),
+            longitude=round(waypoint.longitude * 10_000_000),
+            altitude=742_320,
+        )
+    )
+
+
+def test_readback_verifies_full_arducopter_mission_and_live_home() -> None:
+    mission = canonical_mission()
+    messages = [FakeMessage("MISSION_COUNT", count=len(mission.waypoints))]
+    for waypoint in mission.waypoints:
+        changes: dict[str, object] = {}
+        if waypoint.sequence == 0:
+            changes = {"frame": 0, "z": 742.32}
+        elif waypoint.command == 211:
+            changes = {"frame": 0, "x": 0, "y": 0, "z": 0}
+        elif waypoint.command == 19:
+            changes = {"param3": 1.0}
+        elif waypoint.command == 21:
+            changes = {"param4": 1.0}
+        messages.append(downloaded_waypoint(waypoint, **changes))
+    gateway, connection = configured_gateway(messages)
+    ingest_test_home(gateway, mission.waypoints[0])
+
+    gateway._verify_mission_sync(mission)
+
+    requests = [
+        args[2] for name, args in connection.mav.calls if name == "mission_request_int_send"
+    ]
+    assert requests == list(range(7))
+    assert connection.mav.calls[-1] == ("mission_ack_send", (1, 1, 0))
+    assert not any(
+        name in {"command_long_send", "mission_count_send"} for name, _ in connection.mav.calls
+    )
+
+
+@pytest.mark.parametrize("mismatch", ["count", "altitude"])
+def test_readback_never_acknowledges_a_mismatched_mission(mismatch: str) -> None:
+    mission = mission_with_one_waypoint()
+    messages = [
+        FakeMessage("MISSION_COUNT", count=2 if mismatch == "count" else 1),
+        downloaded_waypoint(mission.waypoints[0], z=30),
+    ]
+    gateway, connection = configured_gateway(messages)
+
+    with pytest.raises(MissionUploadError):
+        gateway._verify_mission_sync(mission)
+
+    assert not any(name == "mission_ack_send" for name, _ in connection.mav.calls)
+    assert gateway._verified == {}
+
+
+@pytest.mark.parametrize("frame", [0, 5])
+@pytest.mark.parametrize("message_type", ["MISSION_ITEM_INT", "MISSION_ITEM"])
+def test_readback_home_absolute_altitude_requires_fresh_matching_home(
+    frame: int, message_type: str
+) -> None:
+    waypoint = canonical_mission().waypoints[0]
+    gateway, _connection = configured_gateway()
+    actual = downloaded_waypoint(waypoint, message_type=message_type, frame=frame, z=742.32)
+
+    with pytest.raises(MissionUploadError):
+        gateway._verify_downloaded_waypoint(actual, waypoint)
+    ingest_test_home(gateway, waypoint)
+    gateway._verify_downloaded_waypoint(actual, waypoint)
+    gateway._last_message_monotonic["HOME_POSITION"] = time.monotonic() - 3600
+    with pytest.raises(MissionUploadError):
+        gateway._verify_downloaded_waypoint(actual, waypoint)
+
+
+@pytest.mark.parametrize(
+    "invalid_home", ["altitude", "latitude", "longitude", "missing", "nan", "reset"]
+)
+def test_readback_rejects_inconsistent_or_missing_home(invalid_home: str) -> None:
+    waypoint = canonical_mission().waypoints[0]
+    gateway, _connection = configured_gateway()
+    ingest_test_home(gateway, waypoint)
+    actual = downloaded_waypoint(waypoint, frame=0, z=742.32)
+    if invalid_home == "altitude":
+        actual.z = 743.0
+    elif invalid_home == "latitude":
+        gateway._origin_latitude = waypoint.latitude + 0.001
+    elif invalid_home == "longitude":
+        gateway._origin_longitude = waypoint.longitude + 0.001
+    elif invalid_home == "missing":
+        gateway._home_altitude_m = None
+    elif invalid_home == "nan":
+        gateway._home_altitude_m = float("nan")
+    else:
+        gateway._reset_live_state()
+
+    with pytest.raises(MissionUploadError):
+        gateway._verify_downloaded_waypoint(actual, waypoint)
+
+
 @pytest.mark.asyncio
 async def test_poll_rejects_stale_position_without_fabricating_timestamp() -> None:
     gateway, _connection = configured_gateway()
@@ -714,6 +1137,23 @@ async def test_poll_rejects_stale_position_without_fabricating_timestamp() -> No
         await gateway.poll_mission(mission_with_one_waypoint())
 
     assert gateway._last_position_recorded_at == old_sample
+
+
+@pytest.mark.asyncio
+async def test_passive_telemetry_preserves_timestamp_and_does_not_evaluate_progress() -> None:
+    gateway, connection = configured_gateway()
+    sample_time = set_fresh_position(gateway, -23.118, -46.551, armed=False)
+    gateway._settings = gateway._settings.model_copy(update={"allow_mission_upload": False})
+
+    def unexpected_progress(_mission: AuthorizedMission) -> None:
+        pytest.fail("A leitura passiva não pode avançar a missão.")
+
+    gateway._next_progress_status = unexpected_progress  # type: ignore[method-assign]
+    telemetry = await gateway.read_telemetry()
+    assert telemetry.recorded_at == sample_time
+    assert telemetry.armed is False
+    assert telemetry.latitude == -23.118
+    assert not any(name == "command_long_send" for name, _args in connection.mav.calls)
 
 
 @pytest.mark.asyncio

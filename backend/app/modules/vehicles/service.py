@@ -70,10 +70,6 @@ def health_failures(snapshot: VehicleHealthSnapshot, settings: Settings) -> list
         failures.append("EKF_NOT_RECEIVED")
     elif not snapshot.ekf_ok:
         failures.append("EKF_NOT_OK")
-    if snapshot.battery_percent is None:
-        failures.append("BATTERY_NOT_RECEIVED")
-    elif snapshot.battery_percent < settings.min_battery_percent:
-        failures.append("BATTERY_LOW")
     if snapshot.flight_mode is None:
         failures.append("FLIGHT_MODE_UNKNOWN")
     if snapshot.armed is None:

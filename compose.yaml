@@ -2,6 +2,7 @@ name: drone-delivery
 
 services:
   db:
+    restart: unless-stopped
     image: postgis/postgis:17-3.5
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-drone_delivery}
@@ -19,6 +20,7 @@ services:
       - "${DATABASE_BIND_ADDRESS:-127.0.0.1}:5432:5432"
 
   backend:
+    restart: unless-stopped
     build:
       context: ./backend
     env_file:
@@ -43,6 +45,7 @@ services:
       - "${API_BIND_ADDRESS:-127.0.0.1}:8000:8000"
 
   admin:
+    restart: unless-stopped
     build:
       context: ./admin_web
       args:

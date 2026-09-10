@@ -14,6 +14,7 @@ from app.models import (
     GatewayCommandStatus,
     HeartbeatResponse,
     MissionStatus,
+    RetiredVersionReleaseResult,
     TelemetrySnapshot,
     VehicleHealth,
 )
@@ -106,6 +107,16 @@ class BackendClient:
             json={"gateway_id": self._settings.gateway_id},
         )
         return self._model(ClaimResponse, response)
+
+    async def release_retired_version(
+        self, mission: AuthorizedMission
+    ) -> RetiredVersionReleaseResult:
+        response = await self._request(
+            "POST",
+            f"/api/v1/gateway/missions/{mission.id}/release-retired-version",
+            json={"version": mission.version, "mission_sha256": mission.mission_sha256},
+        )
+        return self._model(RetiredVersionReleaseResult, response)
 
     async def pending_commands(self, limit: int = 20) -> list[GatewayCommand]:
         response = await self._request(

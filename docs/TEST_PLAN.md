@@ -1,5 +1,37 @@
 # Plano de testes e evidências
 
+## Regressão de revisão de origem (10/09/2026)
+
+- Backend: artefato histórico completo, destino e altitude preservados, versão
+  incrementada, revisão/claim invalidados, idempotência, RBAC, coordenadas e
+  alcance, estado armado/vencido/incompleto, gates, comandos em andamento e START.
+- Handshake: autorização bloqueada antes da liberação, hash/gateway inválidos
+  recusados, reconhecimento idempotente e nova autoridade ligada à versão nova.
+- Gateway: journal só liberado em espera/observação, resposta vinculada,
+  interrupção/restart recuperável e releitura física após resposta. Nenhum ARM,
+  START, upload, parâmetro ou clear da missão física deve ocorrer na liberação.
+- Admin: confirmação desmarca ao editar coordenadas, destino não é enviado no
+  request, versão/hash vinculados e estados/gates bloqueados.
+- SITL deve comprovar a liberação do journal com veículo virtual desarmado e
+  missão física ainda legível; ACK HTTP com fixture não equivale a backend real.
+
+Regressões de 10/09/2026: `test_authorization_renewal.py` cobre nova autoridade,
+histórico preservado, replay e recusa por identidade/artefato, checklist,
+preflight, armamento e comando pendente/incerto. O executor testa renovação
+divergente/expirada/offline, journal e ausência de reupload/START; telemetria de
+espera não avança missão nem fabrica timestamp. O painel cobre renovação,
+prazo/versão, reconexão além de oito quedas e credenciais recusadas.
+
+Reconexão do cliente: `test_verified_mission_is_restored_on_customer_socket_reconnect`
+reproduz a ausência de `mission.status` inicial e verifica duas conexões com a
+mesma missão `VERIFIED`, hash preservado e nenhum comando gerado. O caso sem
+missão continua recebendo apenas `order.snapshot`/`pong`; propriedade e recusa
+de pedidos estrangeiros permanecem cobertas por `test_customer_orders.py`.
+
+Supervisor Windows: testar `-ValidateOnly`, segunda instância sem duplicação,
+reutilização de aplicações e recuperação após encerrar gateway/cliente. Fazer
+esse ensaio somente desarmado e com gates fechados; não comprova ARM ou voo.
+
 ## Camadas
 
 1. **Unitário:** domínio, schemas, widgets/componentes e gateway fake; sem hardware.

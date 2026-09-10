@@ -15,18 +15,23 @@ from app.core.enums import (
     GatewayCommandStatus,
     GatewayCommandType,
     MissionStatus,
+    OperationalSource,
     OrderStatus,
 )
 from app.core.exceptions import ConflictError, InvalidStateError, NotFoundError
 from app.database.types import point_ewkt
 from app.modules.approvals.models import FlightAuthorization
 from app.modules.delivery_points.models import DeliveryPoint
+from app.modules.delivery_points.service import haversine_distance_m
 from app.modules.missions.models import GatewayCommand, Mission, MissionWaypoint
 from app.modules.missions.schemas import (
     AdminMissionRead,
     FlightAuthorizationCreate,
     GatewayCommandAck,
     MissionAuthorizationRead,
+    MissionOriginRevision,
+    MissionRead,
+    RetiredVersionRelease,
     VehicleArmRequest,
 )
 from app.modules.orders.models import Order
@@ -205,6 +210,256 @@ def prepare_mission(session: Session, order: Order, admin: User, settings: Setti
     return mission
 
 
+def _revision_event_id(mission: Mission, version: int) -> str:
+    return f"origin-revision:{mission.id}:v{version}"
+
+
+def _release_event_id(mission: Mission, version: int) -> str:
+    return f"origin-release:{mission.id}:v{version}"
+
+
+def _require_revision_released(session: Session, mission: Mission) -> None:
+    revision = session.scalar(
+        select(SystemEvent).where(
+            SystemEvent.event_id == _revision_event_id(mission, mission.version)
+        )
+    )
+    if revision and revision.event_metadata.get("previous_gateway"):
+        release = session.scalar(
+            select(SystemEvent.id).where(
+                SystemEvent.event_id == _release_event_id(mission, mission.version - 1)
+            )
+        )
+        if not release:
+            raise ConflictError("Aguarde o gateway liberar a versão anterior em observação")
+
+
+def _require_observation(
+    session: Session, mission: Mission, settings: Settings
+) -> VehicleHealthSnapshot:
+    if not mission.vehicle_id:
+        raise ConflictError("A revisão de origem exige o veículo vinculado")
+    vehicle = session.get(Vehicle, mission.vehicle_id)
+    if not vehicle or vehicle.gateway_id != settings.gateway_id:
+        raise ConflictError("O veículo não pertence ao gateway configurado")
+    snapshot = latest_health(session, mission.vehicle_id)
+    if (
+        health_is_stale(snapshot, settings)
+        or snapshot.connected is not True
+        or snapshot.heartbeat is not True
+        or snapshot.armed is not False
+        or snapshot.flight_mode != "STABILIZE"
+        or snapshot.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}
+        or any(
+            getattr(snapshot, field) is not False
+            for field in (
+                "mission_upload_enabled",
+                "flight_commands_enabled",
+                "mission_start_enabled",
+                "vehicle_arm_enabled",
+            )
+        )
+    ):
+        raise ConflictError(
+            "Exige saúde fresca, STABILIZE desarmado e os quatro gates em observação"
+        )
+    pending = session.scalar(
+        select(GatewayCommand.id).where(
+            GatewayCommand.mission_id == mission.id,
+            GatewayCommand.status.in_(
+                {GatewayCommandStatus.PENDING, GatewayCommandStatus.ACKNOWLEDGED}
+            ),
+        )
+    )
+    if pending:
+        raise ConflictError("Há comando pendente ou com resultado incerto")
+    return snapshot
+
+
+def revise_mission_origin(
+    session: Session,
+    mission: Mission,
+    admin: User,
+    payload: MissionOriginRevision,
+    settings: Settings,
+    *,
+    commit: bool = True,
+) -> Mission:
+    mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    if mission.status not in {
+        MissionStatus.VERIFIED,
+        MissionStatus.GENERATED,
+        MissionStatus.EXPORTED_TO_MISSION_PLANNER,
+        MissionStatus.UNDER_REVIEW,
+        MissionStatus.READY_FOR_AUTHORIZATION,
+    }:
+        raise InvalidStateError("Somente missão em pré-voo pode ter a origem revisada")
+    if (mission.version, mission.mission_sha256) != (
+        payload.expected_version,
+        payload.expected_sha256,
+    ):
+        raise ConflictError("A versão da missão mudou; atualize a tela antes de revisar")
+    if not payload.position_confirmed:
+        raise ConflictError("Confirme o ponto definitivo de decolagem e retorno")
+    _require_revision_released(session, mission)
+    snapshot = _require_observation(session, mission, settings)
+    if health_failures(snapshot, settings):
+        raise ConflictError("A saúde atual do veículo não permite revisar a origem")
+    if mission.claimed_by_gateway not in (None, settings.gateway_id):
+        raise ConflictError("A missão pertence a outro gateway")
+    if session.scalar(
+        select(GatewayCommand.id).where(
+            GatewayCommand.mission_id == mission.id,
+            GatewayCommand.command == GatewayCommandType.START,
+        )
+    ):
+        raise ConflictError("Missão com tentativa de START exige recuperação operacional separada")
+    order = session.get(Order, mission.order_id)
+    if not order or order.status not in {
+        OrderStatus.MISSION_READY,
+        OrderStatus.WAITING_FLIGHT_AUTHORIZATION,
+        OrderStatus.MISSION_UPLOADING,
+    }:
+        raise InvalidStateError("O pedido não está em pré-voo")
+    point = session.get(DeliveryPoint, order.delivery_point_id)
+    if not point or (mission.destination_latitude, mission.destination_longitude) != (
+        point.final_latitude,
+        point.final_longitude,
+    ):
+        raise ConflictError("O destino da missão diverge do pedido")
+    latitude, longitude = payload.origin_latitude, payload.origin_longitude
+    if (latitude, longitude) == (mission.origin_latitude, mission.origin_longitude):
+        raise ConflictError("A nova origem é igual à origem atual")
+    distance = haversine_distance_m(
+        float(latitude),
+        float(longitude),
+        float(mission.destination_latitude),
+        float(mission.destination_longitude),
+    )
+    if distance > settings.max_mission_distance_m:
+        raise ConflictError("A nova origem excede a distância máxima operacional")
+    if (
+        [w.command for w in mission.waypoints] != [16, 22, 16, 19, 211, 16, 21]
+        or [w.sequence for w in mission.waypoints] != list(range(7))
+        or _mission_file(mission.waypoints) != mission.mission_file
+        or hashlib.sha256(mission.mission_file.encode()).hexdigest() != mission.mission_sha256
+    ):
+        raise ConflictError("A revisão exige a sequência canônica de sete waypoints")
+    previous = MissionRead.model_validate(mission).model_dump_json()
+    previous_file, previous_hash, previous_gateway = (
+        mission.mission_file,
+        mission.mission_sha256,
+        mission.claimed_by_gateway,
+    )
+    for waypoint in mission.waypoints:
+        if waypoint.sequence in (0, 1, 5, 6):
+            waypoint.latitude, waypoint.longitude = latitude, longitude
+    mission.origin_latitude, mission.origin_longitude = latitude, longitude
+    mission.origin = point_ewkt(float(latitude), float(longitude))
+    mission.estimated_distance_m = distance
+    mission.mission_file = _mission_file(mission.waypoints)
+    mission.mission_sha256 = hashlib.sha256(mission.mission_file.encode()).hexdigest()
+    mission.version += 1
+    mission.status = MissionStatus.GENERATED
+    mission.exported_at = mission.reviewed_at = mission.claimed_at = None
+    mission.reviewed_by_id = mission.review_notes = mission.claimed_by_gateway = None
+    order.status = OrderStatus.MISSION_READY
+    for authorization in session.scalars(
+        select(FlightAuthorization).where(
+            FlightAuthorization.mission_id == mission.id,
+            FlightAuthorization.status == AuthorizationStatus.ACTIVE,
+        )
+    ):
+        authorization.status = AuthorizationStatus.REVOKED
+    record_event(
+        session,
+        event_id=_revision_event_id(mission, mission.version),
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        mission_id=mission.id,
+        order_id=mission.order_id,
+        vehicle_id=mission.vehicle_id,
+        event_type="MISSION_ORIGIN_REVISED",
+        message="Origem e retorno revisados; nova exportação, revisão e autorização obrigatórias",
+        metadata={
+            "version": mission.version,
+            "sha256": mission.mission_sha256,
+            "previous_version": payload.expected_version,
+            "previous_sha256": previous_hash,
+            "previous_gateway": previous_gateway,
+            "previous_mission_json": previous,
+            "previous_mission_file": previous_file,
+            "reason": payload.reason,
+            "health_snapshot_id": str(snapshot.id),
+        },
+    )
+    session.flush()
+    if commit:
+        session.commit()
+        session.refresh(mission)
+    return mission
+
+
+def release_retired_version(
+    session: Session,
+    mission: Mission,
+    gateway_id: str,
+    payload: RetiredVersionRelease,
+    settings: Settings,
+) -> bool:
+    mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    vehicle = session.get(Vehicle, mission.vehicle_id) if mission.vehicle_id else None
+    if not vehicle or vehicle.gateway_id != gateway_id or gateway_id != settings.gateway_id:
+        raise ConflictError("A missão não pertence a este gateway")
+    if (mission.version, mission.mission_sha256) == (payload.version, payload.mission_sha256):
+        return False
+    revision = session.scalar(
+        select(SystemEvent).where(
+            SystemEvent.event_id == _revision_event_id(mission, payload.version + 1)
+        )
+    )
+    if (
+        not revision
+        or revision.event_metadata.get("previous_sha256") != payload.mission_sha256
+        or revision.event_metadata.get("previous_gateway") != gateway_id
+    ):
+        raise ConflictError("Não há revisão auditada correspondente ao journal informado")
+    _require_observation(session, mission, settings)
+    if mission.claimed_by_gateway is not None:
+        raise ConflictError("A versão atual já possui claim; não libere o journal")
+    record_event(
+        session,
+        event_id=_release_event_id(mission, payload.version),
+        actor_type="GATEWAY",
+        mission_id=mission.id,
+        order_id=mission.order_id,
+        vehicle_id=mission.vehicle_id,
+        event_type="MISSION_RETIRED_VERSION_RELEASED",
+        message="Gateway reconheceu a versão substituída em observação, sem comando MAVLink",
+        metadata={
+            "gateway_id": gateway_id,
+            "version": payload.version,
+            "sha256": payload.mission_sha256,
+        },
+    )
+    session.commit()
+    return True
+
+
 def export_mission(session: Session, mission: Mission, admin: User) -> str:
     if mission.status in {MissionStatus.GENERATED, MissionStatus.EXPORTED_TO_MISSION_PLANNER}:
         mission.status = MissionStatus.EXPORTED_TO_MISSION_PLANNER
@@ -292,8 +547,32 @@ def authorize_flight(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
-    if mission.status != MissionStatus.READY_FOR_AUTHORIZATION:
+    renewing = mission.status == MissionStatus.VERIFIED
+    previous = None
+    if renewing:
+        previous = claimed_authorization(session, mission, require_fresh=False)
+        if payload.vehicle_id != mission.vehicle_id:
+            raise ConflictError("Renovação não pode trocar o veículo da missão verificada")
+        vehicle = session.get(Vehicle, mission.vehicle_id)
+        if not vehicle or vehicle.gateway_id != mission.claimed_by_gateway:
+            raise ConflictError("O gateway não corresponde ao veículo da missão")
+        if mission.claimed_by_gateway != settings.gateway_id:
+            raise ConflictError("O gateway da missão não corresponde à configuração atual")
+        if _as_utc(previous.expires_at) > datetime.now(UTC):
+            raise ConflictError("A autorização atual ainda está vigente")
+        pending = session.scalar(
+            select(GatewayCommand.id).where(
+                GatewayCommand.mission_id == mission.id,
+                GatewayCommand.status.in_(
+                    {GatewayCommandStatus.PENDING, GatewayCommandStatus.ACKNOWLEDGED}
+                ),
+            )
+        )
+        if pending:
+            raise ConflictError("Aguarde o resultado do comando crítico antes de renovar")
+    elif mission.status != MissionStatus.READY_FOR_AUTHORIZATION:
         raise InvalidStateError("A missão ainda não está pronta para autorização")
+    _require_revision_released(session, mission)
     if not payload.controlled_area_confirmed:
         raise ConflictError("A área controlada deve ser confirmada explicitamente")
     checklist = payload.checklist.model_dump()
@@ -332,7 +611,12 @@ def authorize_flight(
         expires_at=now + timedelta(seconds=settings.flight_authorization_ttl_seconds),
     )
     mission.vehicle_id = payload.vehicle_id
-    mission.status = MissionStatus.AUTHORIZED
+    if renewing:
+        # New audited authority for the same exclusive claim, never another upload.
+        authorization.status = AuthorizationStatus.CONSUMED
+        authorization.used_at = now
+    else:
+        mission.status = MissionStatus.AUTHORIZED
     session.add(authorization)
     session.flush()
     record_event(
@@ -342,12 +626,17 @@ def authorize_flight(
         order_id=mission.order_id,
         mission_id=mission.id,
         vehicle_id=payload.vehicle_id,
-        event_type="FLIGHT_AUTHORIZED",
-        message="Autorização de voo de uso único emitida",
+        event_type="FLIGHT_AUTHORIZATION_RENEWED" if renewing else "FLIGHT_AUTHORIZED",
+        message=(
+            "Nova autorização consumida pelo claim existente; ARM e START continuam separados"
+            if renewing
+            else "Autorização de voo de uso único emitida"
+        ),
         metadata={
             "authorization_id": str(authorization.id),
             "expires_at": authorization.expires_at.isoformat(),
             "operator_name": payload.operator_name,
+            "previous_authorization_id": str(previous.id) if previous else None,
         },
     )
     session.flush()
@@ -437,6 +726,32 @@ def active_authorization(session: Session, mission: Mission) -> FlightAuthorizat
     return authorization
 
 
+def claimed_authorization(
+    session: Session, mission: Mission, *, require_fresh: bool = True
+) -> FlightAuthorization:
+    """Validate the latest consumed authority without changing historical records."""
+    authorization = session.scalar(
+        select(FlightAuthorization)
+        .where(FlightAuthorization.mission_id == mission.id)
+        .order_by(FlightAuthorization.issued_at.desc(), FlightAuthorization.id.desc())
+        .limit(1)
+    )
+    if (
+        not mission.claimed_by_gateway
+        or not authorization
+        or authorization.status != AuthorizationStatus.CONSUMED
+        or authorization.used_at is None
+        or authorization.mission_version != mission.version
+        or authorization.mission_sha256 != mission.mission_sha256
+    ):
+        raise ConflictError("O claim não possui autorização consumida para este artefato")
+    if require_fresh and _as_utc(authorization.expires_at) <= datetime.now(UTC):
+        raise ConflictError(
+            "A autorização expirou. Renove a autorização da missão verificada com o operador."
+        )
+    return authorization
+
+
 def claim_mission(
     session: Session, mission: Mission, gateway_id: str, settings: Settings
 ) -> FlightAuthorization:
@@ -449,6 +764,15 @@ def claim_mission(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
+    if mission.status == MissionStatus.VERIFIED:
+        vehicle = session.get(Vehicle, mission.vehicle_id)
+        if (
+            mission.claimed_by_gateway != gateway_id
+            or not vehicle
+            or vehicle.gateway_id != gateway_id
+        ):
+            raise ConflictError("Claim verificado pertence a outro veículo ou gateway")
+        return claimed_authorization(session, mission)
     if mission.status == MissionStatus.UPLOADING and mission.claimed_by_gateway == gateway_id:
         authorization = session.scalar(
             select(FlightAuthorization)
@@ -751,6 +1075,7 @@ def request_safety_action(
         raise ConflictError("A missão já possui outro comando crítico em andamento")
 
     if command_type == GatewayCommandType.START:
+        claimed_authorization(session, mission)
         if settings is None:
             raise InvalidStateError("Configuração do backend indisponível para validar START")
         if not mission.vehicle_id or not mission.claimed_by_gateway:
@@ -845,6 +1170,7 @@ def request_vehicle_arm(
     mission = locked_mission
     if mission.status != MissionStatus.VERIFIED:
         raise InvalidStateError("O armamento só pode ser solicitado para missão verificada")
+    claimed_authorization(session, mission)
     if not mission.vehicle_id or not mission.claimed_by_gateway:
         raise ConflictError("A missão verificada não está vinculada a um gateway e veículo")
 

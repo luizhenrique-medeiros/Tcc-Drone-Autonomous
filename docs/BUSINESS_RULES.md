@@ -59,6 +59,14 @@
 - `GENERATED` não significa revisada. Exportar e abrir no Mission Planner são eventos registrados.
 - O revisor marca `UNDER_REVIEW` e depois `READY_FOR_AUTHORIZATION` para a mesma versão.
 - Alterar waypoint, altitude ou versão invalida autorizações existentes.
+- Reposicionamento pré-voo possui ação administrativa própria: altera somente
+  origem/decolagem/retorno/pouso, preserva destino/altitude e arquiva o artefato
+  anterior em auditoria. Incrementa versão/hash e volta a GENERATED com nova
+  revisão obrigatória. Não reabre missão terminal nem aceita tentativa de START.
+- A revisão exige veículo desarmado em STABILIZE, saúde atual e quatro gates
+  desligados. O gateway reconhece a substituição auditada em WAITING_OPERATOR_ARM
+  antes de liberar seu journal; falha/resultado incerto preserva o registro.
+  Não envia cancelamento, RTL, upload, ARM ou START como efeito da revisão.
 
 ## Autorização de voo
 
@@ -70,6 +78,12 @@
 - Repetir a mesma tentativa com a mesma chave de idempotência devolve a autorização original; uma nova tentativa após a transição é recusada.
 - Expiração, mudança de versão/hash ou falha técnica atual revoga e audita a autorização; variação de telemetria que continua dentro dos limites seguros não revoga por simples diferença de amostra.
 - O gateway consome a autorização ao reivindicar/enviar; repetição recebe o resultado anterior ou conflito, nunca nova execução.
+- Exceção explícita para espera em bancada: missão `VERIFIED`, desarmada, com
+  autorização consumida vencida pode receber nova autorização pelo mesmo endpoint
+  e checklist. Veículo/gateway, versão/hash e claim são preservados; não pode
+  haver comando pendente ou reconhecido com resultado incerto. O novo registro
+  é consumido pelo claim existente e auditado, sem alterar o anterior ou repetir
+  upload. ARM/START continuam separados e limitados ao novo prazo.
 
 ## Execução, entrega e retorno
 

@@ -2,6 +2,28 @@
 
 Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como decimal serializado em string.
 
+## Revisão de origem em pré-voo
+
+`POST /admin/missions/{id}/revise-origin` exige ADMIN e `Idempotency-Key`.
+Corpo estrito: `expected_version`, `expected_sha256`, `origin_latitude`,
+`origin_longitude` (até sete casas decimais), `reason` (10–1000 caracteres) e
+`position_confirmed=true`. Não aceita destino ou altitude no corpo.
+Exige missão pré-voo, veículo vinculado, saúde fresca/desarmada em STABILIZE,
+quatro gates explicitamente falsos e nenhum comando pendente/reconhecido nem
+tentativa anterior de START. O limite `MAX_MISSION_DISTANCE_M` aplica-se também
+a esta revisão; não limita o checkout do cliente.
+Retorna a nova versão em GENERATED, sem claim/revisão/exportação herdados.
+O evento `MISSION_ORIGIN_REVISED` arquiva o JSON e o arquivo completos anteriores;
+autorizações consumidas permanecem históricas, inválidas para a nova versão.
+
+`POST /gateway/missions/{id}/release-retired-version` recebe `version` e
+`mission_sha256` do journal. Exige identidade autenticada do veículo/gateway.
+Retorna os mesmos campos, `mission_id` e `released`. Sem mudança, retorna false;
+liberação exige revisão auditada correspondente, observação/desarmamento fresco
+e ausência de comando em andamento. O reconhecimento é idempotente e auditado.
+Nova autorização espera esse reconhecimento quando havia claim anterior.
+Esse endpoint não cancela voo nem apaga a missão armazenada no piloto automático.
+
 ## Autenticação
 
 `Authorization: Bearer <JWT>` para cliente/admin. O gateway usa `X-Gateway-API-Key` junto de
@@ -165,7 +187,20 @@ O objeto de saúde inclui `authorization_limits` com `min_battery_percent`, `bat
 
 As respostas administrativas de missão incluem `authorization` com o último registro real, quando existente: identificadores da autorização e do administrador, nome real do administrador e operador, status, versão, emissão, expiração e consumo. Isso preserva a evidência após reload sem expor checklist bruto nem fabricar nomes no navegador.
 
-`POST /admin/missions/{id}/authorize-flight` aceita `Idempotency-Key`: a chave é reservada na mesma transação antes dos efeitos, e repetir chave e corpo devolve a mesma autorização com `Idempotency-Replayed`. O painel conserva a chave da tentativa lógica enquanto a resposta for ambígua; uma chave diferente após a missão sair de `READY_FOR_AUTHORIZATION` retorna conflito.
+`POST /admin/missions/{id}/authorize-flight` aceita `Idempotency-Key`: repetir chave e corpo devolve a mesma autorização com `Idempotency-Replayed`. O painel conserva a chave enquanto a resposta for ambígua. Nova emissão fora de `READY_FOR_AUTHORIZATION` retorna conflito, exceto pela renovação explícita de `VERIFIED` abaixo.
+
+Em `VERIFIED`, o mesmo endpoint renova uma autorização **consumida e vencida**:
+exige mesmo veículo/gateway, versão/hash, saúde atual desarmada, três novas
+confirmações e nenhum comando `PENDING`/`ACKNOWLEDGED`. Emite novo registro
+`CONSUMED`, prazo e `used_at`, auditado como `FLIGHT_AUTHORIZATION_RENEWED`.
+Registro antigo, artefato e estado `VERIFIED` permanecem intactos. Não arma,
+inicia ou reenfileira upload. Autorização ainda vigente não pode ser renovada.
+
+`POST /gateway/missions/{id}/claim` em `VERIFIED` devolve essa autoridade atual
+somente ao gateway vinculado, sem novo upload. ARM/START recusam prazo vencido
+já no backend (`409`, com orientação de renovação). Para um novo comando humano
+com claim local vencido, o gateway consulta e compara o claim atual inteiro
+antes de persistir o novo prazo. Divergência/indisponibilidade nunca libera comando.
 
 `GET /admin/missions` e `GET /admin/missions/{id}` incluem a autorização mais recente quando ela existe, com administrador real, operador, status, versão e datas de emissão, expiração e consumo. Esse resumo administrativo não é enviado ao WebSocket do cliente.
 
@@ -190,7 +225,7 @@ Antes de persistir `ARM`, o backend bloqueia a missão para serializar ações c
 
 - missão `VERIFIED`, já reivindicada, com veículo e gateway correspondentes;
 - último snapshot do mesmo veículo fresco, conectado, com heartbeat, origem `SITL` ou `HARDWARE_REAL` e `armed=false`;
-- GPS/satélites, EKF, bateria, home/origem, geofence, RTL e preflight completos e dentro dos limites canônicos;
+- GPS/satélites, EKF,  home/origem, geofence, RTL e preflight completos e dentro dos limites canônicos;
 - `flight_mode=STABILIZE`;
 - `vehicle_arm_enabled=true`, `flight_commands_enabled=true` e `mission_start_enabled=true`;
 - ausência de outro comando crítico `PENDING` ou `ACKNOWLEDGED` para a missão.
@@ -219,9 +254,14 @@ O heartbeat/health do gateway persiste diagnóstico de conexão, topologia, endp
 
 ## WebSocket
 
-- `WS /ws/orders/{order_id}` valida JWT e propriedade antes do upgrade.
+- `WS /ws/orders/{order_id}` valida JWT e propriedade antes de enviar dados do pedido.
 - `WS /ws/admin/operations` exige `ADMIN`.
 - A primeira mensagem do cliente é `{"type":"AUTH","token":"<jwt>"}`. Eventos carregam `type` e `data`; o conteúdo varia entre snapshot do pedido, missão, telemetria e evento operacional.
+- Cada conexão autorizada do pedido recebe `order.snapshot` e, se houver missão,
+  `mission.status` com o estado persistido atual, no mesmo contrato `MissionRead`
+  das atualizações. Isso recupera transições perdidas durante logout/desconexão;
+  não altera a missão, autoriza ou envia comandos ao veículo. Pedido sem missão
+  não recebe estado de missão fabricado.
 - Cliente reconecta com backoff e sempre refaz GET para obter o snapshot canônico. Durante a queda, conserva o último pedido, sinaliza atualização instantânea indisponível, usa polling quando possível e oferece atualização manual.
 
 ## Códigos relevantes

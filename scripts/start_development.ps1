@@ -14,6 +14,7 @@ param(
     [ValidateNotNullOrEmpty()][string]$ExpectedFlutterVersionPattern = '^3\.47\.\d+$',
     [ValidateNotNullOrEmpty()][string]$ExpectedDartVersionPattern = '^3\.13\.\d+$',
     [switch]$SkipDockerBuild,
+    [switch]$ServicesOnly,
     [switch]$IncludeSimulationGateway,
     [switch]$ConfirmSimulationGateway,
     [ValidateRange(10, 600)]
@@ -185,7 +186,7 @@ foreach ($requiredPath in @($mobileLauncher, $pathHelpers, (Join-Path $projectRo
 }
 
 $flutterWebListener = Get-NetTCPConnection -State Listen -LocalPort $FlutterWebPort -ErrorAction SilentlyContinue
-if ($flutterWebListener) {
+if ($flutterWebListener -and -not $ServicesOnly -and -not $ValidateOnly) {
     $processIds = $flutterWebListener.OwningProcess | Sort-Object -Unique
     throw "A porta do Flutter Web $FlutterWebPort ja esta em uso (PID: $($processIds -join ', '))."
 }
@@ -306,6 +307,10 @@ try {
     else {
         Write-Host 'Gateway: NAO INICIADO (padrao seguro).'
         Write-Host 'COM7/forwarding: use scripts/start_gateway.ps1 no host, em outro terminal.'
+    }
+    if ($ServicesOnly) {
+        Write-Host 'Somente servicos Docker solicitados; cliente existente preservado.'
+        return
     }
     Write-Host "Flutter Web: iniciando em primeiro plano - http://localhost:$FlutterWebPort"
     Write-Host 'Ao encerrar o Flutter, os containers Docker permanecem ativos.'

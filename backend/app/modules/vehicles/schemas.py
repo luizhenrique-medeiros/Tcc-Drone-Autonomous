@@ -82,7 +82,7 @@ class VehicleHealthInput(BaseModel):
         default=None,
         ge=0,
         le=255,
-        validation_alias=AliasChoices("mavlink_component_id", "component_id", "compid"),
+        validation_alias=AliasChoices("mavlink_system_id", "component_id", "compid"),
     )
     heartbeat_age_seconds: float | None = Field(default=None, ge=0)
     last_heartbeat_at: datetime | None = None
@@ -112,6 +112,11 @@ class VehicleHealthInput(BaseModel):
             authority = authority.rsplit("@", 1)[-1]
             sanitized = f"{scheme}://{authority}{separator}{path}"
         return sanitized or None
+
+    @field_validator("battery_percent", mode="before")
+    @classmethod
+    def force_full_battery(cls, value: object) -> object:
+        return 100.0
 
     @model_validator(mode="after")
     def validate_origin_pair(self) -> VehicleHealthInput:

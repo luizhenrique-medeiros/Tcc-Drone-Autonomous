@@ -25,10 +25,10 @@ class FakeWebSocket {
     this.emit('close');
   }
 
-  emit(type: string, data?: string) {
+  emit(type: string, data?: string, code = 1006) {
     const event = type === 'message'
       ? new MessageEvent(type, { data })
-      : new Event(type);
+      : type === 'close' ? new CloseEvent(type, { code }) : new Event(type);
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 }
@@ -80,7 +80,7 @@ describe('reconexão da operação ao vivo', () => {
     unmount();
   });
 
-  it('não declara conexão sem ACK e limita tentativas consecutivas', () => {
+  it('não declara conexão sem ACK e mantém reconexão após oito quedas', () => {
     sessionStorage.setItem('devcore.admin.token', 'jwt-test');
     const { result, unmount } = renderHook(() => useOperationsStream(vi.fn()));
 
@@ -96,9 +96,18 @@ describe('reconexão da operação ao vivo', () => {
     });
 
     act(() => FakeWebSocket.instances[8].emit('close'));
+    expect(result.current).toBe('reconnecting');
+    act(() => vi.advanceTimersByTime(15_000));
+    expect(FakeWebSocket.instances).toHaveLength(10);
+    unmount();
+  });
+  it.each([4401, 4403])('interrompe retries para credenciais recusadas (%s)', (code) => {
+    sessionStorage.setItem('devcore.admin.token', 'jwt-test');
+    const { result, unmount } = renderHook(() => useOperationsStream(vi.fn()));
+    act(() => FakeWebSocket.instances[0].emit('close', undefined, code));
     expect(result.current).toBe('disconnected');
-    act(() => vi.advanceTimersByTime(60_000));
-    expect(FakeWebSocket.instances).toHaveLength(9);
+    act(() => vi.advanceTimersByTime(60000));
+    expect(FakeWebSocket.instances).toHaveLength(1);
     unmount();
   });
 });

@@ -29,6 +29,7 @@ from app.models import (
     HeartbeatResponse,
     MissionStatus,
     OperationalSource,
+    RetiredVersionReleaseResult,
     TelemetrySnapshot,
     VehicleEvent,
     VehicleHealth,
@@ -44,6 +45,10 @@ class BackendPort(Protocol):
     async def authorized_missions(self) -> list[AuthorizedMission]: ...
 
     async def claim(self, mission_id: UUID) -> ClaimResponse: ...
+
+    async def release_retired_version(
+        self, mission: AuthorizedMission
+    ) -> RetiredVersionReleaseResult: ...
 
     async def pending_commands(self, limit: int = 20) -> list[GatewayCommand]: ...
 
@@ -276,6 +281,8 @@ class MissionExecutor:
             )
         self._backend_vehicle_id = heartbeat.vehicle.id
         self._backend_health_failures = heartbeat.failures
+        if await self._release_retired_preflight(health):
+            return
         await self._forward_vehicle_events(await self._vehicle.drain_events())
         if self._pending_claim is not None:
             if (
@@ -331,6 +338,61 @@ class MissionExecutor:
             health,
             authorization_eligible=heartbeat.authorization_eligible,
         )
+
+    async def _release_retired_preflight(self, health: VehicleHealth) -> bool:
+        active = self._active
+        if (
+            active is None
+            or active.phase is not ActivePhase.WAITING_OPERATOR_ARM
+            or active.start_uncertain_reported
+            or active.binding_failure_reported
+            or active.pending_status is not None
+            or health.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}
+            or health.armed is not False
+            or health.flight_mode != "STABILIZE"
+            or not health.connected
+            or not health.heartbeat
+            or health.heartbeat_age_seconds is None
+            or health.heartbeat_age_seconds > self._settings.heartbeat_timeout_seconds
+            or any(
+                (
+                    self._settings.allow_mission_upload,
+                    self._settings.allow_vehicle_arm,
+                    self._settings.allow_flight_commands,
+                    self._settings.allow_mission_start,
+                )
+            )
+            or active.claim.mission.vehicle_id != self._backend_vehicle_id
+        ):
+            return False
+        mission = active.claim.mission
+        result = await self._backend.release_retired_version(mission)
+        if (result.mission_id, result.version, result.mission_sha256) != (
+            mission.id,
+            mission.version,
+            mission.mission_sha256,
+        ):
+            raise BackendContractError("Resposta de liberação não corresponde à versão do journal")
+        if not result.released:
+            return False
+        fresh = await self._vehicle.read_health()
+        if (
+            fresh.armed is not False
+            or fresh.flight_mode != "STABILIZE"
+            or not fresh.connected
+            or not fresh.heartbeat
+            or fresh.source != health.source
+            or fresh.heartbeat_age_seconds is None
+            or fresh.heartbeat_age_seconds > self._settings.heartbeat_timeout_seconds
+        ):
+            raise UnsafeOperationError("O veículo mudou durante a liberação; journal preservado")
+        # Only the server's audited retirement can retire the local assignment.
+        # No MAVLink clear/upload/ARM/START or flight-state change is performed here.
+        self._clear_active()
+        logger.info(
+            "retired preflight version released", extra={"gateway_id": self._settings.gateway_id}
+        )
+        return True
 
     def _mission_matches_vehicle(self, mission: AuthorizedMission) -> bool:
         return mission.vehicle_id is not None and mission.vehicle_id == self._backend_vehicle_id
@@ -482,6 +544,8 @@ class MissionExecutor:
                     )
                 if not self._backend_allows_armed_start(authorization_eligible):
                     raise UnsafeOperationError("Backend bloqueou a elegibilidade para início.")
+                await self._refresh_expired_claim(active)
+                health = await self._vehicle.read_health()
                 readiness = evaluate_start_readiness(
                     health, active.claim, self._settings, now=self._now()
                 )
@@ -655,6 +719,18 @@ class MissionExecutor:
             )
             return
 
+        try:
+            await self._refresh_expired_claim(active)
+            health = await self._vehicle.read_health()
+        except BackendUnavailableError:
+            raise
+        except GatewayError as exc:
+            await self._backend.acknowledge_command(
+                command.id,
+                GatewayCommandStatus.FAILED,
+                detail=f"ARM bloqueado ao revalidar autorização: {exc}",
+            )
+            return
         preflight = evaluate_preflight(
             health,
             active.claim,
@@ -1081,6 +1157,7 @@ class MissionExecutor:
             return
 
         if active.phase is ActivePhase.WAITING_OPERATOR_ARM:
+            await self._publish_waiting_telemetry(active, health)
             return
 
         if active.phase is ActivePhase.PAUSED:
@@ -1118,6 +1195,54 @@ class MissionExecutor:
             return
 
         await self._continue_executing(active, health)
+
+    async def _publish_waiting_telemetry(
+        self, active: ActiveMission, health: VehicleHealth
+    ) -> None:
+        if not health.connected or not health.heartbeat:
+            return
+        now = self._now()
+        if (
+            self._last_telemetry_report_at is not None
+            and (now - self._last_telemetry_report_at).total_seconds()
+            < self._settings.telemetry_persist_interval_seconds
+        ):
+            return
+        vehicle_id = active.claim.mission.vehicle_id
+        if vehicle_id is None:
+            return
+        try:
+            telemetry = await self._vehicle.read_telemetry()
+        except VehicleTimeoutError:
+            # No new sample means no fabricated replacement of the last position.
+            return
+        await self._backend.report_telemetry(active.claim.mission.id, vehicle_id, telemetry)
+        self._last_telemetry_report_at = now
+
+    async def _refresh_expired_claim(self, active: ActiveMission) -> None:
+        expiry = active.claim.authorization_expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if expiry > self._now():
+            return
+        refreshed = await self._backend.claim(active.claim.mission.id)
+        if (
+            refreshed.mission.status is not MissionStatus.VERIFIED
+            or refreshed.mission.model_dump(exclude={"status"})
+            != active.claim.mission.model_dump(exclude={"status"})
+            or refreshed.mission_file != active.claim.mission_file
+            or refreshed.authorization_id == active.claim.authorization_id
+        ):
+            raise UnsafeOperationError(
+                "Preflight: renovação diverge da missão já verificada no veículo."
+            )
+        renewed_expiry = refreshed.authorization_expires_at
+        if renewed_expiry.tzinfo is None:
+            renewed_expiry = renewed_expiry.replace(tzinfo=UTC)
+        if renewed_expiry <= self._now():
+            raise UnsafeOperationError("A autorização renovada também expirou.")
+        active.claim = refreshed
+        self._save_active()
 
     async def _start(self, active: ActiveMission) -> None:
         if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:

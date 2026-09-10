@@ -38,6 +38,7 @@ import {
   type FlightAuthorizationInput,
   type GatewayCommand,
   type Mission,
+  type MissionOriginRevisionInput,
   type Order,
   type Vehicle,
   type VehicleHealth,
@@ -59,8 +60,12 @@ import {
 import {
   authorizationTitle,
   authorizationUsageMessage,
+  canAuthorizeMission,
+  hasCurrentClaimAuthorization,
 } from './authorization-presentation';
 import { FlightAuthorizationDialog } from './FlightAuthorizationDialog';
+import { OriginRevisionDialog } from './OriginRevisionDialog';
+import { canReviseOrigin } from './origin-revision-readiness';
 import { getMissionReadiness } from './vehicle-readiness';
 
 interface MissionPageData {
@@ -134,6 +139,7 @@ export function MissionPage() {
   const [success, setSuccess] = useState('');
   const [authorizationOpen, setAuthorizationOpen] = useState(false);
   const [armDialogOpen, setArmDialogOpen] = useState(false);
+  const [originRevisionOpen, setOriginRevisionOpen] = useState(false);
   const [activeArmRequest, setActiveArmRequest] =
     useState<ActiveArmRequest | null>(null);
   const [trackedArmCommand, setTrackedArmCommand] =
@@ -266,7 +272,7 @@ export function MissionPage() {
     mission.status,
   );
   const canFinishReview = mission.status === 'UNDER_REVIEW';
-  const canAuthorize = mission.status === 'READY_FOR_AUTHORIZATION';
+  const canAuthorize = canAuthorizeMission(mission);
   const canAbort = [
     'UPLOADING',
     'UPLOADED',
@@ -305,7 +311,9 @@ export function MissionPage() {
     mission.vehicle_id !== undefined &&
     vehicle?.id === mission.vehicle_id &&
     health?.vehicle_id === mission.vehicle_id;
-  const startCommandBlockedReason = !flightCommandsEnabled
+  const startCommandBlockedReason = !hasCurrentClaimAuthorization(mission)
+    ? 'Renove a autorização da missão antes de solicitar START.'
+    : !flightCommandsEnabled
     ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.'
     : !missionStartEnabled
       ? 'ALLOW_MISSION_START está desabilitado no gateway.'
@@ -333,7 +341,7 @@ export function MissionPage() {
         refreshed.health,
       );
       if (
-        refreshed.mission.status !== 'READY_FOR_AUTHORIZATION' ||
+        !canAuthorizeMission(refreshed.mission) ||
         !refreshedReadiness.ready
       ) {
         setActionError(
@@ -394,6 +402,20 @@ export function MissionPage() {
     }
   };
 
+  const handleOriginRevision = async (input: MissionOriginRevisionInput) => {
+    setIsActing(true);
+    setActionError('');
+    setSuccess('');
+    try {
+      await adminApi.reviseMissionOrigin(mission.id, input);
+      setOriginRevisionOpen(false);
+      await reload();
+      setSuccess('Nova versão gerada, mantendo o destino. Baixe e revise o novo arquivo; nenhum comando foi enviado ao drone.');
+    } catch (revisionError) {
+      setActionError(getErrorMessage(revisionError));
+    } finally { setIsActing(false); }
+  };
+
   const handleExport = async () => {
     setIsActing(true);
     setActionError('');
@@ -413,7 +435,9 @@ export function MissionPage() {
     try {
       updateMission(await adminApi.authorizeFlight(mission.id, input));
       setAuthorizationOpen(false);
-      setSuccess('Autorização de uso único criada. O gateway ainda deve validar prazo, versão e saúde antes do upload.');
+      setSuccess(mission.status === 'VERIFIED'
+        ? 'Autorização renovada. A rota verificada foi preservada; ARM e START continuam sendo ações separadas.'
+        : 'Autorização de uso único criada. O gateway ainda deve validar prazo, versão e saúde antes do upload.');
     } catch (authorizationError) {
       setActionError(getErrorMessage(authorizationError));
     } finally {
@@ -535,7 +559,7 @@ export function MissionPage() {
         }
       />
       {success ? <Feedback tone="success" className="page-feedback">{success}</Feedback> : null}
-      {actionError && !authorizationOpen && !armDialogOpen && !criticalAction ? (
+      {actionError && !authorizationOpen && !armDialogOpen && !originRevisionOpen && !criticalAction ? (
         <Feedback tone="error" className="page-feedback">{actionError}</Feedback>
       ) : null}
       {healthError ? (
@@ -602,6 +626,10 @@ export function MissionPage() {
 
         <aside className="stack mission-side">
           <Card title="Revisão no Mission Planner">
+            {canReviseOrigin(mission, health) ? <Button variant="secondary" disabled={isActing || activeArmRequest !== null}
+              onClick={() => { setActionError(''); setOriginRevisionOpen(true); }}>
+              <MapPin size={17} /> Atualizar origem e retorno
+            </Button> : null}
             <div className="review-flow">
               <ReviewStep
                 done={Boolean(mission.exported_at) || activeStage > 0}
@@ -671,7 +699,9 @@ export function MissionPage() {
                     onClick={() => void openAuthorization()}
                   >
                     <ShieldCheck size={18} />{' '}
-                    {readiness.ready
+                    {mission.status === 'VERIFIED'
+                      ? 'Renovar autorização'
+                      : readiness.ready
                       ? 'Autorizar missão'
                       : 'Revalidar para autorizar'}
                   </Button>
@@ -775,6 +805,9 @@ export function MissionPage() {
         </aside>
       </div>
 
+      <OriginRevisionDialog open={originRevisionOpen} mission={mission} health={health}
+        busy={isActing} error={originRevisionOpen ? actionError : ''}
+        onClose={() => setOriginRevisionOpen(false)} onSubmit={handleOriginRevision} />
       <FlightAuthorizationDialog
         open={authorizationOpen}
         mission={mission}

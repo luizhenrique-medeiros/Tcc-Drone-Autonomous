@@ -1,5 +1,18 @@
 # Protocolo backend–gateway
 
+## Versão substituída durante pré-voo
+
+Em `WAITING_OPERATOR_ARM`, somente com os quatro gates locais falsos, heartbeat
+fresco, origem SITL/HARDWARE_REAL e STABILIZE desarmado, o executor consulta
+`POST /gateway/missions/{id}/release-retired-version`. O backend só reconhece
+versão/hash/gateway presentes na revisão administrativa auditada. A resposta
+é validada contra o journal e o estado físico é relido antes de liberá-lo.
+Resultado perdido, divergente ou veículo armado conserva o journal; nenhum
+comando MAVLink é enviado. O fluxo não se aplica a START incerto ou execução.
+O reconhecimento no servidor antecede a limpeza local; retry é idempotente.
+O arquivo antigo na Pixhawk não é apagado por esse procedimento. A próxima
+versão depende de exportação/revisão/autorização e upload/releitura próprios.
+
 ## Confiança e direção
 
 O gateway chama a API por HTTPS/rede controlada usando `X-Gateway-API-Key` e `X-Gateway-ID`;
@@ -19,6 +32,17 @@ heartbeat → listar AUTHORIZED → claim atômico → preflight local
 ```
 
 `claim` consome uma autorização vigente da mesma versão. Se outro gateway já assumiu, retorna conflito. Repetir a mesma chave pelo mesmo gateway devolve o resultado conhecido.
+
+Em `VERIFIED`, o mesmo `claim` relê a autoridade consumida atual para o gateway
+vinculado. Renovação administrativa emite novo registro sem alterar artefato ou
+causar upload. Antes de ARM/START com prazo local vencido, o executor busca esse
+claim, exige novo ID vigente e compara missão inteira (exceto status) e arquivo
+com o journal. Falha fecha a operação. Ver [API](API.md).
+
+Em `WAITING_OPERATOR_ARM`, `read_telemetry` publica amostras passivas com horário
+original de `GLOBAL_POSITION_INT`, sem avaliar progresso ou exigir gates de
+mutação. Posição vencida/ausente não gera substituto fictício. O fake identifica
+suas amostras como `SIMULATION`.
 
 O aceite mundial do ponto no checkout não amplia o raio operacional: antes de upload ou início, o gateway rejeita a missão cuja rota ou waypoints excedam `MAX_MISSION_DISTANCE_M`.
 
@@ -88,6 +112,17 @@ O gateway propõe no máximo uma transição operacional por ciclo, não pula re
 
 O backend só cria ARM para missão `VERIFIED`, já reivindicada pelo gateway ligado ao mesmo veículo, e depois de validar o payload administrativo estrito, o snapshot fresco/completo e os três gates operacionais. O gateway repete identidade, fase, idade, origem, saúde, preflight, modo e gates antes de transmitir. Qualquer valor ausente, nulo, stale ou divergente falha fechado.
 
+O recebimento drena rajadas sem o antigo limite de 50 mensagens por ciclo: cada
+leitura normal tem orçamento de 100 ms e teto de 10.000 mensagens. Antes de ARM,
+a mesma rotina dispõe de no máximo 1 segundo (ou do timeout de comando, se menor),
+com o mesmo teto. Só observar a fila vazia permite prosseguir; atingir qualquer
+limite marca a conexão como `STALE`, impede tratar campos enfileirados como atuais
+e bloqueia ARM antes da transmissão. Não há descarte/flush de pacotes, mudança
+de taxa do autopiloto ou supressão de pre-arm para superar esse bloqueio.
+Mensagens e ACKs anteriores são consumidos antes da transação; modo, armamento e
+`SYS_STATUS` são reavaliados após a drenagem, e um ACK antigo nunca confirma o ARM
+novo. A recuperação da fila restaura apenas a leitura, sem reenviar comandos.
+
 Antes da escrita MAVLink, o gateway persiste `ACKNOWLEDGED`, distinguindo “recebi a solicitação” de “o veículo armou”. A única transmissão permitida é:
 
 ```text
@@ -117,6 +152,37 @@ Um componente MAVLink difunde heartbeat periodicamente, normalmente perto de 1 H
 `MAV_CMD_SET_MESSAGE_INTERVAL` é um comando e exige `COMMAND_ACK`; não faz parte do diagnóstico passivo. Em operação bidirecional, Mission Planner ou gateway deve ser o único responsável pelas taxas para evitar disputa com `REQUEST_DATA_STREAM`. Todo comando permitido casa o ACK com comando/alvo; `MAV_RESULT_ACCEPTED` é aceite, `MAV_RESULT_IN_PROGRESS` exige aguardar o ACK final, e ausência/resultado negativo após retry é falha.
 
 No Mission Protocol, upload segue `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` → `MISSION_ACK` aceito. A verificação baixa a missão com `MISSION_REQUEST_LIST` → `MISSION_COUNT` → pares `MISSION_REQUEST_INT`/`MISSION_ITEM_INT` e emite o ACK final do receptor. Tipo, sequência, contagem e alvo são conferidos; `MISSION_REQUEST`/`MISSION_ITEM` são legados e não são originados pelo gateway, mas um `MISSION_REQUEST` legado recebido durante o upload é atendido com `MISSION_ITEM_INT`. Toda espera possui timeout/retry limitado; como referência de interoperabilidade, a especificação recomenda 1500 ms no geral, 250 ms para itens e no máximo cinco tentativas. Esgotamento cancela a operação e retorna a idle sem publicar sucesso.
+
+### Equivalência na releitura ArduCopter
+
+A comparação preserva contagem, sequência, comando, `autocontinue`, parâmetros,
+coordenadas e altitude. Normaliza somente representações equivalentes:
+
+- frames globais `0/5`, relativos à Home `3/6` e relativos ao terreno `10/11`
+  são pares equivalentes; não se troca uma referência de altitude por outra;
+- `current` recebido deve ser `0` ou `1`, mas representa estado de execução e não
+  precisa repetir o marcador do arquivo enviado;
+- o item zero canônico (`NAV_WAYPOINT`, altitude relativa zero) pode ser devolvido
+  como Home absoluta. Nesse caso exige `HOME_POSITION` recente do alvo, coordenadas
+  coincidentes com a origem planejada e altitude MSL recebida em milímetros,
+  convertida para metros. Ausência, vencimento, mudança da Home ou altitude
+  divergente bloqueiam a verificação; a Home nunca é alterada para fazer o teste passar;
+- `DO_GRIPPER` pode retornar frame global ou de missão e posição zerada, pois não
+  contém posição operacional. Comando e quatro parâmetros continuam comparados;
+- `LOITER_TIME.param3` e `LAND.param4` enviados com valor padrão `0` podem retornar
+  exatamente `1`: o AP_Mission persiste flags de direção nesses campos. A exceção
+  é restrita a esses dois pares comando/campo e ao padrão zero; não aceita `-1`,
+  outros valores, parâmetros não padrão ou mudanças nos demais campos.
+
+As tolerâncias posicionais continuam absolutas: `1e-6` grau e `0,05 m` na altitude.
+Essas equivalências não validam a GeoFence, não comprovam entrega física e não
+habilitam upload, ARM ou START. A conversão de Home não se aplica a outros itens.
+
+Referências fixadas na versão analisada:
+[AP_Mission do ArduCopter 4.6.3](https://github.com/ArduPilot/ardupilot/blob/Copter-4.6.3/libraries/AP_Mission/AP_Mission.cpp)
+e [MissionItemProtocol_Waypoints](https://github.com/ArduPilot/ardupilot/blob/Copter-4.6.3/libraries/GCS_MAVLink/MissionItemProtocol_Waypoints.cpp).
+Os testes usam doubles determinísticos, inclusive uma missão completa de sete itens;
+não constituem upload/releitura executados contra SITL ou Pixhawk.
 
 ## Modos
 

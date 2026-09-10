@@ -72,7 +72,9 @@ async def run() -> None:
                     vehicle.mark_reconnecting()
             except BackendUnavailableError:
                 backend_failures += 1
-                delay = min(30.0, settings.gateway_poll_interval_seconds * 2**backend_failures)
+                delay = min(
+                    30.0, settings.gateway_poll_interval_seconds * 2 ** min(backend_failures, 12)
+                )
                 logger.warning(
                     "backend unavailable; retry scheduled",
                     extra={"gateway_id": settings.gateway_id},

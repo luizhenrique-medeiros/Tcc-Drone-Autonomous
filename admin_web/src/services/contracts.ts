@@ -296,6 +296,15 @@ export interface ArmMissionResult {
   command: GatewayCommand;
 }
 
+export interface MissionOriginRevisionInput {
+  expected_version: number;
+  expected_sha256: string;
+  origin_latitude: string;
+  origin_longitude: string;
+  reason: string;
+  position_confirmed: boolean;
+}
+
 export interface AdminApi {
   login(input: LoginInput): Promise<AuthSession>;
   me(): Promise<AdminUser>;
@@ -307,6 +316,7 @@ export interface AdminApi {
   getMission(id: string): Promise<Mission>;
   markMissionUnderReview(id: string): Promise<Mission>;
   markMissionReviewed(id: string): Promise<Mission>;
+  reviseMissionOrigin(id: string, input: MissionOriginRevisionInput): Promise<Mission>;
   authorizeFlight(id: string, input: FlightAuthorizationInput): Promise<Mission>;
   armMission(id: string, input: ArmMissionInput): Promise<ArmMissionResult>;
   getMissionCommand(missionId: string, commandId: string): Promise<GatewayCommand>;
