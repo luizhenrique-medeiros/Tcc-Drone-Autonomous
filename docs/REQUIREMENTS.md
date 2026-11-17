@@ -45,7 +45,7 @@
 - **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
 - **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita; startup, health, upload, autorização, reconexão e progressão automática nunca armam.
 - **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL` ou `HARDWARE_REAL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
-- **RF-GTW-04:** normalizar posição, altitude, velocidade, GPS, modo e armamento.
+- **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento, preservando valores recebidos e indisponibilidade sem fabricar carga completa.
 - **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
 - **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
 - **RF-OPS-02:** concluir somente após entrega e retorno confirmados por eventos válidos.

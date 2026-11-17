@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     mavlink2_enabled: bool = True
     real_hardware_confirmation_required: bool = True
     real_hardware_acknowledged: bool = False
+    # Opt-in for a fixed read-only whitelist; never grants actuation or stream control.
+    allow_telemetry_requests: bool = False
     allow_mission_upload: bool = False
     allow_flight_commands: bool = False
     allow_mission_start: bool = False
@@ -63,7 +65,7 @@ class Settings(BaseSettings):
     base_longitude: float = Field(default=-46.5502, ge=-180, le=180)
     default_takeoff_altitude_m: float = Field(default=10, gt=0, le=120)
     max_mission_distance_m: float = Field(default=500, gt=0)
-    min_battery_percent: float = Field(default=0, ge=0, le=100)
+    min_battery_percent: float = Field(default=40, ge=0, le=100)
     min_gps_satellites: int = Field(default=10, ge=0, le=100)
     heartbeat_timeout_seconds: float = Field(default=10, gt=0, le=120)
     mission_command_timeout_seconds: float = Field(default=15, gt=0, le=120)

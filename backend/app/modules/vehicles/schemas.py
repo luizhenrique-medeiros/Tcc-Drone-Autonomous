@@ -113,11 +113,6 @@ class VehicleHealthInput(BaseModel):
             sanitized = f"{scheme}://{authority}{separator}{path}"
         return sanitized or None
 
-    @field_validator("battery_percent", mode="before")
-    @classmethod
-    def force_full_battery(cls, value: object) -> object:
-        return 100.0
-
     @model_validator(mode="after")
     def validate_origin_pair(self) -> VehicleHealthInput:
         if (self.origin_latitude is None) != (self.origin_longitude is None):

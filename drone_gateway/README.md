@@ -121,6 +121,25 @@ retorna exit code `2` se não abrir o endpoint ou não obtiver heartbeat. A saí
 `indisponível` para dados não recebidos; não completa telemetria com zero/false. O comando
 instalado equivalente é `drone-gateway-diagnose`.
 
+### Renovação de Home, RTL e geofence sem atuação
+
+`ALLOW_TELEMETRY_REQUESTS=true` permite apenas `MAV_CMD_GET_HOME_POSITION` e
+`PARAM_REQUEST_READ` para `FENCE_ENABLE`/`RTL_ALT`, após heartbeat válido do alvo.
+É um opt-in separado: com `REAL_HARDWARE_ACKNOWLEDGED=false`, não habilita
+heartbeat GCS, alteração de streams, parâmetros, missão, modos, ARM ou START.
+Mantenha os quatro gates de atuação falsos. `connect(passive=True)` e o diagnóstico
+acima continuam sem qualquer envio, mesmo com esse opt-in.
+
+A conexão normal repete essas consultas após reconectar e a cada leitura de saúde,
+limitadas por tempo (um lote de três mensagens a cada 2 s na configuração padrão).
+Sem heartbeat atual ou com fila pendente não há consulta. A resposta, não o envio,
+renova o frescor: Home e cada parâmetro expiram individualmente pelo limite
+`MAVLINK_TELEMETRY_STALE_SECONDS` (5 s por padrão) e passam a `null`.
+
+No forwarding do Mission Planner, as consultas precisam de caminho de retorno
+até o autopiloto; o gateway não ativa **Write access** nem altera o mirror.
+Receber heartbeat via UDP não comprova que esse retorno está permitido.
+
 A listagem serial isolada continua disponível:
 
 ```powershell

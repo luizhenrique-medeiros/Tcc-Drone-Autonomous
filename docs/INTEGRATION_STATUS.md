@@ -1,5 +1,98 @@
 # Estado das integrações
 
+## Consultas automáticas e compatibilidade de Home — 17/09/2026
+
+- Gateway passa a renovar Home/FENCE_ENABLE/RTL_ALT por consultas limitadas e
+  filtradas pelo alvo. `ALLOW_TELEMETRY_REQUESTS` é um opt-in independente,
+  falso por padrão; não habilita GCS heartbeat, taxas, escrita de parâmetros,
+  missão, modo, ARM ou START em hardware sem reconhecimento de atuação.
+  Diagnóstico explicitamente passivo continua com zero envio.
+- Home e cada parâmetro agora expiram separadamente; cache vencido não comprova
+  prontidão. Dados recebidos durante o download da missão atualizam o cache.
+  Sem Home recente, a releitura solicita nova resposta e bloqueia por timeout.
+- Item zero absoluto é comparado com Home recebida do autopiloto e com o limite
+  Home–origem já existente no preflight (30 m padrão). Coordenadas/altitude do
+  item zero devem coincidir com a Home, não com o marcador estático exportado.
+  Restante da rota, hash, revisão e autorização permanecem inalterados. Nenhum
+  parâmetro ou Home físico é escrito para acomodar a leitura. Referência:
+  [AP_Mission 4.6.3, item zero](https://github.com/ArduPilot/ardupilot/blob/Copter-4.6.3/libraries/AP_Mission/AP_Mission.cpp#L755).
+- Validação: **226 testes gateway**, Ruff/format; SITL oficial 4.6.3 isolado
+  confirmou renovação e readback de sete itens com desvio de Home de **1,779 m**,
+  além de rejeitar ponto de voo adulterado. Sem ARM/START ou voo; detalhes e
+  limitações em `TEST_PLAN.md`.
+- Configuração local: alvo fixo **1/1**, `ALLOW_TELEMETRY_REQUESTS=true`,
+  `REAL_HARDWARE_ACKNOWLEDGED=false` e quatro gates de atuação explicitamente
+  falsos; bateria mínima **40%** preservada. Sem mudança estrutural, dependência
+  ou extensão nova. Arquivos desta etapa: `.env` local (não versionado),
+  `.env.example`, gateway `core/config.py`, `mavlink/pymavlink_gateway.py`,
+  `tests/test_pymavlink_gateway.py`, `README.md` e os três documentos de
+  protocolo/testes/estado. Alterações anteriores de bateria foram preservadas.
+- Implantação host concluída às **14:12:13 UTC / 11:12:13 BRT**: após snapshot
+  desarmado/fresco, encerrado somente o worker antigo identificado; o supervisor
+  existente iniciou o novo gateway em observação. Banco/backend/admin continuaram
+  healthy, sem restart. Gateway container operacional não foi iniciado; o container
+  temporário do SITL foi parado ao terminar o ensaio.
+- Às **14:14:00 UTC / 11:14:00 BRT**, backend recebeu heartbeat real fresco de
+  **1/1**, `STABILIZE`, `armed=false`, GPS fix 3/20 satélites, bateria **76% /
+  15,356 V**, EKF/preflight verdadeiros, altitude relativa **+4,226 m**. Quatro
+  gates falsos. Home/RTL/geofence ainda **null**, com blockers `ORIGIN_UNKNOWN`,
+  `RTL_STATE_UNKNOWN`, `GEOFENCE_STATE_UNKNOWN`. A correção foi implantada, mas
+  a renovação ponta a ponta no hardware ainda não está comprovada: falta verificar
+  o caminho de retorno das consultas no forwarding/Write access do Mission Planner.
+  Solicitada captura da janela; nenhuma permissão do mirror foi alterada.
+- Missão real `89d7dcd8` preservada em **v2/READY_FOR_AUTHORIZATION**, sem claim.
+  Não houve upload, verificação física da rota, ARM, START, escrita de parâmetros
+  ou alteração da Home neste trabalho. Altitude no solo e configuração efetiva de
+  failsafes/geofence ainda exigem validação física; este resultado não libera voo.
+
+## Verificações de bateria restauradas — 17/09/2026
+
+- Restaurados mínimo padrão de **40%** no backend/gateway e `.env.example`,
+  bloqueios `BATTERY_NOT_RECEIVED`/`BATTERY_LOW` no backend e check `BATTERY`
+  em preflight/START do gateway. O `.env` local já tinha 40% e foi preservado.
+- Removidos validadores e retornos que forçavam a bateria a 100%, inclusive
+  quando ausente/vencida. Percentual real é preservado; mensagem desconhecida
+  após leitura válida limpa o valor anterior. Histórico antigo não foi reescrito
+  e valores de 100% produzidos pela versão anterior não comprovam carga física.
+- Sem mudança de arquitetura, schema, dependências, rota, autorização ou
+  parâmetros da Pixhawk. GPS/EKF/Home/geofence/RTL e os quatro gates continuam
+  sendo exigidos pelos respectivos fluxos. Não se restauraram parâmetros do
+  autopiloto: esta tarefa alterou verificações do projeto, não o firmware.
+- Arquivos: `.env.example`, `AGENTS_atualizado.md`; backend `core/config.py`,
+  `modules/vehicles/{schemas,service}.py`, `tests/test_battery_safety.py`;
+  gateway `core/config.py`, `models.py`, `mavlink/pymavlink_gateway.py`,
+  `safety/preflight.py`, `telemetry/normalizer.py`, testes `test_battery_safety.py`,
+  `test_preflight.py`, `test_pymavlink_gateway.py`; documentação de arquitetura,
+  requisitos, regras de negócio, protocolo, plano de testes e este relatório.
+- Validações: **101 backend + 211 gateway + 119 admin = 431 aprovados**,
+  um opcional PostgreSQL pulado; Ruff/format aprovados. Smoke SITL de bateria
+  aprovado, desarmado, sistema 42/1 em TCP 5910, sem backend ou comandos de voo.
+  Evidências em `%TEMP%/devcore-battery-restore-0ead56c3625140f3b5b82f48e90f183d/`.
+  Detalhes e limites dos ensaios em `TEST_PLAN.md`. Permanece aviso de
+  depreciação Starlette/httpx nos testes locais.
+- `docker compose build backend gateway` e
+  `docker compose up -d --no-deps --wait --wait-timeout 60 backend` concluídos;
+  DB/backend/admin saudáveis, `/ready` 200, painel HTTP 200 e `pip check`
+  aprovado. O container antigo de gateway simulado foi parado, preservando
+  dados/volumes, para não misturar sua origem com a do drone. Imagem nova do
+  gateway construída, mas o gateway de hardware executa no host Windows.
+- Supervisor validado e iniciado oculto com o SDK Flutter oficial 3.47.0.
+  Cliente Flutter em `http://localhost:5174/` respondeu HTTP 200 com título
+  `DEVcore Entregas`; renderização, login e mapas não foram inspecionados nesta etapa.
+  Novos gateways usam `-ObserveOnly` e, nesta sessão,
+  `REAL_HARDWARE_ACKNOWLEDGED=false`: somente recepção no barramento, quatro
+  gates falsos. Nenhuma configuração persistente de autorização foi ampliada.
+- Às **11:53:42 UTC**, heartbeat HTTP aceito pelo backend, fonte configurada
+  `HARDWARE_REAL`, porém **sem heartbeat MAVLink em 127.0.0.1:14551**. Snapshot
+  correto: bateria/tensão/GPS/EKF/armamento desconhecidos, `connected=false`,
+  `BATTERY_NOT_RECEIVED` e demais bloqueios ativos. Isto comprova comunicação
+  gateway–API, não conexão à Pixhawk nem estado físico da bateria.
+- Missão `89d7dcd8` permanece **v2/READY_FOR_AUTHORIZATION**, sem claim e sem
+  comandos pendentes. Zero comandos registrados nesta data até a conferência.
+  Sem autorização, upload, ARM, START, alteração de Home ou voo nesta etapa.
+  Próximo passo: restabelecer o encaminhamento MAVLink no Mission Planner e
+  conferir novo snapshot real antes de qualquer avaliação de voo.
+
 ## Revisão de origem após reposicionamento — 10/09/2026, 13:16–13:35 UTC
 
 - Implementado `revise-origin` no domínio/backend e painel, com versão/hash

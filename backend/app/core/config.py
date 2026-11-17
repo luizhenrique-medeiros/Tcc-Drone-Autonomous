@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     default_takeoff_altitude_m: float = Field(default=10, gt=0, le=120)
     max_mission_distance_m: float = Field(default=500, gt=0)
     delivery_fee: float = Field(default=7.5, ge=0)
-    min_battery_percent: float = Field(default=0, ge=0, le=100)
+    min_battery_percent: float = Field(default=40, ge=0, le=100)
     min_gps_satellites: int = Field(default=10, ge=0, le=100)
     heartbeat_timeout_seconds: int = Field(default=10, ge=1, le=300)
     flight_authorization_ttl_seconds: int = Field(default=300, ge=30, le=1800)

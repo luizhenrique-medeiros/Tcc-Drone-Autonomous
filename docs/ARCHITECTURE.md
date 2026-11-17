@@ -118,7 +118,7 @@ As transições válidas ficam no domínio, não nos routers ou componentes visu
 - Rotas de `saved-locations` derivam `user_id` exclusivamente do JWT e devolvem a resposta não enumerável do projeto para recurso alheio.
 - Antes de contar e inserir uma localização, a transação bloqueia a linha do cliente com `FOR NO KEY UPDATE`; duas criações concorrentes não ultrapassam três.
 - Segredos vêm do ambiente; CORS é restrito; logs removem token, senha e chaves.
-- Heartbeat, GPS, EKF, geofence, RTL, origem, distância e área controlada são pré-condições.
+- Heartbeat, GPS, EKF, bateria, geofence, RTL, origem, distância e área controlada são pré-condições.
 - Timeouts e reconexão têm limite; upload/claim/eventos possuem chaves de idempotência.
 - O ARM normal possui endpoint, chave de idempotência, confirmações presenciais, auditoria, ACK e heartbeat próprios; campo ausente, nulo, vencido ou divergente falha fechado.
 - Perda do backend não muda a autoridade do ArduPilot sobre um voo em execução.

@@ -109,6 +109,7 @@ def fake_mavutil() -> SimpleNamespace:
         MAV_TYPE_GCS=6,
         MAV_STATE_ACTIVE=4,
         MAV_CMD_SET_MESSAGE_INTERVAL=511,
+        MAV_CMD_GET_HOME_POSITION=410,
         MAV_CMD_MISSION_START=300,
         MAV_CMD_DO_PAUSE_CONTINUE=193,
         MAV_CMD_NAV_RETURN_TO_LAUNCH=20,
@@ -1035,6 +1036,184 @@ def ingest_test_home(gateway: PymavlinkVehicleGateway, waypoint: MissionWaypoint
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_passive", [False, True])
+async def test_opt_in_queries_do_not_unlock_passive_diagnostics_or_actuation(
+    monkeypatch: pytest.MonkeyPatch, explicit_passive: bool
+) -> None:
+    gateway = PymavlinkVehicleGateway(
+        Settings(
+            _env_file=None,
+            mavlink_mode=MavlinkMode.MISSION_PLANNER_FORWARD,
+            mavlink_connection="COM42",
+            allow_telemetry_requests=True,
+        )
+    )
+    connection = FakeConnection([FakeMessage("HEARTBEAT", autopilot=3, base_mode=0)])
+    module = fake_mavutil()
+    module.mavlink_connection = lambda *args, **kwargs: connection
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
+    await gateway.connect(passive=explicit_passive)
+    health = await gateway.read_health()
+    expected_calls = (
+        []
+        if explicit_passive
+        else [
+            ("command_long_send", (1, 1, 410, 0, 0, 0, 0, 0, 0, 0, 0)),
+            ("param_request_read_send", (1, 1, b"FENCE_ENABLE", -1)),
+            ("param_request_read_send", (1, 1, b"RTL_ALT", -1)),
+        ]
+    )
+    assert connection.mav.calls == expected_calls
+    assert gateway._passive_connection
+    assert health.armed is False
+    assert not any(
+        (
+            health.mission_upload_enabled,
+            health.flight_commands_enabled,
+            health.mission_start_enabled,
+            health.vehicle_arm_enabled,
+        )
+    )
+    with pytest.raises(UnsafeOperationError):
+        await gateway.arm_vehicle()
+    with pytest.raises(UnsafeOperationError):
+        await gateway.upload_mission(canonical_mission(), "")
+    with pytest.raises(UnsafeOperationError):
+        await gateway.start_mission(canonical_mission())
+    assert connection.mav.calls == expected_calls
+    # Reconnection must query again, even if the previous batch was recent.
+    connection.messages.append(FakeMessage("HEARTBEAT", autopilot=3, base_mode=0))
+    await gateway.connect(passive=explicit_passive)
+    assert connection.mav.calls == expected_calls * 2
+    await gateway.close()
+
+
+def test_safety_queries_are_rate_limited_retry_and_require_live_drained_link() -> None:
+    gateway, connection = configured_gateway()
+    gateway._telemetry_requests_enabled = True
+    gateway._passive_connection = True
+    gateway._request_safety_state_if_due()
+    assert connection.mav.calls == []  # no heartbeat
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._request_safety_state_if_due()
+    assert len(connection.mav.calls) == 3
+    gateway._request_safety_state_if_due()
+    assert len(connection.mav.calls) == 3
+    gateway._last_safety_request_monotonic = time.monotonic() - 10
+    gateway._receive_backlog = True
+    gateway._request_safety_state_if_due()
+    assert len(connection.mav.calls) == 3
+    gateway._receive_backlog = False
+    gateway._request_safety_state_if_due()
+    assert len(connection.mav.calls) == 6  # retry even when replies are lost
+    gateway._last_safety_request_monotonic = time.monotonic() - 10
+    gateway._last_heartbeat_monotonic = time.monotonic() - 10
+    gateway._request_safety_state_if_due()
+    assert len(connection.mav.calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_home_and_each_parameter_expire_independently_and_reset() -> None:
+    gateway, connection = configured_gateway()
+    gateway._passive_connection = True
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    ingest_test_home(gateway, canonical_mission().waypoints[0])
+    for parameter, value in ((b"FENCE_ENABLE\x00", 1), ("RTL_ALT", 1500)):
+        gateway._ingest_message(FakeMessage("PARAM_VALUE", param_id=parameter, param_value=value))
+    fresh = await gateway.read_health()
+    assert fresh.origin_latitude == canonical_mission().origin_latitude
+    assert fresh.rtl_configured is True
+    assert fresh.geofence_enabled is True
+    for key in ("HOME_POSITION", "PARAM:FENCE_ENABLE", "PARAM:RTL_ALT"):
+        gateway._last_message_monotonic[key] = time.monotonic() - 3600
+    gateway._ingest_message(FakeMessage("PARAM_VALUE", param_id="OTHER", param_value=1))
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", source_system=99, param_id="RTL_ALT", param_value=1500)
+    )
+    gateway._ingest_message(
+        FakeMessage("HOME_POSITION", source_component=2, latitude=0, longitude=0, altitude=0)
+    )
+    stale = await gateway.read_health()
+    assert stale.origin_latitude is None and stale.origin_longitude is None
+    assert stale.rtl_configured is None and stale.geofence_enabled is None
+    gateway._ingest_message(FakeMessage("PARAM_VALUE", param_id="RTL_ALT", param_value=1500))
+    renewed = await gateway.read_health()
+    assert renewed.rtl_configured is True and renewed.geofence_enabled is None
+    gateway._reset_live_state()
+    reset = await gateway.read_health()
+    assert reset.origin_latitude is None and reset.rtl_configured is None
+    assert connection.mav.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+async def test_nonfinite_safety_parameters_do_not_claim_readiness(value: float) -> None:
+    gateway, _connection = configured_gateway()
+    for parameter in ("RTL_ALT", "FENCE_ENABLE"):
+        gateway._ingest_message(FakeMessage("PARAM_VALUE", param_id=parameter, param_value=value))
+    health = await gateway.read_health()
+    assert health.rtl_configured is None and health.geofence_enabled is None
+
+
+@pytest.mark.parametrize("message_type", ["MISSION_ITEM_INT", "MISSION_ITEM"])
+def test_item_zero_uses_live_home_within_existing_origin_guard(message_type: str) -> None:
+    expected = canonical_mission().waypoints[0]
+    live_home = expected.model_copy(update={"latitude": expected.latitude + 0.000016})
+    gateway, _connection = configured_gateway()
+    ingest_test_home(gateway, live_home)
+    actual = downloaded_waypoint(live_home, frame=0, z=742.32, message_type=message_type)
+    gateway._verify_downloaded_waypoint(actual, expected)
+    # The old planned origin cannot masquerade as the fresh, shifted Home.
+    with pytest.raises(MissionUploadError, match="Coordenadas"):
+        gateway._verify_downloaded_waypoint(
+            downloaded_waypoint(expected, frame=0, z=742.32, message_type=message_type), expected
+        )
+    # The same displacement is still invalid for every real route item.
+    for waypoint in canonical_mission().waypoints[1:]:
+        if waypoint.command == 211:
+            continue
+        displaced = waypoint.model_copy(update={"latitude": waypoint.latitude + 0.000016})
+        with pytest.raises(MissionUploadError, match="Coordenadas"):
+            gateway._verify_downloaded_waypoint(downloaded_waypoint(displaced), waypoint)
+
+
+@pytest.mark.parametrize("offset", [0.00028, float("nan"), float("inf")])
+def test_item_zero_rejects_home_outside_origin_guard_even_if_readback_matches(
+    offset: float,
+) -> None:
+    expected = canonical_mission().waypoints[0]
+    gateway, _connection = configured_gateway()
+    ingest_test_home(gateway, expected)
+    gateway._origin_latitude = expected.latitude + offset
+    actual = downloaded_waypoint(expected, message_type="MISSION_ITEM", frame=0, z=742.32)
+    actual.x = gateway._origin_latitude
+    with pytest.raises(MissionUploadError, match="HOME_POSITION"):
+        gateway._verify_downloaded_waypoint(actual, expected)
+
+
+def test_mission_receive_preserves_interleaved_telemetry_and_filters_message_type() -> None:
+    waypoint = canonical_mission().waypoints[0]
+    gateway, connection = configured_gateway(
+        [
+            FakeMessage(
+                "HOME_POSITION",
+                latitude=round(waypoint.latitude * 1e7),
+                longitude=round(waypoint.longitude * 1e7),
+                altitude=742320,
+            ),
+            FakeMessage("PARAM_VALUE", param_id="RTL_ALT", param_value=1500),
+            FakeMessage("MISSION_ITEM_INT", seq=0),
+            FakeMessage("MISSION_COUNT", count=7),
+        ]
+    )
+    message = gateway._recv_mission_message("MISSION_COUNT")
+    assert message.get_type() == "MISSION_COUNT"
+    assert gateway._message_is_fresh("HOME_POSITION")
+    assert gateway._message_is_fresh("PARAM:RTL_ALT")
+    assert not connection.messages
+
+
 def test_readback_verifies_full_arducopter_mission_and_live_home() -> None:
     mission = canonical_mission()
     messages = [FakeMessage("MISSION_COUNT", count=len(mission.waypoints))]
@@ -1062,6 +1241,38 @@ def test_readback_verifies_full_arducopter_mission_and_live_home() -> None:
     assert not any(
         name in {"command_long_send", "mission_count_send"} for name, _ in connection.mav.calls
     )
+
+
+@pytest.mark.parametrize("reply", [False, True])
+def test_readback_requests_missing_home_before_starting_download(reply: bool) -> None:
+    mission = canonical_mission()
+    home = mission.waypoints[0].model_copy(update={"latitude": mission.origin_latitude + 0.000016})
+    messages = []
+    if reply:
+        messages = [
+            FakeMessage(
+                "HOME_POSITION",
+                latitude=round(home.latitude * 1e7),
+                longitude=round(home.longitude * 1e7),
+                altitude=742320,
+            ),
+            FakeMessage("MISSION_COUNT", count=7),
+            downloaded_waypoint(home, frame=0, z=742.32),
+            *(downloaded_waypoint(waypoint) for waypoint in mission.waypoints[1:]),
+        ]
+    gateway, connection = configured_gateway(messages)
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._telemetry_requests_enabled = True
+    gateway._passive_connection = True
+    if reply:
+        gateway._verify_mission_sync(mission)
+        assert connection.mav.calls[-1][0] == "mission_ack_send"
+    else:
+        with pytest.raises(VehicleTimeoutError, match="HOME_POSITION"):
+            gateway._verify_mission_sync(mission)
+        assert len(connection.mav.calls) == 3  # whitelist only; download never started
+    assert connection.mav.calls[0][0] == "command_long_send"
+    assert connection.mav.calls[0][1][2] == 410
 
 
 @pytest.mark.parametrize("mismatch", ["count", "altitude"])
@@ -1219,6 +1430,31 @@ async def test_battery_status_is_normalized_then_becomes_stale() -> None:
     stale = await gateway.read_health()
     assert stale.battery_percent is None
     assert stale.battery_voltage is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message_type", ["SYS_STATUS", "BATTERY_STATUS"])
+@pytest.mark.parametrize("remaining", [-1, 101])
+async def test_unknown_battery_clears_previous_reading(message_type: str, remaining: int) -> None:
+    gateway, connection = configured_gateway()
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(FakeMessage("BATTERY_STATUS", battery_remaining=80, voltages=[15000]))
+    assert (await gateway.read_health()).battery_percent == 80
+
+    gateway._ingest_message(
+        FakeMessage(
+            message_type,
+            battery_remaining=remaining,
+            voltage_battery=0xFFFF,
+            voltages=[0xFFFF] * 10,
+            onboard_control_sensors_health=1 << 28,
+        )
+    )
+
+    health = await gateway.read_health()
+    assert health.battery_percent is None
+    assert health.battery_voltage is None
+    assert all(name == "heartbeat_send" for name, _ in connection.mav.calls)
 
 
 @pytest.mark.asyncio

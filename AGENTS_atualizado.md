@@ -72,7 +72,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - Versão iOS ou publicação na Google Play Store.
 - Operação comercial ou voo fora de ambiente controlado.
 - Armar, decolar ou iniciar missão real automaticamente ao abrir qualquer aplicação.
-- Desativar geofence, failsafes, verificações de GPS, EKF.
+- Desativar geofence, failsafes, verificações de GPS, EKF ou bateria.
 - Processar imagens ou reconhecimento facial.
 - Armazenar toda mensagem MAVLink bruta sem política de retenção.
 - Criar funcionalidades futuras que atrasem o fluxo principal do MVP.
@@ -178,7 +178,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Níveis:** Use `DEBUG`, `INFO`, `WARNING`, `ERROR` e `CRITICAL` corretamente.
 - **Correlação:** Propague um identificador de correlação entre API, gateway e eventos da missão.
 - **Eventos:** Registre criação, validação, claim, upload, execução, destino, retorno, conclusão, abortamento e falha.
-- **Telemetria mínima:** Latitude, longitude, altitude relativa, velocidade, modo, armamento, GPS e estado da missão.
+- **Telemetria mínima:** Latitude, longitude, altitude relativa, velocidade, bateria, modo, armamento, GPS e estado da missão.
 - **Frequência:** A taxa de persistência deve ser configurável e menor ou igual à taxa recebida.
 - **Privacidade:** Não registre dados desnecessários do usuário.
 - **MVP:** Não introduza Grafana, Loki ou Prometheus sem solicitação explícita.

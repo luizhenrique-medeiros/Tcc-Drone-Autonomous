@@ -73,6 +73,7 @@
 - É endpoint, botão, tabela e evento distintos da aprovação do pedido.
 - Requer administrador autenticado, missão revisada, área controlada, três confirmações humanas e snapshot recente/saudável.
 - Conexão, heartbeat, GPS, satélites, EKF, bateria, home, geofence, RTL, armamento, preflight e preparo da missão são checks automáticos. `BLOCKING` impede autorizar; `WARNING` informa sem substituir a validação do servidor.
+- Bateria ausente ou vencida permanece `null` e bloqueia; valor abaixo do mínimo configurado também bloqueia. O padrão de `MIN_BATTERY_PERCENT` é 40. Backend e gateway nunca substituem a leitura por 100%, e restauração/reconexão não concede autorização nem habilita comandos.
 - As confirmações humanas cobrem área/condições/pessoas/retorno, inspeção física do drone/carga e prontidão do operador. Não existe frase digitada.
 - A autorização referencia missão e versão, expira em poucos minutos, é de uso único e não é reutilizada após falha/conclusão.
 - Repetir a mesma tentativa com a mesma chave de idempotência devolve a autorização original; uma nova tentativa após a transição é recusada.

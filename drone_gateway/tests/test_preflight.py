@@ -76,7 +76,7 @@ def test_preflight_accepts_healthy_authorized_mission() -> None:
     assert result.passed
 
 
-def test_preflight_rejects_expired_authorization_with_battery_gate_removed() -> None:
+def test_preflight_rejects_low_battery_and_expired_authorization() -> None:
     now = datetime.now(UTC)
     health = healthy_vehicle().model_copy(update={"battery_percent": 10})
     result = evaluate_preflight(
@@ -86,4 +86,4 @@ def test_preflight_rejects_expired_authorization_with_battery_gate_removed() -> 
         now=now,
     )
     assert not result.passed
-    assert result.failures == ["AUTHORIZATION_EXPIRY"]
+    assert result.failures == ["BATTERY", "AUTHORIZATION_EXPIRY"]

@@ -178,13 +178,6 @@ class VehicleHealth(BaseModel):
     vehicle_arm_enabled: bool = False
     connection_error: str | None = Field(default=None, max_length=1000)
 
-    @field_validator("battery_percent", mode="before")
-    @classmethod
-    def force_full_battery(cls, value: object) -> object:
-        if value is None:
-            return 100.0
-        return 100.0
-
 
 class TelemetrySnapshot(BaseModel):
     source: OperationalSource = OperationalSource.UNKNOWN
@@ -198,11 +191,6 @@ class TelemetrySnapshot(BaseModel):
     flight_mode: str | None = Field(default=None, max_length=40)
     armed: bool | None = None
     recorded_at: datetime
-
-    @field_validator("battery_percent", mode="before")
-    @classmethod
-    def force_full_battery(cls, value: object) -> object:
-        return 100.0
 
 
 class VehicleEvent(BaseModel):

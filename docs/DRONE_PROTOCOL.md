@@ -96,6 +96,13 @@ Solicitações administrativas de ARM, `START`, `PAUSE`, `CONTINUE`, `RTL` ou `A
 
 `event_id`, missão, veículo, `occurred_at`, `received_at`, `source`, `is_stale`, latitude, longitude, altitude relativa, velocidade, bateria, GPS, modo, armamento e estado. Campos físicos ausentes permanecem `null`; não são convertidos em zero ou `false`. MAVLink bruto não cruza o contrato nem é persistido indiscriminadamente. A frequência de envio pode exceder a de persistência; amostras antigas não substituem o snapshot.
 
+O percentual recebido é preservado, nunca substituído por 100%. Em
+`SYS_STATUS`/`BATTERY_STATUS`, percentual desconhecido (`-1`) ou fora de 0–100
+limpa a leitura anterior; tensão desconhecida também permanece `null`, conforme
+o [contrato MAVLink](https://mavlink.io/en/messages/common#BATTERY_STATUS).
+Telemetria vencida não satisfaz preflight. Backend e gateway usam mínimo padrão
+de 40%, recusam percentual ausente/abaixo do limite e mantêm ARM/START separados.
+
 ## Estado e mapeamento
 
 - upload: `UPLOADING → UPLOADED` somente após ACK; `UPLOADED → VERIFIED` somente após releitura/comparação integral; timeout, ACK negativo ou divergência nunca viram sucesso;
@@ -164,9 +171,13 @@ coordenadas e altitude. Normaliza somente representações equivalentes:
   precisa repetir o marcador do arquivo enviado;
 - o item zero canônico (`NAV_WAYPOINT`, altitude relativa zero) pode ser devolvido
   como Home absoluta. Nesse caso exige `HOME_POSITION` recente do alvo, coordenadas
-  coincidentes com a origem planejada e altitude MSL recebida em milímetros,
-  convertida para metros. Ausência, vencimento, mudança da Home ou altitude
-  divergente bloqueiam a verificação; a Home nunca é alterada para fazer o teste passar;
+  relidas coincidentes com essa Home (tolerância de 1e-6 grau) e altitude MSL
+  recebida em milímetros, convertida para metros (tolerância de 0,05 m).
+  A distância Home–origem planejada deve respeitar `MAX_ORIGIN_DEVIATION_M`
+  (30 m por padrão), o mesmo limite do preflight. A normalização é exclusiva do
+  item zero: os pontos de voo/retorno/pouso mantêm comparação rigorosa com a rota
+  autorizada. Home ausente, vencida, inválida, fora do limite ou divergente da
+  releitura bloqueia; nenhuma Home, rota, hash ou revisão é alterada;
 - `DO_GRIPPER` pode retornar frame global ou de missão e posição zerada, pois não
   contém posição operacional. Comando e quatro parâmetros continuam comparados;
 - `LOITER_TIME.param3` e `LAND.param4` enviados com valor padrão `0` podem retornar
@@ -208,7 +219,21 @@ mission_planner_forward:
 
 No estado observado, o Mission Planner possuía um listener AutoConnect **Mavlink alt port**, UDP 14551, direção **Inbound**. Ele recebe tráfego destinado ao Mission Planner e não encaminha a `COM7`; precisa ser desabilitado para o gateway conseguir fazer bind em `udpin:127.0.0.1:14551`. O mirror só é iniciado depois de o Mission Planner conectar à `COM7` a 57600.
 
-O baseline de leitura mantém `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. Nesse estado, não se envia heartbeat de GCS, pedido de intervalo, missão, comando, modo ou armamento. Registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** no mirror e definir `ALLOW_MISSION_UPLOAD=true` requer sessão posterior autorizada e permite somente upload/releitura desarmados; os outros três gates continuam falsos. Uma sessão posterior de ARM exige habilitar deliberadamente `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, além de satisfazer todos os checks; esses valores nunca são inferidos de ambiente, conexão ou estado da UI.
+O baseline de leitura mantém `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_TELEMETRY_REQUESTS=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. Nesse estado, não se envia heartbeat de GCS, pedido de intervalo, missão, comando, modo ou armamento. Registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** no mirror e definir `ALLOW_MISSION_UPLOAD=true` requer sessão posterior autorizada e permite somente upload/releitura desarmados; os outros três gates continuam falsos. Uma sessão posterior de ARM exige habilitar deliberadamente `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, além de satisfazer todos os checks; esses valores nunca são inferidos de ambiente, conexão ou estado da UI.
+
+O opt-in independente `ALLOW_TELEMETRY_REQUESTS=true` permite somente consultas
+`GET_HOME_POSITION` e `PARAM_REQUEST_READ` de `FENCE_ENABLE`/`RTL_ALT`, sem liberar
+qualquer gate de atuação. Consultas são renovadas após conexão/reconexão e no loop
+de saúde, no máximo um lote por 2 s na configuração padrão, apenas com heartbeat
+válido e fila drenada. Home e cada parâmetro expiram separadamente em 5 s por
+padrão; outra mensagem `PARAM_VALUE` não renova sua validade. Resposta ausente ou
+inválida permanece `null`, sem fabricar prontidão. O diagnóstico explicitamente
+passivo continua transmitindo zero bytes. O gateway não habilita escrita no mirror.
+
+Durante a releitura de missão, telemetria intercalada é ingerida antes de filtrar
+as mensagens da transação, preservando Home e heartbeat atuais. Se a Home necessária
+estiver vencida, a conexão com consultas habilitadas solicita e aguarda uma nova
+resposta por tempo limitado antes de iniciar o download; ausência bloqueia.
 
 No adaptador MAVLink, `MAVLINK_TARGET_SYSTEM_ID` e `MAVLINK_TARGET_COMPONENT_ID` filtram globalmente todas as mensagens operacionais. Fora do diagnóstico passivo e somente com escrita autorizada, o gateway pode solicitar `AUTOPILOT_VERSION` e intervalos dos tipos de telemetria necessários, sem alterar parâmetros de segurança. A conexão serial usa porta e baud explícitos; `python -m app.tools.list_ports` lista candidatas sem selecionar uma automaticamente.
 
