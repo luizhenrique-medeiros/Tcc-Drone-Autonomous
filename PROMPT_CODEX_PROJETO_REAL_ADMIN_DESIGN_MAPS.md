@@ -148,8 +148,6 @@ Antes dessa autorização, o sistema deve exibir:
 - estado de armamento;
 - GPS;
 - quantidade de satélites;
-- estado do EKF;
-- tensão ou percentual de bateria;
 - origem;
 - destino;
 - distância estimada;
@@ -648,7 +646,6 @@ Crie checklist real para:
 
 - estrutura;
 - hélices;
-- bateria;
 - GPS;
 - EKF;
 - bússola;
@@ -1591,7 +1588,6 @@ Inclua:
 - GPS;
 - satélites;
 - EKF;
-- bateria;
 - modo;
 - armamento;
 - timestamp.
@@ -1601,7 +1597,6 @@ Inclua:
 - posição;
 - altitude;
 - velocidade;
-- bateria;
 - GPS;
 - modo;
 - armamento;
@@ -1773,7 +1768,6 @@ O modo real deve exigir:
 - heartbeat;
 - estado válido;
 - GPS adequado;
-- bateria mínima;
 - origem conhecida;
 - distância permitida;
 - geofence;

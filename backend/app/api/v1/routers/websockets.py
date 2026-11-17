@@ -4,12 +4,15 @@ import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from app.api.dependencies import AppSettings, DatabaseSession
 from app.core.enums import UserRole
 from app.core.exceptions import AuthenticationError, NotFoundError
 from app.core.security import decode_access_token
 from app.core.websocket import manager
+from app.modules.missions.models import Mission
+from app.modules.missions.schemas import MissionRead
 from app.modules.orders.models import Order
 from app.modules.orders.service import order_to_read
 from app.modules.users.models import User
@@ -96,6 +99,16 @@ async def order_updates(
         }
     )
     try:
+        # Reconnecting customers may have missed the last status transition.
+        # Restore persisted state without waiting for (or creating) a new event.
+        mission = session.scalar(select(Mission).where(Mission.order_id == order_id))
+        if mission is not None:
+            await websocket.send_json(
+                {
+                    "type": "mission.status",
+                    "data": MissionRead.model_validate(mission).model_dump(mode="json"),
+                }
+            )
         while True:
             message = await websocket.receive_text()
             if message == "ping":

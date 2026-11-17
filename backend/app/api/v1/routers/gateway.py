@@ -18,12 +18,15 @@ from app.modules.missions.schemas import (
     GatewayMissionStatus,
     GatewayUploadStatus,
     MissionRead,
+    RetiredVersionRelease,
+    RetiredVersionReleaseResult,
 )
 from app.modules.missions.service import (
     acknowledge_gateway_command,
     active_authorization,
     apply_gateway_status,
     claim_mission,
+    release_retired_version,
 )
 from app.modules.system_events.schemas import GatewayEventCreate, SystemEventRead
 from app.modules.system_events.service import record_event
@@ -132,6 +135,29 @@ async def claim(
         mission_file=mission.mission_file,
         authorization_id=authorization.id,
         authorization_expires_at=authorization.expires_at,
+    )
+
+
+@router.post(
+    "/missions/{mission_id}/release-retired-version",
+    response_model=RetiredVersionReleaseResult,
+    summary="Reconhecer versão substituída sem alterar a missão armazenada no veículo",
+)
+def release_revision(
+    mission_id: UUID,
+    payload: RetiredVersionRelease,
+    session: DatabaseSession,
+    settings: AppSettings,
+    authenticated_gateway_id: GatewayAuth,
+) -> RetiredVersionReleaseResult:
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    released = release_retired_version(
+        session, mission, authenticated_gateway_id, payload, settings
+    )
+    return RetiredVersionReleaseResult(
+        mission_id=mission_id, released=released, **payload.model_dump()
     )
 
 

@@ -13,6 +13,7 @@ import type {
   LoginInput,
   Mission,
   MissionAuthorization,
+  MissionOriginRevisionInput,
   MissionStatus,
   OperationalMetadata,
   OperationalSource,
@@ -552,6 +553,7 @@ const postCritical = <T>(
 };
 
 const flightAuthorizationRequestIds = new Map<string, string>();
+const originRevisionRequestIds = new Map<string, string>();
 const armMissionRequestIds = new Map<
   string,
   { fingerprint: string; requestId: string }
@@ -625,6 +627,16 @@ export const realApi: AdminApi = {
     );
     flightAuthorizationRequestIds.delete(id);
     return adaptMission(response.mission);
+  },
+  reviseMissionOrigin: async (id: string, input: MissionOriginRevisionInput) => {
+    const fingerprint = JSON.stringify([id, input]);
+    const requestId = originRevisionRequestIds.get(fingerprint) ?? createRequestId();
+    originRevisionRequestIds.set(fingerprint, requestId);
+    const response = await postCritical<RawMission>(
+      `/admin/missions/${id}/revise-origin`, input, requestId,
+    );
+    originRevisionRequestIds.delete(fingerprint);
+    return adaptMission(response);
   },
   armMission: async (
     id: string,

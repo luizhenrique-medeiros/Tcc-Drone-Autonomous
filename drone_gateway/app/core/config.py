@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     mavlink2_enabled: bool = True
     real_hardware_confirmation_required: bool = True
     real_hardware_acknowledged: bool = False
+    # Opt-in for a fixed read-only whitelist; never grants actuation or stream control.
+    allow_telemetry_requests: bool = False
     allow_mission_upload: bool = False
     allow_flight_commands: bool = False
     allow_mission_start: bool = False

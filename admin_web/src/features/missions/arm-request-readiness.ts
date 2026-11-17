@@ -5,6 +5,7 @@ import type {
   VehicleHealth,
 } from '../../services';
 import { getVehicleReadiness } from './vehicle-readiness';
+import { hasCurrentClaimAuthorization } from './authorization-presentation';
 
 export interface ArmRequestReadiness {
   ready: boolean;
@@ -146,6 +147,9 @@ export const getArmRequestReadiness = (
 
   if (mission.status !== 'VERIFIED') {
     blockers.push('A missão precisa estar verificada antes do armamento.');
+  }
+  if (!hasCurrentClaimAuthorization(mission)) {
+    blockers.push('Renove a autorização da missão antes de solicitar armamento.');
   }
   if (!mission.vehicle_id) {
     blockers.push('A missão não possui veículo vinculado.');

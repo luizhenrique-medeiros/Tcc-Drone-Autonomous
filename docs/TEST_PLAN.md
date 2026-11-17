@@ -1,5 +1,88 @@
 # Plano de testes e evidências
 
+## Renovação de consultas e Home na releitura (17/09/2026)
+
+- Gateway: **226 testes aprovados**, Ruff e format aprovados. Acrescentados 15
+  casos para opt-in de consultas, diagnóstico estritamente passivo, reconexão,
+  rate limit, retry, ausência de heartbeat/fila drenada, frescor por parâmetro,
+  alvo errado, NaN/infinito, Home deslocada/demasiado distante e mensagens
+  intercaladas na releitura. Upload, ARM e START continuam bloqueados no modo
+  de consulta. Nenhum teste unitário abre endpoint físico.
+- SITL **ArduCopter 4.6.3**, binário oficial `SITL_x86_64_linux_gnu`, container
+  isolado, sem dispositivos físicos/backend, porta host `127.0.0.1:5920`, alvo
+  **42/1**. Consultas Home/FENCE_ENABLE/RTL_ALT renovadas durante mais de 5 s;
+  reset do cache recuperado. Instrumentação restringiu a fase de consulta aos
+  três pedidos permitidos. Reconexão de socket coberta nos testes unitários;
+  no SITL foi feito reset do mesmo cache, sem simular interrupção física da UDP.
+- Só no SITL, habilitado upload para enviar sete itens sintéticos. ACK e
+  releitura completos, inclusive nova consulta de Home expirada, aceitando
+  diferença Home–origem de **1,779 m**. Releitura com alteração de latitude em
+  um ponto de voo foi rejeitada. **Zero ARM, START, SET_MODE ou PARAM_SET**;
+  veículo virtual desarmado e quatro gates falsos ao final. Sem voo simulado.
+- O primeiro ensaio com o SITL nativo instalado não obteve `RTL_ALT`; portanto
+  não conta como aprovação completa. Não se adicionou alias de outra versão
+  nem se relaxou o check. O ensaio foi repetido no binário oficial 4.6.3.
+- Script e binário isolados em
+  `%TEMP%/devcore-home-refresh-5d2ba2837a274992a5ea5683f8d44a78/`.
+  Esta etapa não altera backend, admin ou Flutter; suas suítes não foram
+  repetidas. As contagens da restauração de bateria abaixo são evidências anteriores.
+
+## Restauração das verificações de bateria (17/09/2026)
+
+- `backend/tests/test_battery_safety.py`: preservação do percentual no heartbeat
+  e na leitura administrativa, ausência, 0/10/20/25/39,9%, limite de 40%, 100%,
+  rejeição de negativos, valores acima de 100, NaN e infinito; default de 40%.
+- `drone_gateway/tests/test_battery_safety.py`: contratos de saúde/telemetria,
+  normalização e bloqueio de preflight/START nos mesmos limites, sem hardware.
+- `test_pymavlink_gateway.py`: ausência inicial e expiração; leitura desconhecida
+  ou inválida após leitura válida em SYS_STATUS/BATTERY_STATUS deve limpar o
+  valor anterior, não renovar sua validade. Tensão desconhecida permanece null.
+- Regressões reproduzidas antes da correção: 12 falhas no backend, 24 no
+  gateway; quatro casos adicionais reproduziram retenção de leitura anterior.
+- Resultado final: `python -m pytest -o addopts= -q --tb=line` nas duas venvs:
+  backend **101 aprovados, 1 pulado**; gateway **211 aprovados**. O opcional de
+  concorrência PostgreSQL foi pulado por ausência de
+  `SAVED_LOCATIONS_POSTGRES_TEST_URL`; os testes de API usam banco isolado.
+  `python -m ruff check .` e `python -m ruff format --check .` aprovados em ambos.
+  Admin: `npm.cmd test -- --run`, **119 aprovados**. Sem alteração no Flutter;
+  sua suíte, análise e builds Android não foram repetidos.
+- Smoke SITL nativo isolado, alvo 42/1 em TCP 5910: adaptador atualizado recebeu
+  100%/12,6 V do simulador, desarmado e com quatro gates falsos. Sem backend,
+  upload, ARM, START ou escrita de parâmetros. Este smoke valida recepção de
+  bateria, não preflight completo, missão, autonomia ou voo real.
+
+## Regressão de revisão de origem (10/09/2026)
+
+- Backend: artefato histórico completo, destino e altitude preservados, versão
+  incrementada, revisão/claim invalidados, idempotência, RBAC, coordenadas e
+  alcance, estado armado/vencido/incompleto, gates, comandos em andamento e START.
+- Handshake: autorização bloqueada antes da liberação, hash/gateway inválidos
+  recusados, reconhecimento idempotente e nova autoridade ligada à versão nova.
+- Gateway: journal só liberado em espera/observação, resposta vinculada,
+  interrupção/restart recuperável e releitura física após resposta. Nenhum ARM,
+  START, upload, parâmetro ou clear da missão física deve ocorrer na liberação.
+- Admin: confirmação desmarca ao editar coordenadas, destino não é enviado no
+  request, versão/hash vinculados e estados/gates bloqueados.
+- SITL deve comprovar a liberação do journal com veículo virtual desarmado e
+  missão física ainda legível; ACK HTTP com fixture não equivale a backend real.
+
+Regressões de 10/09/2026: `test_authorization_renewal.py` cobre nova autoridade,
+histórico preservado, replay e recusa por identidade/artefato, checklist,
+preflight, armamento e comando pendente/incerto. O executor testa renovação
+divergente/expirada/offline, journal e ausência de reupload/START; telemetria de
+espera não avança missão nem fabrica timestamp. O painel cobre renovação,
+prazo/versão, reconexão além de oito quedas e credenciais recusadas.
+
+Reconexão do cliente: `test_verified_mission_is_restored_on_customer_socket_reconnect`
+reproduz a ausência de `mission.status` inicial e verifica duas conexões com a
+mesma missão `VERIFIED`, hash preservado e nenhum comando gerado. O caso sem
+missão continua recebendo apenas `order.snapshot`/`pong`; propriedade e recusa
+de pedidos estrangeiros permanecem cobertas por `test_customer_orders.py`.
+
+Supervisor Windows: testar `-ValidateOnly`, segunda instância sem duplicação,
+reutilização de aplicações e recuperação após encerrar gateway/cliente. Fazer
+esse ensaio somente desarmado e com gates fechados; não comprova ARM ou voo.
+
 ## Camadas
 
 1. **Unitário:** domínio, schemas, widgets/componentes e gateway fake; sem hardware.

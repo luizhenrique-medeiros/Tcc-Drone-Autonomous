@@ -175,7 +175,7 @@ export const getAutomaticPreflightChecks = (
   health: VehicleHealth | null,
 ): AutomaticPreflightCheck[] => {
   const missionPrepared =
-    mission.status === 'READY_FOR_AUTHORIZATION' &&
+    ['READY_FOR_AUTHORIZATION', 'VERIFIED'].includes(mission.status) &&
     Boolean(mission.reviewed_at) &&
     Boolean(mission.file_hash);
 

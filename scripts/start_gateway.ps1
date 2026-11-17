@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [switch]$ObserveOnly,
     [switch]$DiagnoseOnly,
     [ValidateRange(0, 60)][int]$ObserveSeconds = 5
 )
@@ -11,6 +12,13 @@ $pythonCommand = Join-Path $gatewayPath '.venv\Scripts\python.exe'
 if (-not (Test-Path $pythonCommand)) { $pythonCommand = 'python' }
 $previousGatewayRuntime = $env:GATEWAY_RUNTIME
 $env:GATEWAY_RUNTIME = 'host'
+$savedGates = @{}
+if ($ObserveOnly) {
+    foreach ($gate in @('ALLOW_MISSION_UPLOAD', 'ALLOW_FLIGHT_COMMANDS', 'ALLOW_MISSION_START', 'ALLOW_VEHICLE_ARM')) {
+        $savedGates[$gate] = [Environment]::GetEnvironmentVariable($gate, 'Process')
+        [Environment]::SetEnvironmentVariable($gate, 'false', 'Process')
+    }
+}
 Push-Location $gatewayPath
 try {
     if ($DiagnoseOnly) {
@@ -24,6 +32,9 @@ try {
     }
 }
 finally {
+    foreach ($gate in $savedGates.Keys) {
+        [Environment]::SetEnvironmentVariable($gate, $savedGates[$gate], 'Process')
+    }
     Pop-Location
     if ($null -eq $previousGatewayRuntime) {
         Remove-Item Env:GATEWAY_RUNTIME -ErrorAction SilentlyContinue

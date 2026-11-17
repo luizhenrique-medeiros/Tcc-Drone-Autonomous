@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_ORDERS } from '../src/demo/data';
 import { MissionPage } from '../src/features/missions/MissionPage';
-import { readyHealth, readyMission, readyVehicle } from './fixtures';
+import { currentClaimAuthorization, readyHealth, readyMission, readyVehicle } from './fixtures';
 
 const apiMocks = vi.hoisted(() => ({
   getMission: vi.fn(),
@@ -39,6 +39,7 @@ describe('barreira visual do START', () => {
     vi.clearAllMocks();
     apiMocks.getMission.mockResolvedValue({
       ...readyMission,
+      authorization: currentClaimAuthorization,
       id: 'mission-start',
       order_id: DEMO_ORDERS[0].id,
       vehicle_id: readyVehicle.id,
@@ -126,6 +127,7 @@ describe('barreira visual do START', () => {
   it('bloqueia START quando o snapshot pertence a outro veículo', async () => {
     apiMocks.getMission.mockResolvedValue({
       ...readyMission,
+      authorization: currentClaimAuthorization,
       id: 'mission-start',
       order_id: DEMO_ORDERS[0].id,
       vehicle_id: 'vehicle-not-loaded',

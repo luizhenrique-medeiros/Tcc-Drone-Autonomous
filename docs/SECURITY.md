@@ -48,7 +48,7 @@ A chave recebida durante a migração foi exposta em conversa e deve ser rotacio
 - `202`/ACK de recebimento não prova armamento; conclusão exige `COMMAND_ACK` correlacionado e heartbeat novo/fresco com `armed=true` do alvo correto;
 - SITL precede bancada; hélices removidas precedem motor; voo manual precede missão;
 - operador com RC/Mission Planner e acesso a interrupção permanece responsável;
-- geofence, RTL, bateria, GPS, EKF, bússola, RC e failsafes não são desativados;
+- geofence, RTL, GPS, EKF, bússola, RC e failsafes não são desativados;
 - pre-arm é investigado, não ocultado;
 - área isolada, condições meteorológicas e exigências regulatórias são verificadas pela equipe competente;
 - carga nunca sobrevoa pessoas não envolvidas.

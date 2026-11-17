@@ -30,6 +30,17 @@ export const readyVehicle: Vehicle = {
   last_seen_at: '2026-08-06T12:00:00Z',
 };
 
+export const currentClaimAuthorization: NonNullable<Mission['authorization']> = {
+  id: 'authorization-claim-test',
+  admin_name: 'Administrador de teste',
+  operator_name: 'Operador de teste',
+  status: 'CONSUMED',
+  mission_version: readyMission.version,
+  authorized_at: new Date(Date.now() - 1000).toISOString(),
+  consumed_at: new Date(Date.now() - 500).toISOString(),
+  expires_at: new Date(Date.now() + 300000).toISOString(),
+};
+
 export const readyHealth: VehicleHealth = {
   source: 'SITL',
   received_at: '2026-08-06T12:00:01Z',

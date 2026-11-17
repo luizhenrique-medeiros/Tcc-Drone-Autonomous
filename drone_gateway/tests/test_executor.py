@@ -1159,3 +1159,104 @@ async def test_executor_defensively_requires_all_three_arm_gates_before_ack(
         status for _id, status, _detail in backend.command_acks[-1:]
     }
     assert "ALLOW_MISSION_START" in (backend.command_acks[-1][2] or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault", [None, "version", "vehicle", "file", "expired", "same_id", "offline"]
+)
+async def test_expired_claim_refresh_never_reuploads_or_arms_without_new_authority(
+    tmp_path: Path, fault: str | None
+) -> None:
+    clock = [datetime.now(UTC)]
+    claim = build_claim().model_copy(
+        update={"authorization_expires_at": clock[0] + timedelta(seconds=30)}
+    )
+    settings = enabled_settings(tmp_path / "renewal.json", allow_vehicle_arm=True)
+    backend = RecordingBackend(claim)
+    vehicle = ArmRecordingGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle, now=lambda: clock[0])
+    await executor.run_cycle()
+    uploads = list(backend.upload_statuses)
+    clock[0] += timedelta(minutes=1)
+    renewed = claim.model_copy(
+        update={
+            "mission": claim.mission.model_copy(update={"status": MissionStatus.VERIFIED}),
+            "authorization_id": uuid4(),
+            "authorization_expires_at": clock[0] + timedelta(minutes=5),
+        }
+    )
+    if fault == "version":
+        renewed.mission.version += 1
+    elif fault == "vehicle":
+        renewed.mission.vehicle_id = uuid4()
+    elif fault == "file":
+        renewed.mission_file += "\n"
+    elif fault == "expired":
+        renewed.authorization_expires_at = clock[0]
+    elif fault == "same_id":
+        renewed.authorization_id = claim.authorization_id
+
+    async def refresh(mission_id: UUID) -> ClaimResponse:
+        assert mission_id == claim.mission.id
+        if fault == "offline":
+            raise BackendUnavailableError("renewal outage")
+        return renewed
+
+    backend.claim = refresh  # type: ignore[method-assign]
+    # Renewal alone has no effect: it is only fetched for a fresh human command.
+    await executor.run_cycle()
+    assert vehicle.arm_count == 0
+    backend.queue_command(GatewayCommandType.ARM, requested_at=clock[0])
+    if fault == "offline":
+        with pytest.raises(BackendUnavailableError):
+            await executor.run_cycle()
+        assert backend.command_acks == []
+    else:
+        await executor.run_cycle()
+        expected = GatewayCommandStatus.COMPLETED if fault is None else GatewayCommandStatus.FAILED
+        assert backend.command_acks[-1][1] is expected
+    assert vehicle.arm_count == (1 if fault is None else 0)
+    assert backend.upload_statuses == uploads
+    assert backend.statuses == []
+    restarted = MissionExecutor(settings, backend, vehicle, now=lambda: clock[0])
+    assert restarted.active_mission_id == claim.mission.id
+    if fault is None:
+        assert restarted._active.claim.authorization_id == renewed.authorization_id
+
+
+@pytest.mark.asyncio
+async def test_waiting_telemetry_does_not_advance_mission_or_require_mutation_gates(
+    tmp_path: Path,
+) -> None:
+    clock = [datetime.now(UTC)]
+    settings = enabled_settings(tmp_path / "waiting-telemetry.json")
+    backend = RecordingBackend(build_claim())
+    vehicle = ControllableFakeGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle, now=lambda: clock[0])
+    await executor.run_cycle()
+    executor._settings = settings.model_copy(
+        update={
+            "allow_mission_upload": False,
+            "allow_vehicle_arm": False,
+            "allow_mission_start": False,
+            "allow_flight_commands": False,
+        }
+    )
+    await executor.run_cycle()
+    await executor.run_cycle()
+    assert len(backend.telemetry) == 1
+    assert backend.telemetry[0].armed is False
+    assert backend.telemetry[0].relative_altitude_m == 0
+    assert backend.statuses == []
+    assert vehicle.start_count == 0
+    assert vehicle._progress_tick == 0
+    clock[0] += timedelta(seconds=3)
+    vehicle.link_connected = False
+    await executor.run_cycle()
+    assert len(backend.telemetry) == 1
+    vehicle.link_connected = True
+    await executor.run_cycle()
+    assert len(backend.telemetry) == 2

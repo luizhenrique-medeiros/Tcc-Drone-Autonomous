@@ -39,10 +39,13 @@
 - **RF-MIS-01:** criar no máximo uma missão ativa por pedido, com origem, decolagem, destino, espera, retorno e pouso.
 - **RF-MIS-02:** versionar missão, arquivo, hash, waypoints, autor da preparação e revisão.
 - **RF-MIS-03:** invalidar autorização se versão ou estado crítico mudar; expirar e consumir uma única vez.
+- **RF-MIS-04:** revisar origem em pré-voo preservando destino e histórico, com
+  nova versão/revisão/autorização e liberação auditada do journal anterior em
+  observação, sem comandos MAVLink implícitos.
 - **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
 - **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita; startup, health, upload, autorização, reconexão e progressão automática nunca armam.
 - **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL` ou `HARDWARE_REAL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
-- **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento.
+- **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento, preservando valores recebidos e indisponibilidade sem fabricar carga completa.
 - **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
 - **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
 - **RF-OPS-02:** concluir somente após entrega e retorno confirmados por eventos válidos.
@@ -97,6 +100,13 @@
 - **CA-26:** `POST /api/v1/admin/missions/{id}/arm` rejeita payload extra/falso, missão não `VERIFIED` ou não reivindicada, origem fora de `SITL|HARDWARE_REAL`, modo diferente de `STABILIZE`, saúde/preflight incompleto e qualquer gate fechado. `202` não significa armado; sucesso exige ACK correlacionado e heartbeat novo com `armed=true`, sem iniciar a missão nem permitir force/rearm automático.
 
 ## Matriz de rastreabilidade
+
+- **CA-27:** renovar autorização consumida vencida em `VERIFIED` exige nova
+  confirmação humana, saúde atual desarmada, mesma identidade/versão/hash e
+  nenhum comando em andamento. Não altera histórico nem causa upload/ARM/START.
+- **CA-28:** inicialização supervisionada reaproveita processos, impede supervisor
+  duplicado e recupera cliente/gateway sem liberar gates; telemetria passiva da
+  missão verificada conserva origem e horário da amostra.
 
 | Requisito | Componentes | Contrato principal | Teste esperado |
 |---|---|---|---|

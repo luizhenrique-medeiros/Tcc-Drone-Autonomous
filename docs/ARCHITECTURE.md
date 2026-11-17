@@ -79,6 +79,13 @@ A Pixhawk/ArduPilot é a fonte de verdade física durante execução. O software
 
 ## Autoridade em duas etapas
 
+Autorização consumida vencida durante espera em `VERIFIED` pode ser renovada
+pelo fluxo humano auditado existente, sem nova tabela ou máquina de estados.
+O novo registro pertence ao mesmo claim e artefato. O gateway atualiza o journal
+ao revalidar um novo comando administrativo; renovação nunca dispara ARM/START.
+A leitura passiva de telemetria também é publicada em `WAITING_OPERATOR_ARM`,
+independentemente dos gates de mutação, sem avaliar progresso da missão.
+
 ```text
 PENDING_ADMIN_APPROVAL --aprovar--> APPROVED --preparar--> MISSION_READY
        └--rejeitar(motivo)--> REJECTED
@@ -88,6 +95,14 @@ READY_FOR_AUTHORIZATION --autorizar(3 confirmações + checks sem BLOCKING)--> A
 ```
 
 Nenhuma transação, botão ou endpoint reúne as duas setas. Alterar a missão invalida autorização anterior.
+
+Revisão administrativa de origem em pré-voo mantém a mesma missão/pedido e
+incrementa sua versão. `SystemEvent` conserva o JSON serializado e o arquivo
+anterior, incluindo hash, waypoints e revisão. Não há nova tabela ou acesso
+direto do gateway ao banco. Um reconhecimento autenticado da versão substituída,
+com gates fechados e veículo desarmado, permite ao executor liberar somente seu
+journal de espera. A missão física antiga continua armazenada até um upload
+posterior autorizado e verificado; a revisão não altera Home/RTL na Pixhawk.
 
 ## Estados
 

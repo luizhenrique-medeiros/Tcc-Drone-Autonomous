@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class MissionStatus(StrEnum):
@@ -18,6 +18,13 @@ class MissionStatus(StrEnum):
     COMPLETED = "COMPLETED"
     ABORTED = "ABORTED"
     FAILED = "FAILED"
+
+
+class RetiredVersionReleaseResult(BaseModel):
+    mission_id: UUID
+    version: int = Field(ge=1)
+    mission_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    released: StrictBool
 
 
 class OperationalSource(StrEnum):

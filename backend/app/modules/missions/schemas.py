@@ -88,6 +88,29 @@ class MissionReview(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class MissionOriginRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    expected_version: int = Field(ge=1)
+    expected_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    origin_latitude: Decimal = Field(ge=-90, le=90, decimal_places=7)
+    origin_longitude: Decimal = Field(ge=-180, le=180, decimal_places=7)
+    reason: str = Field(min_length=10, max_length=1000)
+    position_confirmed: StrictBool
+
+
+class RetiredVersionRelease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+    mission_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class RetiredVersionReleaseResult(RetiredVersionRelease):
+    mission_id: UUID
+    released: StrictBool
+
+
 class SafetyActionRequest(BaseModel):
     reason: str | None = Field(default=None, min_length=1, max_length=1000)
 

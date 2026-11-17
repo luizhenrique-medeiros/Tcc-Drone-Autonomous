@@ -287,6 +287,8 @@ def test_customer_order_websocket_returns_owned_snapshot_and_hides_foreign_order
         assert snapshot["type"] == "order.snapshot"
         assert snapshot["data"]["id"] == order["id"]
         assert snapshot["data"]["status"] == "DRAFT"
+        websocket.send_text("ping")
+        assert websocket.receive_json() == {"type": "pong"}
 
         submitted = client.post(
             f"/api/v1/orders/{order['id']}/submit",

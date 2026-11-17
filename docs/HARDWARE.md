@@ -17,7 +17,7 @@ do rádio.
 | GPS + bússola | posição/heading | modelo, orientação e cabo/porta confirmados |
 | telemetria | link Mission Planner/gateway | modelo, frequência legal, níveis e porta |
 | receptor/rádio RC | controle e intervenção | protocolo, bind, failsafe e operador |
-| power module/bateria | alimentação/medição | química, células, tensão/corrente, conectores |
+| power module/| alimentação/medição | química, células, tensão/corrente, conectores |
 | ESCs/motores/hélices | propulsão | compatibilidade elétrica/mecânica e sentido |
 | frame/trem de pouso | estrutura | carga útil, CG, fixação e vibração |
 | mecanismo de carga | entrega | massa, alimentação, retenção, fail-safe |

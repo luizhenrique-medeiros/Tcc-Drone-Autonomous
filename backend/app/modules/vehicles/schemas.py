@@ -82,7 +82,7 @@ class VehicleHealthInput(BaseModel):
         default=None,
         ge=0,
         le=255,
-        validation_alias=AliasChoices("mavlink_component_id", "component_id", "compid"),
+        validation_alias=AliasChoices("mavlink_system_id", "component_id", "compid"),
     )
     heartbeat_age_seconds: float | None = Field(default=None, ge=0)
     last_heartbeat_at: datetime | None = None

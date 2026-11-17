@@ -28,6 +28,7 @@ from app.models import (
     ConnectionState,
     MissionStatus,
     MissionVerificationResult,
+    MissionWaypoint,
     OperationalSource,
     TelemetrySnapshot,
     UploadResult,
@@ -51,7 +52,9 @@ class PymavlinkVehicleGateway:
     """Thin pymavlink adapter with explicit, gated commands and no parameter writes."""
 
     _ARM_MAX_SEND_ATTEMPTS = 3
-    _ARM_MAX_DRAIN_MESSAGES = 500
+    _RECEIVE_MAX_DRAIN_MESSAGES = 10_000
+    _RECEIVE_DRAIN_TIMEOUT_SECONDS = 0.1
+    _ARM_DRAIN_TIMEOUT_SECONDS = 1.0
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -63,6 +66,9 @@ class PymavlinkVehicleGateway:
         self._connection_state = ConnectionState.DISCONNECTED
         self._connection_error: str | None = None
         self._passive_connection = False
+        self._telemetry_requests_enabled = False
+        self._last_safety_request_monotonic: float | None = None
+        self._receive_backlog = False
         self._last_heartbeat_monotonic: float | None = None
         self._last_heartbeat_recorded_at: datetime | None = None
         self._last_gcs_heartbeat_monotonic: float | None = None
@@ -80,6 +86,7 @@ class PymavlinkVehicleGateway:
         self._autopilot_version: str | None = None
         self._origin_latitude: float | None = None
         self._origin_longitude: float | None = None
+        self._home_altitude_m: float | None = None
         self._latitude: float | None = None
         self._longitude: float | None = None
         self._last_position_monotonic: float | None = None
@@ -122,12 +129,15 @@ class PymavlinkVehicleGateway:
             self._connection_state = ConnectionState.CONNECTING
             self._connection_error = None
             # A hardware endpoint without the explicit acknowledgement is strictly
-            # receive-only.  This also suppresses otherwise harmless-looking MAVLink
-            # requests and GCS heartbeats so the default cannot affect a live bus.
+            # receive-only by default. A separate opt-in only permits the fixed
+            # safety-state query whitelist, never GCS heartbeats or stream control.
             self._passive_connection = passive or (
                 self._settings.is_hardware_mode and not self._settings.real_hardware_acknowledged
             )
             self._reset_live_state()
+            self._telemetry_requests_enabled = not passive and (
+                not self._passive_connection or self._settings.allow_telemetry_requests
+            )
             self._mavutil = self._load_mavutil()
             try:
                 self._validate_serial_port_exists()
@@ -149,7 +159,10 @@ class PymavlinkVehicleGateway:
                 self._connection_state = ConnectionState.CONNECTED
                 if not self._passive_connection:
                     await asyncio.to_thread(self._request_initial_state)
-                    await asyncio.to_thread(self._drain_messages, 100)
+                    await asyncio.to_thread(self._drain_messages)
+                elif self._telemetry_requests_enabled:
+                    await asyncio.to_thread(self._drain_messages)
+                    await asyncio.to_thread(self._request_safety_state_if_due)
                 logger.info(
                     "MAVLink connected",
                     extra={
@@ -187,6 +200,8 @@ class PymavlinkVehicleGateway:
         self._connection_error = None
 
     def _reset_live_state(self) -> None:
+        self._last_safety_request_monotonic = None
+        self._receive_backlog = False
         self._last_heartbeat_monotonic = None
         self._last_heartbeat_recorded_at = None
         self._last_gcs_heartbeat_monotonic = None
@@ -204,6 +219,7 @@ class PymavlinkVehicleGateway:
         self._autopilot_version = None
         self._origin_latitude = None
         self._origin_longitude = None
+        self._home_altitude_m = None
         self._latitude = None
         self._longitude = None
         self._last_position_monotonic = None
@@ -294,6 +310,28 @@ class PymavlinkVehicleGateway:
     def _request_initial_state(self) -> None:
         if self._passive_connection:
             return
+        self._request_safety_state_if_due()
+        self._request_autopilot_version()
+        if not self._request_message_intervals():
+            self._request_data_stream_fallback()
+
+    def _request_safety_state_if_due(self) -> None:
+        """Only read Home and two parameters, with a bounded rate and a live target."""
+        if not self._telemetry_requests_enabled or self._connection is None:
+            return
+        self._refresh_connection_state()
+        if self._connection_state is not ConnectionState.CONNECTED:
+            return
+        now = time.monotonic()
+        # Default: one three-message batch per 2 seconds. A short freshness
+        # configuration never increases this above two batches per second.
+        interval = max(0.5, min(2.0, self._settings.mavlink_telemetry_stale_seconds / 2))
+        if (
+            self._last_safety_request_monotonic is not None
+            and now - self._last_safety_request_monotonic < interval
+        ):
+            return
+        self._last_safety_request_monotonic = now
         connection = self._required_connection()
         mavutil = self._required_mavutil()
         target_system = connection.target_system
@@ -311,11 +349,9 @@ class PymavlinkVehicleGateway:
             0,
             0,
         )
-        self._request_autopilot_version()
-        if not self._request_message_intervals():
-            self._request_data_stream_fallback()
         for parameter in (b"FENCE_ENABLE", b"RTL_ALT"):
             connection.mav.param_request_read_send(target_system, target_component, parameter, -1)
+        logger.debug("Home, FENCE_ENABLE and RTL_ALT requested (read-only)")
 
     def _request_autopilot_version(self) -> None:
         connection = self._required_connection()
@@ -463,14 +499,23 @@ class PymavlinkVehicleGateway:
             raise VehicleConnectionError("pymavlink ainda não foi carregado.")
         return self._mavutil
 
-    def _drain_messages(self, maximum: int = 50) -> None:
+    def _drain_messages(self, *, timeout: float = _RECEIVE_DRAIN_TIMEOUT_SECONDS) -> bool:
+        """Consume a burst without starving the loop or treating buffered state as live."""
         connection = self._required_connection()
         self._send_gcs_heartbeat_if_due()
-        for _ in range(maximum):
+        deadline = time.monotonic() + timeout
+        for _ in range(self._RECEIVE_MAX_DRAIN_MESSAGES):
+            if time.monotonic() >= deadline:
+                break
             message = connection.recv_match(blocking=False)
             if message is None:
-                break
+                self._receive_backlog = False
+                return True
             self._ingest_message(message)
+        # A recent local receive timestamp cannot prove freshness while older
+        # packets may still be queued. Never flush/discard them to enable ARM.
+        self._receive_backlog = True
+        return False
 
     def _ingest_message(self, message: Any) -> None:
         mavutil = self._required_mavutil()
@@ -494,26 +539,24 @@ class PymavlinkVehicleGateway:
             satellites = int(message.satellites_visible)
             self._satellites = satellites if 0 <= satellites <= 100 else None
         elif message_type == "SYS_STATUS":
-            if int(message.battery_remaining) >= 0:
-                self._battery_percent = float(message.battery_remaining)
-            if int(message.voltage_battery) > 0:
-                self._battery_voltage = float(message.voltage_battery) / 1000
+            battery_remaining = int(message.battery_remaining)
+            self._battery_percent = (
+                float(battery_remaining) if 0 <= battery_remaining <= 100 else None
+            )
+            voltage = int(message.voltage_battery)
+            self._battery_voltage = voltage / 1000 if 0 < voltage < 0xFFFF else None
             prearm_bit = getattr(mavutil.mavlink, "MAV_SYS_STATUS_PREARM_CHECK", 1 << 28)
             self._preflight_ok = bool(int(message.onboard_control_sensors_health) & prearm_bit)
             self._last_message_monotonic["BATTERY"] = received_monotonic
         elif message_type == "BATTERY_STATUS":
             battery_remaining = int(getattr(message, "battery_remaining", -1))
-            updated = False
-            if battery_remaining >= 0:
-                self._battery_percent = float(battery_remaining)
-                updated = True
+            self._battery_percent = (
+                float(battery_remaining) if 0 <= battery_remaining <= 100 else None
+            )
             voltages = getattr(message, "voltages", ())
             valid_voltages = [int(value) for value in voltages if 0 < int(value) < 0xFFFF]
-            if valid_voltages:
-                self._battery_voltage = sum(valid_voltages) / 1000
-                updated = True
-            if updated:
-                self._last_message_monotonic["BATTERY"] = received_monotonic
+            self._battery_voltage = sum(valid_voltages) / 1000 if valid_voltages else None
+            self._last_message_monotonic["BATTERY"] = received_monotonic
         elif message_type == "EKF_STATUS_REPORT":
             attitude = getattr(mavutil.mavlink, "EKF_ATTITUDE", 1)
             velocity = getattr(mavutil.mavlink, "EKF_VELOCITY_HORIZ", 2)
@@ -523,6 +566,8 @@ class PymavlinkVehicleGateway:
         elif message_type == "HOME_POSITION":
             self._origin_latitude = float(message.latitude) / 10_000_000
             self._origin_longitude = float(message.longitude) / 10_000_000
+            altitude = getattr(message, "altitude", None)
+            self._home_altitude_m = float(altitude) / 1000 if altitude is not None else None
         elif message_type == "GLOBAL_POSITION_INT":
             self._latitude = float(message.lat) / 10_000_000
             self._longitude = float(message.lon) / 10_000_000
@@ -537,10 +582,13 @@ class PymavlinkVehicleGateway:
                 if isinstance(raw_parameter_id, bytes)
                 else str(raw_parameter_id)
             ).rstrip("\x00")
+            value = float(message.param_value)
             if parameter_id == "FENCE_ENABLE":
-                self._geofence_enabled = float(message.param_value) >= 1
+                self._geofence_enabled = value >= 1 if math.isfinite(value) else None
+                self._last_message_monotonic["PARAM:FENCE_ENABLE"] = received_monotonic
             elif parameter_id == "RTL_ALT":
-                self._rtl_configured = float(message.param_value) > 0
+                self._rtl_configured = value > 0 if math.isfinite(value) else None
+                self._last_message_monotonic["PARAM:RTL_ALT"] = received_monotonic
         elif message_type == "AUTOPILOT_VERSION":
             software = int(getattr(message, "flight_sw_version", 0))
             major = (software >> 24) & 0xFF
@@ -633,7 +681,13 @@ class PymavlinkVehicleGateway:
                 self._connection_state = ConnectionState.DISCONNECTED
             return
         heartbeat_age = self._heartbeat_age_seconds()
-        if heartbeat_age is None:
+        if self._receive_backlog:
+            self._connection_state = ConnectionState.STALE
+            self._connection_error = (
+                "A fila MAVLink não foi drenada no limite de tempo/mensagens; "
+                "o estado recebido ainda não pode ser considerado atual."
+            )
+        elif heartbeat_age is None:
             self._connection_state = ConnectionState.WAITING_HEARTBEAT
         elif heartbeat_age <= self._settings.heartbeat_timeout_seconds:
             self._connection_state = ConnectionState.CONNECTED
@@ -652,6 +706,8 @@ class PymavlinkVehicleGateway:
             )
 
     def _message_is_fresh(self, *message_types: str, timeout: float | None = None) -> bool:
+        if self._receive_backlog:
+            return False
         latest = max(
             (
                 self._last_message_monotonic[item]
@@ -716,6 +772,7 @@ class PymavlinkVehicleGateway:
     async def read_health(self) -> VehicleHealth:
         if self._connection is not None:
             await asyncio.to_thread(self._drain_messages)
+            await asyncio.to_thread(self._request_safety_state_if_due)
         self._refresh_connection_state()
         heartbeat_age = self._heartbeat_age_seconds()
         heartbeat = self._connection_state is ConnectionState.CONNECTED
@@ -725,6 +782,7 @@ class PymavlinkVehicleGateway:
         ekf_fresh = self._message_is_fresh("EKF_STATUS_REPORT")
         status_fresh = self._message_is_fresh("SYS_STATUS")
         position_fresh = self._message_is_fresh("GLOBAL_POSITION_INT")
+        home_fresh = self._message_is_fresh("HOME_POSITION")
         heartbeat_fields_fresh = heartbeat
         connection = self._connection
         target_system = int(connection.target_system) if connection is not None else None
@@ -743,10 +801,14 @@ class PymavlinkVehicleGateway:
                 flight_mode=self._mode if heartbeat_fields_fresh else None,
                 armed=self._armed if heartbeat_fields_fresh else None,
                 preflight_ok=self._preflight_ok if status_fresh else None,
-                rtl_configured=self._rtl_configured,
-                geofence_enabled=self._geofence_enabled,
-                origin_latitude=self._origin_latitude,
-                origin_longitude=self._origin_longitude,
+                rtl_configured=(
+                    self._rtl_configured if self._message_is_fresh("PARAM:RTL_ALT") else None
+                ),
+                geofence_enabled=(
+                    self._geofence_enabled if self._message_is_fresh("PARAM:FENCE_ENABLE") else None
+                ),
+                origin_latitude=self._origin_latitude if home_fresh else None,
+                origin_longitude=self._origin_longitude if home_fresh else None,
                 connection_state=self._connection_state,
                 connection_mode=self._settings.mavlink_mode.value,
                 connection_topology=self._settings.connection_topology,
@@ -860,15 +922,15 @@ class PymavlinkVehicleGateway:
             )
 
     def _prepare_arm_transaction(self) -> None:
-        connection = self._required_connection()
-        self._send_gcs_heartbeat_if_due()
-        for _ in range(self._ARM_MAX_DRAIN_MESSAGES):
-            message = connection.recv_match(blocking=False)
-            if message is None:
-                return
-            self._ingest_message(message)
+        timeout = min(
+            self._ARM_DRAIN_TIMEOUT_SECONDS, self._settings.mission_command_timeout_seconds
+        )
+        if self._drain_messages(timeout=timeout):
+            return
         raise UnsafeOperationError(
-            "Armamento bloqueado: a fila MAVLink não estabilizou antes da transação."
+            "Armamento bloqueado: a fila MAVLink não estabilizou antes da transação "
+            f"(limite {timeout:g}s/{self._RECEIVE_MAX_DRAIN_MESSAGES} mensagens); "
+            "nenhum ARM foi enviado."
         )
 
     def _arm_vehicle_sync(self) -> None:
@@ -1149,17 +1211,26 @@ class PymavlinkVehicleGateway:
         timeout: float | None = None,
     ) -> Any:
         connection = self._required_connection()
+        accepted_types = {message_types} if isinstance(message_types, str) else set(message_types)
         deadline = time.monotonic() + (
             timeout or self._settings.mission_protocol_step_timeout_seconds
         )
         while time.monotonic() < deadline:
             self._send_gcs_heartbeat_if_due()
+            self._request_safety_state_if_due()
+            # Filtering in pymavlink would consume HOME/PARAM/HEARTBEAT without
+            # updating our freshness cache. Ingest first, then match the transaction.
             message = connection.recv_match(
-                type=message_types,
                 blocking=True,
-                timeout=max(0.1, deadline - time.monotonic()),
+                timeout=min(0.5, max(0.01, deadline - time.monotonic())),
             )
-            if message is None or not self._message_matches_mission_operation(message):
+            if message is None:
+                continue
+            self._ingest_message(message)
+            if (
+                message.get_type() not in accepted_types
+                or not self._message_matches_mission_operation(message)
+            ):
                 continue
             if sequence is not None and int(getattr(message, "seq", -1)) != sequence:
                 continue
@@ -1173,6 +1244,18 @@ class PymavlinkVehicleGateway:
         target_system = connection.target_system
         target_component = connection.target_component
         ordered = sorted(mission.waypoints, key=lambda item: item.sequence)
+        if (
+            self._telemetry_requests_enabled
+            and ordered
+            and ordered[0].sequence == 0
+            and ordered[0].command == 16
+            and self._int_frame(ordered[0].frame) == self._int_frame(3)
+            and ordered[0].altitude_m == 0
+            and not self._message_is_fresh("HOME_POSITION")
+        ):
+            self._recv_mission_message(
+                "HOME_POSITION", timeout=self._settings.mission_command_timeout_seconds
+            )
         count_message = None
         for attempt in range(self._settings.mission_protocol_retries + 1):
             connection.mav.mission_request_list_send(target_system, target_component)
@@ -1209,31 +1292,63 @@ class PymavlinkVehicleGateway:
             mavutil.mavlink.MAV_MISSION_ACCEPTED,
         )
 
-    def _verify_downloaded_waypoint(self, actual: Any, expected: Any) -> None:
+    def _verify_downloaded_waypoint(self, actual: Any, expected: MissionWaypoint) -> None:
+        # The received message is a dynamic pymavlink dialect class.
         message_type = actual.get_type()
-        actual_frame = int(actual.frame)
-        expected_frame = (
-            self._int_frame(expected.frame)
-            if message_type == "MISSION_ITEM_INT"
-            else expected.frame
-        )
+        actual_frame = self._int_frame(int(actual.frame))
+        expected_frame = self._int_frame(expected.frame)
         nonpositional_command = expected.command == 211
         accepted_frames = {expected_frame}
+        expected_altitude = expected.altitude_m
+        expected_latitude = expected.latitude
+        expected_longitude = expected.longitude
+        # ArduCopter returns item 0 from live HOME, with an absolute MSL altitude.
+        # Only the canonical relative-zero HOME marker may use this conversion.
+        absolute_home = (
+            expected.sequence == 0
+            and expected.command == 16
+            and expected_frame == self._int_frame(3)
+            and expected.altitude_m == 0
+            and actual_frame == self._int_frame(0)
+        )
+        if absolute_home:
+            expected_latitude, expected_longitude, expected_altitude = self._verified_home(expected)
+            accepted_frames.add(self._int_frame(0))
         if nonpositional_command:
+            # AP_Mission emits frame GLOBAL and zero location for DO_GRIPPER.
+            accepted_frames.add(self._int_frame(0))
             accepted_frames.add(getattr(self._required_mavutil().mavlink, "MAV_FRAME_MISSION", 2))
         if actual_frame not in accepted_frames:
             raise MissionUploadError(
                 f"Frame relido diverge no waypoint {expected.sequence}: {actual_frame}."
             )
-        for field in ("command", "current", "autocontinue"):
-            if int(getattr(actual, field)) != int(getattr(expected, field)):
+        for actual_field, expected_field in (
+            ("seq", "sequence"),
+            ("command", "command"),
+            ("autocontinue", "autocontinue"),
+        ):
+            if int(getattr(actual, actual_field)) != int(getattr(expected, expected_field)):
                 raise MissionUploadError(
-                    f"Campo {field} relido diverge no waypoint {expected.sequence}."
+                    f"Campo {actual_field} relido diverge no waypoint {expected.sequence}."
                 )
+        # current is execution state, not part of the stored mission content.
+        if int(actual.current) not in {0, 1}:
+            raise MissionUploadError(f"Campo current inválido no waypoint {expected.sequence}.")
         for field in ("param1", "param2", "param3", "param4"):
+            actual_value = float(getattr(actual, field))
+            expected_value = float(getattr(expected, field))
+            # AP_Mission stores direction flags for LOITER_TIME and LAND.
+            # Its default zero input is returned as +1; do not generalize this
+            # to arbitrary radii, yaw requests, commands, or other parameters.
+            if (
+                (expected.command, field) in {(19, "param3"), (21, "param4")}
+                and expected_value == 0
+                and actual_value == 1
+            ):
+                continue
             if not math.isclose(
-                float(getattr(actual, field)),
-                float(getattr(expected, field)),
+                actual_value,
+                expected_value,
                 rel_tol=1e-6,
                 abs_tol=1e-5,
             ):
@@ -1248,14 +1363,38 @@ class PymavlinkVehicleGateway:
         else:
             latitude = float(actual.x)
             longitude = float(actual.y)
-        if not math.isclose(latitude, expected.latitude, abs_tol=1e-6) or not math.isclose(
-            longitude, expected.longitude, abs_tol=1e-6
-        ):
+        if not math.isclose(
+            latitude, expected_latitude, rel_tol=0, abs_tol=1e-6
+        ) or not math.isclose(longitude, expected_longitude, rel_tol=0, abs_tol=1e-6):
             raise MissionUploadError(
                 f"Coordenadas relidas divergem no waypoint {expected.sequence}."
             )
-        if not math.isclose(float(actual.z), expected.altitude_m, abs_tol=0.05):
+        if not math.isclose(float(actual.z), expected_altitude, rel_tol=0, abs_tol=0.05):
             raise MissionUploadError(f"Altitude relida diverge no waypoint {expected.sequence}.")
+
+    def _verified_home(self, expected: MissionWaypoint) -> tuple[float, float, float]:
+        if (
+            not self._message_is_fresh("HOME_POSITION")
+            or self._home_altitude_m is None
+            or not math.isfinite(self._home_altitude_m)
+            or self._origin_latitude is None
+            or self._origin_longitude is None
+            or not -90 <= self._origin_latitude <= 90
+            or not -180 <= self._origin_longitude <= 180
+        ):
+            raise MissionUploadError(
+                "HOME_POSITION ausente, vencida ou divergente da origem da missão."
+            )
+        # AP_Mission item 0 is live AHRS Home, not the stored route origin.
+        # Reuse the preflight origin bound; all flight items still compare exactly.
+        if (
+            distance_m(
+                self._origin_latitude, self._origin_longitude, expected.latitude, expected.longitude
+            )
+            > self._settings.max_origin_deviation_m
+        ):
+            raise MissionUploadError("HOME_POSITION fora do limite de desvio da origem da missão.")
+        return self._origin_latitude, self._origin_longitude, self._home_altitude_m
 
     async def start_mission(self, mission: AuthorizedMission) -> None:
         self._require_live_heartbeat("start")
@@ -1336,7 +1475,7 @@ class PymavlinkVehicleGateway:
             raise UnsafeOperationError("ALLOW_FLIGHT_COMMANDS não foi habilitado.")
         await asyncio.to_thread(self._command_and_wait, "CONTINUE")
 
-    async def poll_mission(self, mission: AuthorizedMission) -> VehiclePoll:
+    async def read_telemetry(self) -> TelemetrySnapshot:
         await asyncio.to_thread(self._drain_messages)
         self._refresh_connection_state()
         heartbeat_fresh = self._connection_state is ConnectionState.CONNECTED
@@ -1371,6 +1510,10 @@ class PymavlinkVehicleGateway:
             raise VehicleConnectionError(
                 "Telemetria MAVLink contém valores fora do contrato do backend."
             ) from exc
+        return telemetry
+
+    async def poll_mission(self, mission: AuthorizedMission) -> VehiclePoll:
+        telemetry = await self.read_telemetry()
         suggested_status = self._next_progress_status(mission)
         events = await self.drain_events()
         return VehiclePoll(

@@ -6,9 +6,10 @@ import {
   isArmConfirmedByFreshHealth,
 } from '../src/features/missions/arm-request-readiness';
 import type { GatewayCommand } from '../src/services';
-import { readyHealth, readyMission, readyVehicle } from './fixtures';
+import { currentClaimAuthorization, readyHealth, readyMission, readyVehicle } from './fixtures';
 
 const verifiedMission = {
+  authorization: currentClaimAuthorization,
   ...readyMission,
   status: 'VERIFIED' as const,
   vehicle_id: readyVehicle.id,

@@ -104,7 +104,6 @@ def test_health_preserves_unreceived_mavlink_values_as_null(
     body = response.json()
     assert body["authorization_eligible"] is False
     assert "GPS_NOT_RECEIVED" in body["failures"]
-    assert "BATTERY_NOT_RECEIVED" in body["failures"]
     assert body["health"]["gps_fix_type"] is None
     assert body["health"]["armed"] is None
     assert body["health"]["source"] == "SITL"

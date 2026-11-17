@@ -244,6 +244,9 @@ export const demoApi: AdminApi = {
     });
     return updateMission(mission);
   },
+  async reviseMissionOrigin() {
+    throw new ApiError('Revisão de origem exige backend e gateway em observação; indisponível no modo demo.', 409);
+  },
   async authorizeFlight(id, input: FlightAuthorizationInput) {
     await wait();
     const current = findMission(id);

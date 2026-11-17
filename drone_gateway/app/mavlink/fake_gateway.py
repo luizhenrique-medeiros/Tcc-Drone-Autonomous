@@ -77,6 +77,26 @@ class FakeVehicleGateway:
     async def drain_events(self) -> list[VehicleEvent]:
         return []
 
+    async def read_telemetry(self) -> TelemetrySnapshot:
+        if not self._connected:
+            raise VehicleTimeoutError("Veículo fake desconectado.")
+        if self._active_mission_id is not None:
+            raise UnsafeOperationError("Use poll_mission para a execução fake em andamento.")
+        health = await self.read_health()
+        return TelemetrySnapshot(
+            source=OperationalSource.SIMULATION,
+            latitude=self._settings.base_latitude,
+            longitude=self._settings.base_longitude,
+            relative_altitude_m=0,
+            ground_speed_m_s=0,
+            recorded_at=datetime.now(UTC),
+            battery_percent=health.battery_percent,
+            gps_fix_type=health.gps_fix_type,
+            satellites=health.satellites,
+            flight_mode=health.flight_mode,
+            armed=health.armed,
+        )
+
     async def upload_mission(self, mission: AuthorizedMission, mission_file: str) -> UploadResult:
         del mission_file
         if not self._settings.allow_mission_upload:

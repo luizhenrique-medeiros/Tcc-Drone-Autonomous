@@ -10,7 +10,6 @@ export type StreamStatus =
   | 'reconnecting'
   | 'disconnected';
 
-const MAX_RECONNECT_ATTEMPTS = 8;
 const MAX_RECONNECT_DELAY_MS = 15_000;
 const AUTH_TIMEOUT_MS = 5_000;
 const UPDATE_COALESCE_MS = 250;
@@ -75,14 +74,16 @@ export function useOperationsStream(onUpdate: () => void) {
         }
         if (type) scheduleUpdate();
       });
-      socket.addEventListener('close', () => {
+      socket.addEventListener('close', (event) => {
         clearSocketTimers();
         if (stopped) return;
-        attempts += 1;
-        if (attempts > MAX_RECONNECT_ATTEMPTS) {
+        if (event.code === 4401 || event.code === 4403) {
           setStatus('disconnected');
           return;
         }
+        // Network outages can outlast eight attempts. Keep a bounded delay,
+        // while authentication failures still require a new login.
+        attempts = Math.min(attempts + 1, 5);
         setStatus('reconnecting');
         reconnectTimer = window.setTimeout(
           connect,

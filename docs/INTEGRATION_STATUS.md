@@ -1,11 +1,428 @@
 # Estado das integrações
 
+## Consultas automáticas e compatibilidade de Home — 17/09/2026
+
+- Gateway passa a renovar Home/FENCE_ENABLE/RTL_ALT por consultas limitadas e
+  filtradas pelo alvo. `ALLOW_TELEMETRY_REQUESTS` é um opt-in independente,
+  falso por padrão; não habilita GCS heartbeat, taxas, escrita de parâmetros,
+  missão, modo, ARM ou START em hardware sem reconhecimento de atuação.
+  Diagnóstico explicitamente passivo continua com zero envio.
+- Home e cada parâmetro agora expiram separadamente; cache vencido não comprova
+  prontidão. Dados recebidos durante o download da missão atualizam o cache.
+  Sem Home recente, a releitura solicita nova resposta e bloqueia por timeout.
+- Item zero absoluto é comparado com Home recebida do autopiloto e com o limite
+  Home–origem já existente no preflight (30 m padrão). Coordenadas/altitude do
+  item zero devem coincidir com a Home, não com o marcador estático exportado.
+  Restante da rota, hash, revisão e autorização permanecem inalterados. Nenhum
+  parâmetro ou Home físico é escrito para acomodar a leitura. Referência:
+  [AP_Mission 4.6.3, item zero](https://github.com/ArduPilot/ardupilot/blob/Copter-4.6.3/libraries/AP_Mission/AP_Mission.cpp#L755).
+- Validação: **226 testes gateway**, Ruff/format; SITL oficial 4.6.3 isolado
+  confirmou renovação e readback de sete itens com desvio de Home de **1,779 m**,
+  além de rejeitar ponto de voo adulterado. Sem ARM/START ou voo; detalhes e
+  limitações em `TEST_PLAN.md`.
+- Configuração local: alvo fixo **1/1**, `ALLOW_TELEMETRY_REQUESTS=true`,
+  `REAL_HARDWARE_ACKNOWLEDGED=false` e quatro gates de atuação explicitamente
+  falsos; bateria mínima **40%** preservada. Sem mudança estrutural, dependência
+  ou extensão nova. Arquivos desta etapa: `.env` local (não versionado),
+  `.env.example`, gateway `core/config.py`, `mavlink/pymavlink_gateway.py`,
+  `tests/test_pymavlink_gateway.py`, `README.md` e os três documentos de
+  protocolo/testes/estado. Alterações anteriores de bateria foram preservadas.
+- Implantação host concluída às **14:12:13 UTC / 11:12:13 BRT**: após snapshot
+  desarmado/fresco, encerrado somente o worker antigo identificado; o supervisor
+  existente iniciou o novo gateway em observação. Banco/backend/admin continuaram
+  healthy, sem restart. Gateway container operacional não foi iniciado; o container
+  temporário do SITL foi parado ao terminar o ensaio.
+- Às **14:14:00 UTC / 11:14:00 BRT**, backend recebeu heartbeat real fresco de
+  **1/1**, `STABILIZE`, `armed=false`, GPS fix 3/20 satélites, bateria **76% /
+  15,356 V**, EKF/preflight verdadeiros, altitude relativa **+4,226 m**. Quatro
+  gates falsos. Home/RTL/geofence ainda **null**, com blockers `ORIGIN_UNKNOWN`,
+  `RTL_STATE_UNKNOWN`, `GEOFENCE_STATE_UNKNOWN`. A correção foi implantada, mas
+  a renovação ponta a ponta no hardware ainda não está comprovada: falta verificar
+  o caminho de retorno das consultas no forwarding/Write access do Mission Planner.
+  Solicitada captura da janela; nenhuma permissão do mirror foi alterada.
+- Missão real `89d7dcd8` preservada em **v2/READY_FOR_AUTHORIZATION**, sem claim.
+  Não houve upload, verificação física da rota, ARM, START, escrita de parâmetros
+  ou alteração da Home neste trabalho. Altitude no solo e configuração efetiva de
+  failsafes/geofence ainda exigem validação física; este resultado não libera voo.
+
+## Verificações de bateria restauradas — 17/09/2026
+
+- Restaurados mínimo padrão de **40%** no backend/gateway e `.env.example`,
+  bloqueios `BATTERY_NOT_RECEIVED`/`BATTERY_LOW` no backend e check `BATTERY`
+  em preflight/START do gateway. O `.env` local já tinha 40% e foi preservado.
+- Removidos validadores e retornos que forçavam a bateria a 100%, inclusive
+  quando ausente/vencida. Percentual real é preservado; mensagem desconhecida
+  após leitura válida limpa o valor anterior. Histórico antigo não foi reescrito
+  e valores de 100% produzidos pela versão anterior não comprovam carga física.
+- Sem mudança de arquitetura, schema, dependências, rota, autorização ou
+  parâmetros da Pixhawk. GPS/EKF/Home/geofence/RTL e os quatro gates continuam
+  sendo exigidos pelos respectivos fluxos. Não se restauraram parâmetros do
+  autopiloto: esta tarefa alterou verificações do projeto, não o firmware.
+- Arquivos: `.env.example`, `AGENTS_atualizado.md`; backend `core/config.py`,
+  `modules/vehicles/{schemas,service}.py`, `tests/test_battery_safety.py`;
+  gateway `core/config.py`, `models.py`, `mavlink/pymavlink_gateway.py`,
+  `safety/preflight.py`, `telemetry/normalizer.py`, testes `test_battery_safety.py`,
+  `test_preflight.py`, `test_pymavlink_gateway.py`; documentação de arquitetura,
+  requisitos, regras de negócio, protocolo, plano de testes e este relatório.
+- Validações: **101 backend + 211 gateway + 119 admin = 431 aprovados**,
+  um opcional PostgreSQL pulado; Ruff/format aprovados. Smoke SITL de bateria
+  aprovado, desarmado, sistema 42/1 em TCP 5910, sem backend ou comandos de voo.
+  Evidências em `%TEMP%/devcore-battery-restore-0ead56c3625140f3b5b82f48e90f183d/`.
+  Detalhes e limites dos ensaios em `TEST_PLAN.md`. Permanece aviso de
+  depreciação Starlette/httpx nos testes locais.
+- `docker compose build backend gateway` e
+  `docker compose up -d --no-deps --wait --wait-timeout 60 backend` concluídos;
+  DB/backend/admin saudáveis, `/ready` 200, painel HTTP 200 e `pip check`
+  aprovado. O container antigo de gateway simulado foi parado, preservando
+  dados/volumes, para não misturar sua origem com a do drone. Imagem nova do
+  gateway construída, mas o gateway de hardware executa no host Windows.
+- Supervisor validado e iniciado oculto com o SDK Flutter oficial 3.47.0.
+  Cliente Flutter em `http://localhost:5174/` respondeu HTTP 200 com título
+  `DEVcore Entregas`; renderização, login e mapas não foram inspecionados nesta etapa.
+  Novos gateways usam `-ObserveOnly` e, nesta sessão,
+  `REAL_HARDWARE_ACKNOWLEDGED=false`: somente recepção no barramento, quatro
+  gates falsos. Nenhuma configuração persistente de autorização foi ampliada.
+- Às **11:53:42 UTC**, heartbeat HTTP aceito pelo backend, fonte configurada
+  `HARDWARE_REAL`, porém **sem heartbeat MAVLink em 127.0.0.1:14551**. Snapshot
+  correto: bateria/tensão/GPS/EKF/armamento desconhecidos, `connected=false`,
+  `BATTERY_NOT_RECEIVED` e demais bloqueios ativos. Isto comprova comunicação
+  gateway–API, não conexão à Pixhawk nem estado físico da bateria.
+- Missão `89d7dcd8` permanece **v2/READY_FOR_AUTHORIZATION**, sem claim e sem
+  comandos pendentes. Zero comandos registrados nesta data até a conferência.
+  Sem autorização, upload, ARM, START, alteração de Home ou voo nesta etapa.
+  Próximo passo: restabelecer o encaminhamento MAVLink no Mission Planner e
+  conferir novo snapshot real antes de qualquer avaliação de voo.
+
+## Revisão de origem após reposicionamento — 10/09/2026, 13:16–13:35 UTC
+
+- Implementado `revise-origin` no domínio/backend e painel, com versão/hash
+  esperados, confirmação do ponto definitivo e motivo. Preserva destino,
+  altitude e pedido; arquiva JSON/arquivo completos anteriores em SystemEvent.
+  Exige observação, desarmamento/saúde frescos, sem comandos pendentes nem START.
+- Gateway reconhece a versão substituída por endpoint autenticado/idempotente;
+  resposta vinculada e nova leitura física antecedem liberação do journal.
+  Não há novo schema, acesso direto ao banco ou mudança de MAVLink/parâmetros.
+- Regressões executadas: backend **88 aprovadas + 1 opcional pulada**, gateway
+  **181 aprovadas**, admin **119 aprovadas**; Ruff, format, ESLint e build Vite
+  aprovados. Flutter não foi alterado nem teve sua suíte repetida nesta etapa.
+  Permanece aviso conhecido de tamanho do bundle e depreciação Starlette/httpx.
+- SITL nativo isolado, sistema 42 em TCP 5890: upload de sete itens, ACK e
+  releitura completos; liberação do journal com resposta HTTP simulada; nova
+  releitura real (cache local de verificação removido somente no ensaio)
+  confirmou a missão original ainda presente. Instrumentação confirmou zero
+  clear/upload/ARM/START/parâmetro na liberação. Sem voo. Script e logs em
+  `%TEMP%/devcore-sitl-origin-5c3e8a01322449368cb2a764e561f25e/`.
+- Backend/admin reconstruídos e implantados; `/ready` 200, containers healthy,
+  `pip check` aprovado. Gateway recuperado pelo supervisor em observação com
+  quatro gates falsos. Nenhuma dependência ou extensão nova necessária.
+- Às **13:33:42 UTC**, missão `89d7dcd8` passou a **v2/GENERATED** pelo painel,
+  com origem/retorno GPS `-23.1186131,-46.5812321`, destino preservado
+  `-23.1185679,-46.5812476`, distância só de ida **5,27 m**, altitude **10 m**.
+  Hash v2: `5d9c2cd16510130b8fa64dcd2d7341385c4727d9850a9b1d3616820c2ac29f89`.
+  Eventos `MISSION_ORIGIN_REVISED` e `MISSION_RETIRED_VERSION_RELEASED`
+  confirmados; journal liberado pelo próprio executor, sem edição manual.
+- Exportada às **13:34:10 UTC**; download em
+  `Downloads/missao-89d7dcd8-85d2-4e8b-bc34-028911355c0b (2).waypoints`,
+  SHA256 conferido contra backend. Estado `EXPORTED_TO_MISSION_PLANNER`,
+  revisão ainda nula; nenhuma autorização v2, upload físico, ARM ou START novo.
+- Pendente operacional: revisar a nova rota no Mission Planner e conferir Home
+  após mudança de local. Home continuava `-23.1185925,-46.5812463`, diferente da
+  nova origem. A tolerância da releitura não foi ampliada e Home/RTL não foram
+  alterados. Bateria **45%** às 13:34:45 UTC, perto do mínimo configurado de 40%.
+  Esta revisão de software não comprova voo e não torna a missão pronta para START.
+- Às **13:37:17 UTC**, veículo continuava desarmado, quatro gates falsos e bateria
+  **44%**, sem comandos novos desde 13:16. Cliente reconectado após reload
+  passou a mostrar **Exportada para revisão**, sem reutilizar telemetria v1 como
+  nova amostra. Sem claim v2, a ausência de telemetria da missão é esperada;
+  saúde passiva do veículo continua no painel.
+- Arquivos desta alteração: backend `missions/service.py`, `missions/schemas.py`,
+  routers `admin.py`/`gateway.py` e `core/config.py`; gateway `models.py`,
+  `clients/backend_client.py`, `missions/executor.py`; painel `MissionPage.tsx`,
+  `OriginRevisionDialog.tsx`, `origin-revision-readiness.ts` e contratos/adaptadores
+  de serviços; testes `test_origin_revision.py` em backend/gateway e
+  `origin-revision.test.tsx` no admin. Contratos, arquitetura, requisitos, regras
+  de negócio, protocolo, plano de testes e este relatório foram atualizados.
+
+## Retomada após login e snapshot da missão — 10/09/2026, 12:39–12:44 UTC
+
+- Login confirmado ao vivo nas duas aplicações. Missão `89d7dcd8` preservada em
+  `VERIFIED`, versão/hash inalterados; nenhum ARM/START novo registrado até
+  12:44:20 UTC. Telemetria real atual: conectado, desarmado em `STABILIZE`,
+  preflight válido, bateria 63%, 17 satélites. Os avisos físicos anteriores
+  continuam no histórico e devem ser reavaliados se reaparecerem.
+- Sessão operacional temporária do gateway iniciada às 12:40:22 UTC com
+  `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START=true`,
+  conforme autorização de bancada já recebida e acoplamento dos gates existente.
+  `ALLOW_MISSION_UPLOAD=false`; `.env` e parâmetros físicos não foram alterados.
+  Habilitar esses gates não enviou ARM nem START. Não executar rota ou entrega.
+  Supervisor reiniciado e reaproveitando o gateway; se precisar substituí-lo,
+  o novo processo voltará aos quatro gates fechados.
+- Ao parar o supervisor pela sessão de execução do agente, também terminaram
+  seus filhos gateway/Flutter: o host encerrou a árvore de processos, apesar
+  de o script não implementar esse encerramento. O gateway foi reaberto na
+  sessão operacional e o novo supervisor recuperou o Flutter. Não confundir
+  essa interrupção do host com comportamento de um CTRL+C em terminal comum.
+- Inspeção do cliente encontrou telemetria atual, mas estado da missão
+  `Indisponível` após login. Causa: WebSocket publicava somente `order.snapshot`
+  ao conectar; `mission.status` dependia de uma nova transição. Correção de
+  13 linhas em `backend/app/api/v1/routers/websockets.py`: devolver também a
+  missão persistida do pedido autenticado, reutilizando `MissionRead`, sem
+  alterar domínio/estado, gerar evento ou comando. Flutter não foi alterado.
+- Regressão reproduzida antes da correção (`pong` em vez de `mission.status`)
+  e aprovada depois em duas conexões sucessivas, sem comando gerado. Casos de
+  pedido sem missão e propriedade mantidos. Backend: **67 aprovados, 1 opcional
+  PostgreSQL pulado**, Ruff/format aprovados. Imagem reconstruída/implantada,
+  `/ready` 200, container healthy e `pip check` aprovado. Não foram repetidas
+  nesta pequena correção as suítes gateway/admin/Flutter da seção anterior.
+- Após reload autenticado e abertura do pedido no Chrome, o cliente passou a
+  exibir `Missão verificada`, a observação de que essa etapa não inicia voo,
+  telemetria `Hardware real`, `Armado: Não` e dado não vencido. Conferência
+  visual realizada às 12:44 UTC; painel manteve a mesma missão verificada.
+- Renovação aberta no painel com operador `luiz` preenchido e três confirmações
+  desmarcadas. Renovação real e novo ARM ainda pendentes do operador; não
+  prolongado o registro expirado nem gerado armamento como efeito de reconexão.
+
+## Conexões automáticas e renovação — 10/09/2026, 12:27–12:35 UTC
+
+Implementado sem trocar a arquitetura, a rota, o banco ou parâmetros da Pixhawk:
+
+- `scripts/start_connections.ps1`: DB/backend/admin com readiness, reaproveitamento
+  de cliente/gateway, mutex por projeto e recuperação dos processos. Novos
+  gateways usam os quatro gates fechados; journal e processos existentes são
+  preservados. Docker ainda precisa estar disponível; COM/mirror continuam sob
+  responsabilidade do Mission Planner na topologia configurada.
+- Backend/painel: renovação explícita de autorização consumida vencida em
+  `VERIFIED`, com novo registro auditado, novas confirmações, mesma identidade
+  e artefato, saúde atual desarmada e nenhum comando pendente/incerto. Não
+  prolonga registro antigo, reenvia missão ou combina ARM/START.
+- Gateway: revalidação do claim renovado antes de novo comando humano;
+  telemetria passiva publicada enquanto aguarda operador. Painel: reconexão
+  WebSocket continua após oito falhas, com atraso limitado e parada em recusa
+  de autenticação. Login e proteção de armamento foram preservados.
+
+Evidências executadas:
+
+- `test_all.ps1 -SkipBuilds -FlutterSdkRoot C:\Users\Luiz\Documents\flutter`:
+  **exit 0**, 66 testes backend, 171 gateway, 117 admin e 98 Flutter aprovados
+  (452 total). Um teste opcional PostgreSQL foi pulado porque
+  `SAVED_LOCATIONS_POSTGRES_TEST_URL` não estava configurada. Ruff/format,
+  ESLint, Dart format/analyze e Compose validaram. A primeira passagem acusou
+  somente formatação de um teste novo; após formatar, a suíte completa passou.
+- Imagens backend e admin reconstruídas e implantadas. O build admin mantém
+  aviso de bundle grande; não houve erro TypeScript. Nenhuma dependência nova
+  nem extensão foi instalada. APK/Web release Flutter não foram reconstruídos
+  nesta rodada; o cliente foi recompilado pelo servidor de desenvolvimento.
+- `-ValidateOnly` passou com Flutter oficial 3.47.0/Dart 3.13.0. Segunda instância
+  do supervisor saiu sem duplicar processos. Recuperação do gateway foi
+  observada após encerramento do processo; depois, encerrando somente o processo
+  Flutter que possuía 5174, o supervisor recompilou e devolveu HTTP 200 com o
+  título esperado, sem intervenção. Não se simulou queda de energia/Windows.
+- Missão real `89d7dcd8-85d2-4e8b-bc34-028911355c0b` permaneceu `VERIFIED`, v1,
+  SHA `cb435b4d8f45414a51d97ffa32895242225d117cca350a4466f39ecd22d85821`.
+  Não foram criados comandos ARM/START novos nesta rodada. As amostras passivas
+  têm origem `HARDWARE_REAL`, modo `STABILIZE` e `armed=false`.
+- Às 12:34:25 UTC, as últimas 29 amostras em 60 segundos mostravam conexão e
+  preflight válidos, todas desarmadas. Entre 12:28:24 e 12:28:39 UTC houve
+  `GPS Glitch or Compass error` / `PreArm: GPS glitching`, com bloqueio correto
+  na tela; a recuperação posterior não apaga esses avisos nem comprova voo.
+- No Chrome, botão e modal de renovação foram abertos, com checklist inicialmente
+  desmarcado e confirmação desabilitada. Nenhuma renovação real foi submetida.
+  A sessão administrativa expirou depois; foi solicitado login ao usuário.
+  Após recompilar/recarregar o cliente, ele também apresentou a tela de login.
+  Nenhuma senha ou duração de sessão foi alterada.
+
+Arquivos principais desta rodada: launchers `start_connections.ps1`,
+`start_development.ps1`, `start_gateway.ps1` e `compose.yaml`; domínio em
+`backend/app/modules/missions/service.py`; executor, interface e adaptadores em
+`drone_gateway/app`; componentes de autorização/ARM e `useOperationsStream` no
+admin. As regressões e os contratos correspondentes foram atualizados. A base
+Flutter permaneceu sem alterações de código.
+
+Limite restante: novo ARM físico exige sessão administrativa válida, revisão
+presencial atual, preflight estável e sessão operacional de gates explicitamente
+habilitada. O supervisor de conexões fica em observação. Este trabalho não
+comprova motores acionados, missão autônoma executada, entrega ou voo real.
+
+## Correção da fila MAVLink em 10 de setembro de 2026
+
+### Evidência de bancada anterior à correção — 11:55–12:02 UTC
+
+- O usuário confirmou revisão externa da versão 1 e, em seguida, as inspeções
+  físicas, identificando o operador como `luiz`. Pelo admin foram registradas a
+  revisão da missão `89d7dcd8-85d2-4e8b-bc34-028911355c0b` e a autorização separada
+  às 11:57:48 UTC, consumida pelo gateway às 11:57:49 UTC.
+- Upload físico recebeu `MISSION_ACK` aceito às 11:57:51 UTC. A primeira releitura
+  bloqueou em `HOME_POSITION`; a origem observada coincidia com a versão revisada.
+  A releitura posterior concluiu às 11:58:20 UTC, publicando `VERIFIED` com os sete
+  itens comparados. Nenhum parâmetro/Home/fence foi alterado para fazê-la passar.
+- Após habilitação separada dos gates, o operador acionou o botão de ARM do admin.
+  As solicitações `73fa8d11-2753-4e5b-a3eb-b148ae1a9080` e
+  `61d50a09-7198-4c6d-842f-df24dd3b7c76`, às 12:00:29 e 12:00:57 UTC, terminaram
+  `FAILED`: a preparação local atingiu o limite de 500 mensagens sem observar a
+  fila vazia. O bloqueio ocorreu antes de `command_long_send` do ARM; o
+  `ACKNOWLEDGED` registrado era somente recebimento pelo gateway, não ACK do drone.
+- Os quatro gates foram novamente fechados às 12:02 UTC. Missão e journal foram
+  preservados como `VERIFIED` / `WAITING_OPERATOR_ARM`. O prazo da autorização
+  consumida terminou às 12:02:48 UTC; não foi prorrogado nem reutilizado.
+
+### Implementação e validação — após autorização para corrigir
+
+- Alteração restrita ao adaptador MAVLink, seus testes e documentação. O consumo
+  normal de 50 mensagens por ciclo de dois segundos foi substituído por drenagem
+  com limites de tempo e quantidade: 100 ms / 10.000 mensagens por leitura;
+  preparação ARM até 1 s (limitado também pelo timeout configurado). A fila precisa
+  esvaziar; congestionamento persistente publica `STALE` e continua bloqueando.
+  Não se descarta a fila, aceita ACK antigo ou remove verificações para armar.
+- Foram acrescentados 12 casos de teste. Os 11 casos iniciais reproduziram a falha
+  antes da mudança; depois, **162 testes do gateway passaram**. Ruff check,
+  Ruff format check (40 arquivos) e `pip check` aprovados. Backend, admin e Flutter
+  não foram alterados nem tiveram suas suítes repetidas nesta correção.
+- SITL nativo isolado em `tcp:127.0.0.1:5890`, sistema `42/1`, sem backend operacional
+  ou vínculo com a COM7/UDP 14551. O primeiro estímulo de rajada não obteve aceite
+  da taxa solicitada e parou antes de ARM. Com intervalo de 10 ms aceito, a leitura
+  de saúde drenou **828 mensagens**; upload e releitura dos sete itens passaram;
+  a preparação do ARM drenou **852 mensagens**. O ARM normal virtual recebeu ACK
+  correlacionado e heartbeat armado, seguido por desarme automático confirmado.
+- O teste SITL não enviou START, AUTO, throttle ou alteração de parâmetros. A taxa
+  temporária de ATTITUDE foi ajustada somente no simulador. A fence virtual estava
+  desabilitada por padrão e RTL/versão ausentes no health: a evidência é do adaptador
+  e do tratamento de rajadas, não do preflight completo do backend ou de voo real.
+- Imagem reconstruída com `docker compose --profile gateway build gateway`, sem
+  iniciar o container. Gateway host reiniciado com o código corrigido às 12:10 UTC,
+  quatro gates falsos e journal intacto. Entre 12:10:30 e 12:11:29 UTC, 30 snapshots
+  físicos permaneceram conectados, desarmados e com os quatro gates fechados.
+  Nenhum novo ARM/START físico foi solicitado
+  durante a correção. Nova tentativa física permanece pendente de autorização
+  válida e verificações atuais; falhas anteriores não são repetidas automaticamente.
+
+## Novo pedido e missão em 10 de setembro de 2026 — 11:45–11:49 UTC
+
+- Após ajuste manual do pino pelo usuário e confirmação explícita, somente
+  `MAPS_DEFAULT_LATITUDE` e `MAPS_DEFAULT_LONGITUDE` do `.env` local foram alinhados
+  à Home recebida. Backend recriado com `docker compose up -d --no-deps backend`;
+  configuração efetiva conferida e `/ready` respondeu com banco pronto. O `.env`
+  continua ignorado pelo Git. O ajuste de base aplica-se às novas missões; não
+  altera Home física, fence ou destinos de pedidos anteriores.
+- Pelo Flutter autenticado foi criado/submetido o pedido
+  `36d254fd-22da-4e32-9062-84bb320328f9`, um Combo Burger e PIX simulado, identificado
+  expressamente como teste de bancada sem hélices, sem executar rota/decolagem/entrega.
+  O novo ponto conserva a precisão do pino; o atalho salvo não foi atualizado.
+- No admin, aprovação e preparação foram ações separadas. Missão criada:
+  `89d7dcd8-85d2-4e8b-bc34-028911355c0b`, versão 1, sete itens, altitude 10 m,
+  distância origem–destino 3,40 m. A origem persistida coincide com a Home autorizada.
+  A consulta PostGIS confirmou o segmento inteiro dentro da fence lida nesta sessão,
+  com margem mínima 13,02 m; isso não substitui a inspeção física ou revisão no Planner.
+- Exportação acionada no painel e registrada às 11:47:39 UTC como
+  `EXPORTED_TO_MISSION_PLANNER`. SHA-256 do conteúdo canônico conferido:
+  `cb435b4d8f45414a51d97ffa32895242225d117cca350a4466f39ecd22d85821`.
+  Gravação do download no disco não foi confirmada; a página interna de downloads
+  do Chrome não é acessível pelo controle disponível. O botão de exportação permanece
+  no painel para o operador baixar e abrir o arquivo no Mission Planner.
+- O Flutter recebeu o andamento "Preparando entrega" e estado "Missão gerada".
+  Foi observada uma inconsistência de texto: "A rota foi revisada" aparece embora
+  `reviewed_at` permaneça nulo. A revisão está pendente no estado canônico do backend
+  e no admin; esse texto não é evidência de revisão. A UI não foi alterada nesta etapa.
+- Revisão e claim permanecem nulos; nenhum comando registrado no gateway. Último
+  snapshot verificado: `STABILIZE`, desarmado, quatro gates falsos. Nenhum upload
+  de missão de voo, ARM, START ou parâmetro físico enviado nesta etapa.
+- Validação realizada por UI, configuração efetiva, `/ready`, consultas somente
+  leitura de missão/waypoints/saúde, hash e geometria. Não houve mudança de código
+  nesta etapa; as suítes automatizadas não foram repetidas. Próximo passo: revisão
+  humana da versão 1 no Mission Planner antes da autorização/checklist de bancada.
+
+## Ensaio de bancada em 10 de setembro de 2026 — continuação
+
+Entre 11:31 e 11:40 UTC, após confirmação do operador e login nas duas aplicações:
+
+- Chrome conectado: admin autenticado com telemetria física; Flutter autenticado,
+  catálogo e carrinho com um Combo Burger, seleção de região e mapa híbrido MapTiler
+  renderizados. O novo pedido ainda não foi confirmado; destino aguarda escolha do
+  operador. Não reutilizar o ponto salvo fora da fence nem alterar pedidos antigos.
+- Gateway host encaminhado pelo Mission Planner recebeu e publicou saúde real do
+  alvo `1/1`: `STABILIZE`, desarmado, GPS fix 3/24–25 satélites, EKF e preflight
+  positivos, bateria 88–90%. Home, RTL e fence foram recebidos; versão do autopiloto
+  não foi retornada nessa sessão. Essas leituras são snapshots, não prontidão permanente.
+- Leitura MAVLink da fence física confirmou quatro vértices de inclusão,
+  `FENCE_ENABLE=1`, `FENCE_TYPE=7`, raio 300 m, altitude máxima 30 m, margem 5 m,
+  `FENCE_OPTIONS=0` e `RTL_ALT=1500`. Nenhum parâmetro ou polígono foi escrito.
+  A origem configurada no backend estava 4,05 m distante da Home atual; ambas dentro
+  do polígono, mas a diferença exige alinhamento explícito para a nova missão e sua
+  releitura. Não mover a Home física para fazer a verificação passar.
+- Encontrado SITL nativo já instalado com Mission Planner, independentemente do WSL.
+  Executado em diretório temporário isolado, sistema `42/1`, instância 13,
+  `tcp:127.0.0.1:5890`, sem ligação à COM7/UDP 14551 ou ao backend operacional.
+  A primeira tentativa recebeu ACK dos sete itens e falhou corretamente na releitura
+  de `LOITER_TIME.param3`, antes de qualquer ARM.
+- Correção adicional restrita às normalizações padrão `LOITER_TIME.param3: 0 → 1`
+  e `LAND.param4: 0 → 1`, conforme AP_Mission; demais valores/parâmetros permanecem
+  comparados. Cinco casos de regressão falharam antes da correção. Depois dela,
+  **150 testes do gateway aprovados** (16 novos nesta continuação), Ruff check,
+  Ruff format check e `pip check` aprovados. Imagem reconstruída com
+  `docker compose --profile gateway build gateway`; container não iniciado.
+  Suítes de backend, admin e Flutter não repetidas nesta correção do adaptador.
+- Repetição no SITL: **upload de sete itens com ACK, releitura integral verificada,
+  ARM normal separado com ACK e heartbeat armado, desarme automático observado**.
+  Nenhum START, AUTO, throttle, force-arm ou alteração de parâmetros. O probe testa
+  o adaptador MAVLink, não o fluxo completo de autorização do backend; sua fence
+  virtual estava desabilitada por padrão e a versão não foi recebida. Portanto não
+  é prova de preflight integral do sistema, hardware, motores reais ou voo.
+- Gateway físico reiniciado com o código atualizado e os quatro gates falsos.
+  Nenhum upload de missão de voo, ARM ou START físico foi enviado. Permanecem
+  pendentes: escolha do novo destino, alinhamento da origem, criação/exportação,
+  revisão humana da versão no Mission Planner e autorização/checklist específicos.
+
+## Retomada inicial em 10 de setembro de 2026 — registro anterior ao ensaio
+
+Branch `final-2`, commit-base `76a6cc3`. A seção abaixo registra somente esta
+retomada; as tabelas seguintes preservam o histórico de agosto e não representam
+testes repetidos hoje.
+
+- Corrigida a equivalência da releitura no gateway: pares de frames globais,
+  `current` como estado de execução, frame não posicional de `DO_GRIPPER` e Home
+  absoluta do item zero. A conversão da Home exige `HOME_POSITION` recente,
+  origem coincidente e altitude MSL válida; divergências reais continuam bloqueadas.
+  Detalhes e fontes fixadas em [DRONE_PROTOCOL.md](DRONE_PROTOCOL.md).
+- Gateway: **134 testes aprovados**, incluindo **49 novos casos**; antes da correção,
+  a primeira bateria de regressão reproduziu 19 falhas. Ruff, format e `pip check`
+  aprovados; imagem Docker do gateway reconstruída, mas serviço não iniciado.
+  Uma repetição da suíte encontrou `WinError 32` ao substituir o journal temporário
+  em um teste existente de retomada de claim. O teste isolado e a suíte completa
+  passaram na repetição seguinte (134/134); a causa do bloqueio de arquivo não foi
+  determinada e o código do journal não foi alterado.
+- Containers existentes de banco, API e admin reiniciados. `/health`, `/ready` e
+  admin responderam HTTP 200. Banco observado em `0007_vehicle_arm_command`.
+- Flutter Web iniciado pelo launcher com SDK oficial explícito Flutter 3.47.0 /
+  Dart 3.13.0, perfil integrado e MapTiler configurado. `http://localhost:5174`
+  respondeu HTTP 200. O SDK não estava no PATH; não se usou o fork interno.
+- A missão gerada na sessão anterior continua `EXPORTED_TO_MISSION_PLANNER`,
+  versão 1, sem revisão concluída, claim ou comandos registrados. O SHA-256 do
+  arquivo exportado confere com o banco. Nenhum pedido, destino ou autorização foi
+  alterado para contornar a revisão.
+- Diagnóstico **receive-only** em `udpin:127.0.0.1:14551`: COM7 enumerada, porém
+  nenhum heartbeat recebido antes do timeout (`VEHICLE_TIMEOUT`). Porta enumerada
+  e processo Mission Planner aberto não comprovam conexão MAVLink.
+- Browser retornou lista vazia; Computer Use retornou falha de conexão com o pipe
+  nativo. Portanto, não houve validação visual do Flutter/admin/Mission Planner.
+- Nenhum upload, ARM, START, alteração de parâmetro ou de GeoFence foi enviado.
+  SITL não executado: o WSL lista somente `docker-desktop`. As suítes de backend,
+  admin e Flutter não foram repetidas nesta alteração restrita ao gateway.
+
+**Pendência operacional naquele momento:** a revisão de 03/09 encontrou o destino aproximadamente
+1,64 m fora do polígono de inclusão então recebido do veículo. Essa evidência é
+histórica; sem heartbeat e leitura atual da fence não se pode confirmar a condição
+de hoje nem liberar a missão. É necessário restaurar o link, validar o destino e a
+rota dentro da margem da GeoFence e concluir revisão/checklist e SITL antes de
+qualquer autorização operacional. Não mover o destino de um pedido já submetido
+nem ampliar/desativar a fence automaticamente.
+
+## Registro histórico — 21 de agosto de 2026
+
 Atualizado em 21 de agosto de 2026, branch `final-1`, commit-base
 `b61913995c31933477b2e73910e6d275205d14d2`. **Implementado** significa código e contrato presentes;
 **testado** significa comando executado e resultado observado. Teste automatizado, build, HTTP
 200, renderização Web, SITL, heartbeat físico, upload e voo são evidências diferentes.
 
-## Resumo atual
+### Resumo em 21/08/2026
 
 | Integração | Implementação | Evidência executada | Estado honesto |
 |---|---|---|---|

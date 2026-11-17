@@ -19,6 +19,35 @@ não foram instalados automaticamente. Docker Scout exigiu login e não foi usad
 
 ## Primeira execução
 
+### Conexões supervisionadas (Windows)
+
+Com Docker Desktop disponível e o `.env` configurado, execute na raiz:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start_connections.ps1 -FlutterSdkRoot 'C:\Users\Luiz\Documents\flutter'
+```
+
+Sobe DB/backend/admin, reaproveita Flutter Web na porta 5174 e o gateway deste
+ambiente virtual, e reinicia os dois processos caso encerrem. Um mutex impede
+supervisores duplicados. `-ValidateOnly` valida sem iniciar; `-Build` recompila
+imagens. Não instala extensões nem tarefas de inicialização do Windows.
+
+Novos gateways usam `start_gateway.ps1 -ObserveOnly`: os quatro gates de mutação
+ficam `false` somente no processo, preservando `.env` e journal. Reconectar não
+autoriza upload/ARM/START. Um gateway já aberto é preservado com seus próprios
+gates. Para uma sessão operacional explicitamente autorizada, pare o supervisor
+e encerre o gateway de observação antes de usar o launcher operacional existente.
+
+Em `mission_planner_forward`, o Mission Planner ainda precisa ter a COM conectada
+e o mirror configurado; não há automação de sua interface nem troca de topologia.
+Logs: `%TEMP%\devcore-connections-*`. CTRL+C encerra a supervisão, preservando
+aplicações e conexão existentes; não é comando de desarmamento. DB/backend/admin
+usam `restart: unless-stopped`, respeitando parada explícita do Docker.
+
+O painel tenta reconectar o WebSocket com atraso máximo de 15 segundos, mesmo
+após oito quedas. Credenciais recusadas (`4401`/`4403`) exigem novo login. O
+Flutter mantém seu mecanismo existente de reconexão e polling.
+
 ```powershell
 Copy-Item .env.example .env
 powershell.exe -NoProfile -ExecutionPolicy Bypass `

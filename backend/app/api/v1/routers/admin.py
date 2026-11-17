@@ -19,6 +19,7 @@ from app.modules.missions.schemas import (
     FlightAuthorizationRead,
     GatewayCommandRead,
     MissionAuthorizationResult,
+    MissionOriginRevision,
     MissionRead,
     MissionReview,
     SafetyActionRequest,
@@ -35,6 +36,7 @@ from app.modules.missions.service import (
     prepare_mission,
     request_safety_action,
     request_vehicle_arm,
+    revise_mission_origin,
 )
 from app.modules.orders.admin_schemas import (
     AdminOrderRead,
@@ -280,6 +282,44 @@ async def admin_authorize_flight(
     }
     await manager.broadcast_order(mission.order_id, message)
     await manager.broadcast_admin(message)
+    return JSONResponse(
+        content=result.body,
+        status_code=result.status_code,
+        headers={"Idempotency-Replayed": str(result.replayed).lower()},
+    )
+
+
+@router.post(
+    "/missions/{mission_id}/revise-origin",
+    response_model=AdminMissionRead,
+    summary="Revisar origem em pré-voo, sem autorizar nem enviar ao veículo",
+)
+async def admin_revise_origin(
+    mission_id: UUID,
+    payload: MissionOriginRevision,
+    session: DatabaseSession,
+    settings: AppSettings,
+    admin: AdminUser,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)],
+) -> JSONResponse:
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+
+    def action() -> dict[str, object]:
+        result = revise_mission_origin(session, mission, admin, payload, settings, commit=False)
+        return admin_mission_to_read(session, result).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.missions.revise-origin:{mission_id}",
+        key=idempotency_key,
+        request_payload=payload.model_dump(mode="json"),
+        response_status=status.HTTP_200_OK,
+        action=action,
+    )
+    await _broadcast_mission(mission)
     return JSONResponse(
         content=result.body,
         status_code=result.status_code,
