@@ -6,17 +6,23 @@ Você é um **Engenheiro de Software Full-Stack Sênior e Especialista em Sistem
 - **Backend API:** Python 3.13 (FastAPI, Pydantic v2, SQLAlchemy, Alembic, PostgreSQL + PostGIS).
 - **Aplicativo cliente:** uma única base Dart/Flutter em `mobile/`, com suporte a Android e Web. Não criar um cliente Web separado.
 - **Admin Web:** React, TypeScript, Vite e React Router como aplicação operacional separada.
-- **Drone Integration:** Python 3.13, `pymavlink`, ArduPilot SITL / Pixhawk 6C.
+- **Drone Integration:** Python 3.13, `pymavlink`, PX4 SITL / Pixhawk 6C com PX4 e QGroundControl.
 - **Architecture Style:** Monólito Modular no backend, com `drone_gateway` executado como aplicação separada.
-- **Primary Development Environment:** Windows 10/11, VS Code, Docker Desktop e WSL 2 para ArduPilot SITL.
-- **Data da Última Atualização:** 20 de agosto de 2026.
+- **Primary Development Environment:** Windows 10/11, VS Code, Docker Desktop e WSL 2 para PX4 SITL.
+- **Data da Última Atualização:** 24 de novembro de 2026.
 
 ### 1.1 Escopo vigente
 
+**Regra prioritária — separação de responsabilidades:** o site (cliente, admin e backend) não realiza verificações de aptidão para voo, incluindo bateria, satélites, GPS, EKF, bússola, geofence, pre-arm, modo ou estado de armamento. Pode exibir telemetria e alertas recebidos, sem transformá-los em condições para aprovar pedidos ou exportar missões. O painel administrativo e o QGroundControl podem solicitar armamento normal e início de missão; o PX4 é a autoridade final sobre aceitação dos comandos e segurança. Não remover, reduzir ou contornar as proteções nativas do PX4. Verificações físicas e procedimentos do operador permanecem externos ao site. Validações de dados, autenticação, integridade e testes de software permanecem obrigatórios. Esta regra prevalece sobre descrições legadas de estados e endpoints.
+
+- PX4 e QGroundControl são a plataforma alvo. A migração está em andamento: consulte `docs/MIGRACAO_PX4_QGROUNDCONTROL.md` e verifique o código antes de afirmar que algum fluxo está disponível.
+- Em PX4, o painel administrativo pode solicitar upload, armamento normal e início da missão por ações explícitas e separadas do operador autenticado, encaminhadas pelo gateway. O QGroundControl permanece disponível para operação e revisão; o PX4 aceita ou rejeita os comandos. A validação em SITL e em hardware permanece separada.
+- Adapte formatos de missão, HOME, modos, checks, progresso e contratos às versões utilizadas. `.plan` é distinto de `QGC WPL 110`; não apresente recursos legados como migrados.
+- Valores legados persistidos ou compartilhados, como `EXPORTED_TO_MISSION_PLANNER` e `mission_planner_forward`, exigem estratégia de compatibilidade e migração coordenada entre código, dados, testes e documentação.
 - O resultado final pretendido inclui hardware real em ambiente controlado; SITL é a etapa de regressão obrigatória antes da Pixhawk, não uma evidência de voo real.
 - O catálogo e a escolha de pagamento são os únicos elementos intencionalmente simulados; nenhum dado bancário real é coletado.
-- Aprovar o pedido e autorizar o voo são decisões independentes, realizadas por endpoints e registros de auditoria distintos.
-- A autorização de voo é vinculada à versão da missão, expira, é de uso único e depende de revisão humana e checklist pré-voo.
+- Aprovar o pedido é uma decisão administrativa do site. O operador pode solicitar armamento e início pelo painel administrativo ou QGroundControl, respeitando a decisão do PX4.
+- O site não possui autorização de voo, checklist pré-voo, confirmações humanas de voo ou bloqueios próprios baseados na saúde do veículo. A revisão operacional da missão ocorre no QGroundControl.
 - O MapTiler, renderizado por MapLibre, é o provedor principal do aplicativo; sem chave, somente um fallback de desenvolvimento claramente identificado pode ser usado.
 - O endereço pesquisado centraliza a região. Apenas as coordenadas finais, escolhidas manualmente na segunda etapa em mapa satélite, alimentam a missão.
 
@@ -53,12 +59,12 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - Registro e validação de pedidos.
 - Simulação da escolha de forma de pagamento.
 - Painel administrativo separado com autenticação, fila, mapa, revisão, telemetria e auditoria.
-- Aprovação humana do pedido e autorização humana do voo em duas etapas independentes.
+- Aprovação humana do pedido no site; solicitação explícita de armamento e início pelo painel administrativo ou QGroundControl.
 - Criação e persistência de missão de voo vinculada ao pedido.
-- Integração com ArduPilot SITL via `pymavlink` no módulo `drone_gateway`.
+- Integração com PX4 SITL via `pymavlink` no módulo `drone_gateway`.
 - Telemetria básica e acompanhamento em tempo real por REST e WebSocket.
 - Atualização controlada dos estados do pedido e da missão.
-- Retorno automático ao ponto de origem (RTL) ao concluir ou interromper a missão, conforme regra segura.
+- Retorno ao ponto de origem (RTL) conforme configuração nativa do PX4 e operação pelo QGroundControl.
 - Logs estruturados e registro de eventos importantes.
 - Testes unitários, de integração e fluxo demonstrável com SITL.
 - Preparação para substituição do SITL pela Pixhawk 6C, sem armar o veículo automaticamente.
@@ -152,25 +158,26 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Gateway:** O `drone_gateway` deve possuir credencial própria, diferente da autenticação de usuário.
 - **OpenAPI:** A documentação deve refletir o comportamento real dos endpoints.
 
-### 4.5 Drone Gateway, MAVLink & ArduPilot
+### 4.5 Drone Gateway, MAVLink & PX4
 - **Isolamento:** Todo acesso a `pymavlink` deve ficar no `drone_gateway`.
 - **Abstração:** Crie uma interface/protocolo `VehicleGateway` e implementações para SITL, conexão real e fake de testes.
 - **Padrão seguro:** O modo padrão deve ser `simulation`; conexão real exige configuração explícita.
 - **Arming:** Nunca arme o veículo real automaticamente durante inicialização, health check ou teste.
-- **ARM administrativo:** O único armamento remoto permitido é o ARM normal, solicitado explicitamente por administrador para missão `VERIFIED`, com os checks preservados, gate próprio falso por padrão, ACK correlacionado e heartbeat posterior; nunca ofereça force/bypass ou rearmamento automático.
-- **Missões:** Faça upload, confirmação e início como etapas separadas e registradas.
-- **Heartbeat:** Nenhuma ação deve ocorrer sem heartbeat válido.
-- **Pre-arm:** Respeite e registre falhas de pre-arm; não tente contorná-las alterando parâmetros automaticamente.
+- **Armamento:** O administrador autenticado pode solicitar armamento normal no site; o gateway encaminha o comando ao PX4, que aceita ou rejeita conforme suas proteções nativas. O QGroundControl permanece disponível para armamento e desarmamento. Nunca ofereça force/bypass ou rearmamento automático.
+- **Missões:** O site gera e exporta o arquivo de missão; após revisão operacional, o administrador pode solicitar upload e início separadamente pelo gateway, ou operar pelo QGroundControl. Correlacione respostas do PX4 e registre eventos; não declare sucesso sem confirmação.
+- **Heartbeat:** Utilize heartbeat para indicar conexão e atualidade da telemetria; não o use para bloquear pedidos ou exportações no site. Para envio de comandos reais, confirme conexão e identidade do veículo; isso é validação de transporte, não de aptidão de voo.
+- **Pre-arm:** As verificações são executadas pelo PX4 e apresentadas no QGroundControl. O site pode exibir mensagens recebidas, sem executar checks próprios ou alterar parâmetros.
 - **Altitude:** A altitude vem de configuração validada, nunca do aplicativo cliente.
-- **Coordenadas:** Valide origem, destino, alcance máximo e limites configurados antes do upload.
+- **Coordenadas:** Valide somente a integridade e o formato dos dados no site. A avaliação operacional de origem, destino, alcance e limites de voo cabe ao operador no QGroundControl e ao PX4.
 - **Estados:** O gateway não pode pular estados da missão sem justificativa registrada.
 - **Telemetria:** Normalize mensagens MAVLink para DTOs internos antes de enviar ao backend.
 - **Reconexão:** Implemente reconexão com backoff limitado, sem loops agressivos.
 - **Timeout:** Toda espera por heartbeat, confirmação ou comando deve possuir timeout.
 - **Duplicidade:** O gateway não deve executar a mesma missão duas vezes.
-- **Falha do backend:** Uma missão já em execução continua sob controle do ArduPilot; o gateway deve tentar registrar o estado ao reconectar.
-- **Failsafes:** Nunca desative failsafes. O código deve tratar RTL, abortamento e perda de link como eventos críticos.
-- **Hardware:** Testes reais devem exigir configuração explícita, operador responsável e checklist documentado.
+- **Falha do backend:** Uma missão já em execução continua sob controle do PX4; o gateway deve tentar registrar o estado ao reconectar.
+- **Failsafes:** Nunca desative failsafes. O código deve registrar RTL, abortamento e perda de link como eventos críticos, sem comandar o veículo real.
+- **Comandos administrativos:** ARM normal e início de missão são ações independentes, sem encadeamento automático. Exija resposta correlacionada e estado posterior do PX4 para confirmar resultado; não repita automaticamente comandos críticos nem contorne rejeições. A missão enviada deve corresponder à missão revisada pelo operador.
+- **Hardware:** Testes reais devem exigir configuração explícita, operador responsável e checklist externo ao site.
 
 ### 4.6 Logging, Telemetry & Observability
 - **Formato:** Utilize logs estruturados, preferencialmente JSON no backend e gateway.
@@ -390,18 +397,18 @@ drone-delivery/
 - Não gera comandos MAVLink.
 
 ### 6.6 Missions
-- Cria missão somente para pedido aprovado e registra versão, revisão e exportação Mission Planner.
-- Gera waypoints conceituais e valida limites.
+- Cria missão somente para pedido aprovado e registra versão, revisão e exportação `.plan` para QGroundControl.
+- Gera waypoints conceituais e valida o formato dos dados; não decide aptidão de voo.
 - Não abre porta serial ou UDP MAVLink.
 
 ### 6.7 Approvals
-- Registra decisão administrativa do pedido, motivo de rejeição e autorização de voo.
-- A autorização usa checks técnicos automáticos, três confirmações humanas e um modal final; não usa frase digitada.
-- Nunca combina aprovação do pedido e autorização do voo em uma única ação.
+- Registra decisão administrativa do pedido e motivo de rejeição.
+- Não implementa checks técnicos, três confirmações humanas, modal de autorização de voo ou frase digitada. O painel administrativo oferece ações explícitas e separadas de upload, armamento normal e início de missão, sem checklist de aptidão próprio.
+- A aprovação do pedido nunca dispara comandos de voo.
 
 ### 6.8 Vehicles
 - Mantém identidade do veículo e o último snapshot de saúde normalizado recebido do gateway.
-- Não substitui o ArduPilot como fonte do estado físico durante execução.
+- Não substitui o PX4 como fonte do estado físico durante execução.
 
 ### 6.9 Telemetry
 - Recebe telemetria normalizada do gateway.
@@ -435,11 +442,15 @@ FAILED
 ```
 
 ### 7.2 Mission States
+
+Os estados de autorização abaixo são legados para compatibilidade e não representam uma decisão de aptidão para voo pelo site.
+Modelo alvo proposto; o valor de exportação legado continua vigente até a migração coordenada dos contratos e dados.
+
 ```text
 DRAFT
 PENDING_VALIDATION
 GENERATED
-EXPORTED_TO_MISSION_PLANNER
+EXPORTED_TO_QGROUNDCONTROL
 UNDER_REVIEW
 READY_FOR_AUTHORIZATION
 AUTHORIZED
@@ -462,10 +473,10 @@ FAILED
 - Produto indisponível não pode gerar novo item.
 - Pedido confirmado não pode ter itens ou ponto de entrega alterados silenciosamente.
 - Cada pedido possui no máximo uma missão ativa.
-- Missão não pode ficar `READY_FOR_AUTHORIZATION` sem origem, destino, altitude, exportação, revisão e validações concluídas.
-- Apenas missão `AUTHORIZED`, com autorização vigente, checks técnicos sem bloqueio e três confirmações humanas válidas, pode ser assumida pelo gateway.
+- Estados legados de autorização não constituem permissão de voo; preserve compatibilidade durante a migração.
+- O gateway real acompanha a missão e a telemetria e encaminha solicitações explícitas de upload, armamento normal e início de missão de administrador autenticado; não exige autorização de aptidão de voo do site.
 - Aprovar um pedido não inicia, não envia e não autoriza a missão.
-- Rejeição de pedido exige motivo; autorização de voo exige confirmação de área controlada.
+- Rejeição de pedido exige motivo; a confirmação de área controlada é responsabilidade do operador, fora do site.
 - Claim de missão deve impedir que dois gateways executem a mesma missão.
 - Missão `COMPLETED`, `ABORTED` ou `FAILED` é terminal, salvo procedimento administrativo explícito.
 - O aplicativo não pode forçar transição de missão.
@@ -478,6 +489,8 @@ FAILED
 ## 8. API & Integration Rules
 
 ### 8.1 Initial Endpoints
+
+Os endpoints legados de autorização de voo, claim, upload-status e comandos permanecem listados para compatibilidade de contratos e simulação. Os endpoints de comandos devem suportar solicitações explícitas de upload, armamento normal e início no hardware real após validação da integração. O painel não apresenta checklist de autorização de voo; abortamento e RTL permanecem operáveis pelo QGroundControl. Preserve autenticação, associação ao veículo e missão, prevenção de duplicidade, auditoria, timeout e confirmação do PX4.
 ```text
 GET  /health
 GET  /ready
@@ -535,7 +548,7 @@ WS   /api/v1/ws/admin/operations
 - Mudanças incompatíveis exigem atualização de versão ou estratégia de transição.
 - Enumerações compartilhadas devem manter os mesmos valores entre backend, gateway e mobile.
 - O backend é a fonte de verdade para pedidos e missões.
-- O ArduPilot é a fonte de verdade para o estado físico do veículo em execução.
+- O PX4 é a fonte de verdade para o estado físico do veículo em execução.
 - O aplicativo mostra dados recebidos; ele não inventa conclusão por timeout local.
 - O gateway deve enviar identificador único de evento para deduplicação.
 
@@ -550,7 +563,7 @@ WS   /api/v1/ws/admin/operations
 - `production`: reservado para evolução futura, sem implantação comercial no MVP.
 
 ### 9.2 Required Environment Variables
-O `.env.example` deve conter, no mínimo:
+Configuração alvo da migração: valide os valores contra a implementação e a versão PX4 em uso; o exemplo não comprova suporte implementado. O `.env.example` deve conter, no mínimo:
 
 ```env
 APP_ENV=development
@@ -579,6 +592,7 @@ MAPTILER_SERVER_API_KEY=
 
 GATEWAY_API_KEY=change_me_gateway_key
 GATEWAY_ID=dev-gateway-01
+AUTOPILOT_SYSTEM=PX4
 MAVLINK_MODE=simulation
 MAVLINK_CONNECTION=COM7
 MAVLINK_FORWARD_CONNECTION=udpin:127.0.0.1:14551
@@ -589,7 +603,7 @@ MAVLINK_SOURCE_SYSTEM_ID=254
 MAVLINK_SOURCE_COMPONENT_ID=190
 MAVLINK_TARGET_SYSTEM_ID=
 MAVLINK_TARGET_COMPONENT_ID=
-MAVLINK_DIALECT=ardupilotmega
+MAVLINK_DIALECT=common
 MAVLINK2_ENABLED=true
 REAL_HARDWARE_CONFIRMATION_REQUIRED=true
 REAL_HARDWARE_ACKNOWLEDGED=false
@@ -597,13 +611,11 @@ ALLOW_MISSION_UPLOAD=false
 ALLOW_FLIGHT_COMMANDS=false
 ALLOW_MISSION_START=false
 ALLOW_VEHICLE_ARM=false
+# Flags acima são defaults seguros de desenvolvimento, não proibições permanentes.
+# Após validação SITL e de bancada, o operador pode habilitar explicitamente upload,
+# comandos, armamento normal e início no ambiente real controlado; nunca automaticamente.
 
 DEFAULT_TAKEOFF_ALTITUDE_M=10
-# Limite operacional do gateway; não restringe salvar ou confirmar pedidos.
-MAX_MISSION_DISTANCE_M=500
-MIN_BATTERY_PERCENT=40
-MIN_GPS_SATELLITES=10
-FLIGHT_AUTHORIZATION_TTL_SECONDS=300
 TELEMETRY_PERSIST_INTERVAL_SECONDS=2
 HEARTBEAT_TIMEOUT_SECONDS=10
 MISSION_COMMAND_TIMEOUT_SECONDS=15
@@ -615,7 +627,7 @@ MISSION_COMMAND_TIMEOUT_SECONDS=15
 - Não use valores inseguros como fallback silencioso.
 - Configurações de voo real devem ficar separadas das configurações de simulação.
 - `MAVLINK_MODE=real` exige confirmação explícita e checklist externo; não deve ser ativado pelo código automaticamente.
-- O profile Docker usa variáveis `GATEWAY_CONTAINER_*` próprias e deve rejeitar `real`, `direct` e `mission_planner_forward`; COM/forwarding executam somente no host Windows.
+- O profile Docker usa variáveis `GATEWAY_CONTAINER_*` próprias e deve rejeitar modos de hardware e encaminhamento; COM/forwarding executam somente no host Windows. O modo legado `mission_planner_forward` ainda existe e deve ser tratado como legado até sua migração compatível.
 
 ---
 
@@ -625,10 +637,10 @@ MISSION_COMMAND_TIMEOUT_SECONDS=15
 - O código nunca deve executar armamento real como efeito colateral.
 - Testes de API e unitários nunca devem abrir uma porta MAVLink real.
 - Todo comando crítico deve possuir log, timeout e resultado verificável.
-- Uma missão só pode iniciar após validação do backend e do gateway.
-- A confirmação do usuário sobre o ponto não substitui validações técnicas.
-- O sistema deve possuir comando administrativo de abortamento documentado.
-- RTL não deve ser usado como solução automática para toda falha sem considerar o estado do veículo; delegue decisões críticas ao ArduPilot e ao operador conforme documentação.
+- Uma missão real pode ser iniciada por ação explícita do operador no painel administrativo ou QGroundControl, com aceitação pelo PX4. Backend e gateway não executam checks próprios de aptidão; validam identidade, integridade e entrega dos comandos.
+- A confirmação do usuário sobre o ponto não substitui a revisão operacional no QGroundControl.
+- O procedimento de abortamento e RTL deve ser documentado para execução pelo operador no QGroundControl; o site apenas acompanha os eventos.
+- RTL não deve ser usado como solução automática para toda falha sem considerar o estado do veículo; delegue decisões críticas ao PX4 e ao operador conforme documentação.
 - Não altere parâmetros da Pixhawk automaticamente para “corrigir” pre-arm, EKF, bússola ou GPS.
 - O projeto deve permitir demonstração completa com SITL caso o hardware falhe.
 - Procedimentos reais devem ser documentados em `docs/DEMO_PLAN.md` e `docs/SECURITY.md`.
@@ -652,7 +664,7 @@ Requisitos funcionais, não funcionais, critérios de aceite e rastreabilidade.
 Regras de pedido, ponto de entrega, missão, estados, cancelamento, falhas e validações.
 
 ### `docs/APPLICATIONS.md`
-Responsabilidades, execução e comunicação de backend, mobile, gateway, banco, SITL e Mission Planner.
+Responsabilidades, execução e comunicação de backend, mobile, gateway, banco, PX4 SITL e QGroundControl.
 
 ### `docs/API.md`
 Endpoints, schemas, autenticação, erros e exemplos.
@@ -666,8 +678,8 @@ Tokens, componentes Flutter/React, análise das referências, acessibilidade e c
 ### `docs/LOCATION_SELECTION.md` e `docs/MAPS_INTEGRATION.md`
 Fluxo em duas etapas, mapa híbrido, marcador manual, MapTiler/MapLibre e fallback de desenvolvimento.
 
-### `docs/ADMIN_FLOW.md` e `docs/MISSION_PLANNER_INTEGRATION.md`
-Fila, decisões humanas, revisão da missão, autorização separada, arquivo QGC WPL e operação segura.
+### `docs/ADMIN_FLOW.md` e `docs/MIGRACAO_PX4_QGROUNDCONTROL.md`
+Fila, aprovação do pedido, exportação `.plan` e comandos administrativos explícitos de upload, armamento normal e início pelo site, com aceitação pelo PX4.
 
 ### `docs/HARDWARE.md` e `docs/PREFLIGHT_CHECKLIST.md`
 Componentes confirmados, limites, bancada e checklist sem inventar pinagem ou parâmetros.
@@ -720,7 +732,7 @@ Para cada tarefa:
 11. Estrutura Flutter, integração REST e seleção do ponto em duas etapas.
 12. Painel administrativo separado.
 13. Drone Gateway em modo fake.
-14. Integração com ArduPilot SITL.
+14. Integração com PX4 SITL.
 15. Telemetria, WebSocket e fluxo ponta a ponta.
 16. Integração real controlada com Pixhawk, bancada e evidência manual.
 

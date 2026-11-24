@@ -335,6 +335,15 @@ export const demoApi: AdminApi = {
     });
     return copy(current);
   },
+  async recordQgcReview() {
+    throw new Error('A revisão QGroundControl requer backend ativo.');
+  },
+  async exportQgcDraft() {
+    throw new Error('O rascunho QGroundControl requer telemetria real ou SITL do backend.');
+  },
+  async downloadReviewedQgcPlan() {
+    throw new Error('O plano revisado precisa estar registrado no backend.');
+  },
   async exportMission(id) {
     await wait();
     const mission = findMission(id);

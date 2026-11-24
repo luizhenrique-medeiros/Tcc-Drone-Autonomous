@@ -53,22 +53,20 @@ describe('diagnóstico de integração do veículo', () => {
     });
   });
 
-  it('mostra gateway, Pixhawk, ArduPilot, MAVLink, link, flags e WebSocket', async () => {
+  it('mostra leituras do gateway, do veículo e do WebSocket sem aprovar aptidão', async () => {
     render(<VehiclesPage />);
 
     expect(await screen.findByText('COM7')).toBeInTheDocument();
     expect(screen.getByText('Gateway')).toBeInTheDocument();
     expect(screen.getByText('Pixhawk')).toBeInTheDocument();
-    expect(screen.getAllByText('ArduPilot')).toHaveLength(2);
+    expect(screen.getByText('Autopiloto')).toBeInTheDocument();
+    expect(screen.getByText('ArduPilot')).toBeInTheDocument();
     expect(screen.getByText('MAVLink')).toBeInTheDocument();
     expect(screen.getByText(/57600 baud/)).toBeInTheDocument();
     expect(screen.getByText(/SYSID 1/)).toBeInTheDocument();
-    expect(screen.getByText('Upload de missão')).toBeInTheDocument();
-    expect(screen.getByText('Comandos de voo')).toBeInTheDocument();
-    expect(screen.getByText('Armamento remoto')).toBeInTheDocument();
-    expect(screen.getByText('Início de missão')).toBeInTheDocument();
+    expect(screen.queryByText('Armamento remoto')).not.toBeInTheDocument();
+    expect(screen.queryByText(/mínimo do backend|a leitura atual possui bloqueios/i)).not.toBeInTheDocument();
     expect(screen.getByText('WebSocket')).toBeInTheDocument();
-    expect(screen.getAllByText('DESABILITADO')).toHaveLength(4);
 
     act(() => streamMock.onUpdate?.());
     await waitFor(() => expect(apiMocks.getVehicleHealth).toHaveBeenCalledTimes(2));

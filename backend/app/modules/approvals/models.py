@@ -50,6 +50,10 @@ class FlightAuthorization(Base):
     )
     mission_version: Mapped[int] = mapped_column(Integer, nullable=False)
     mission_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    qgroundcontrol_review_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("system_events.id", ondelete="RESTRICT")
+    )
+    qgroundcontrol_candidate_sha256: Mapped[str | None] = mapped_column(String(64))
     checklist: Mapped[dict[str, bool | str | float]] = mapped_column(JSON, nullable=False)
     controlled_area_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     operator_name: Mapped[str] = mapped_column(String(120), nullable=False)

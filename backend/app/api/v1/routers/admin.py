@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, Query, Response, status
@@ -9,10 +9,18 @@ from sqlalchemy import select
 
 from app.api.dependencies import AdminUser, AppSettings, DatabaseSession
 from app.core.enums import GatewayCommandType, MissionStatus, OrderStatus
-from app.core.exceptions import InvalidStateError, NotFoundError
+from app.core.exceptions import ConflictError, InvalidStateError, NotFoundError
 from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
 from app.modules.missions.models import GatewayCommand, Mission
+from app.modules.missions.qgroundcontrol_plan import (
+    QGC_REVIEW_EVENT,
+    PlanPosition,
+    build_reviewed_candidate,
+    create_draft_plan,
+    plan_sha256,
+    validate_reviewed_plan,
+)
 from app.modules.missions.schemas import (
     AdminMissionRead,
     FlightAuthorizationCreate,
@@ -22,6 +30,11 @@ from app.modules.missions.schemas import (
     MissionOriginRevision,
     MissionRead,
     MissionReview,
+    Px4SITLCommandRequest,
+    Px4SITLUploadRequest,
+    QGroundControlDraftRequest,
+    QGroundControlReviewRead,
+    QGroundControlReviewRequest,
     SafetyActionRequest,
     VehicleArmRequest,
     VehicleArmResult,
@@ -31,6 +44,7 @@ from app.modules.missions.service import (
     admin_missions_to_read,
     authorize_flight,
     export_mission,
+    export_reviewed_qgc_plan,
     mark_reviewed,
     mark_under_review,
     prepare_mission,
@@ -53,12 +67,13 @@ from app.modules.orders.service import (
 )
 from app.modules.system_events.models import SystemEvent
 from app.modules.system_events.schemas import SystemEventRead
+from app.modules.system_events.service import record_event
 from app.modules.telemetry.models import TelemetryLog
 from app.modules.telemetry.schemas import TelemetryRead
 from app.modules.telemetry.service import telemetry_to_read
 from app.modules.vehicles.models import Vehicle
 from app.modules.vehicles.schemas import VehicleHealthRead, VehicleRead
-from app.modules.vehicles.service import health_to_read, latest_health
+from app.modules.vehicles.service import health_is_stale, health_to_read, latest_health
 
 router = APIRouter(prefix="/admin", tags=["Administração"])
 
@@ -166,12 +181,20 @@ def list_missions(
 
 @router.get("/missions/{mission_id}", response_model=AdminMissionRead, summary="Detalhar missão")
 def admin_mission_detail(
-    mission_id: UUID, session: DatabaseSession, _admin: AdminUser
+    mission_id: UUID, session: DatabaseSession, settings: AppSettings, _admin: AdminUser
 ) -> AdminMissionRead:
     mission = session.get(Mission, mission_id)
     if not mission:
         raise NotFoundError("Missão não encontrada")
-    return admin_mission_to_read(session, mission)
+    result = admin_mission_to_read(session, mission)
+    if settings.px4_sitl_plan_validation and result.qgroundcontrol_review_status == "CURRENT":
+        result.qgroundcontrol_sitl_review_event_id = session.scalar(
+            select(SystemEvent.id)
+            .where(SystemEvent.mission_id == mission.id, SystemEvent.event_type == QGC_REVIEW_EVENT)
+            .order_by(SystemEvent.created_at.desc(), SystemEvent.id.desc())
+            .limit(1)
+        )
+    return result
 
 
 @router.get(
@@ -192,6 +215,156 @@ def admin_export_mission(mission_id: UUID, session: DatabaseSession, admin: Admi
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Mission-SHA256": mission.mission_sha256,
         },
+    )
+
+
+@router.post(
+    "/missions/{mission_id}/qgroundcontrol-draft",
+    response_class=Response,
+    summary="Gerar rascunho .plan para revisão, sem aprovar ou enviar ao veículo",
+)
+def admin_qgroundcontrol_draft(
+    mission_id: UUID,
+    payload: QGroundControlDraftRequest,
+    session: DatabaseSession,
+    settings: AppSettings,
+    _admin: AdminUser,
+) -> Response:
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    if mission.vehicle_id and payload.vehicle_id and mission.vehicle_id != payload.vehicle_id:
+        raise ConflictError("O veículo selecionado não corresponde ao da missão")
+    if payload.vehicle_id and not session.get(Vehicle, payload.vehicle_id):
+        raise NotFoundError("Veículo não encontrado")
+    origin = PlanPosition(float(mission.origin_latitude), float(mission.origin_longitude))
+    home_amsl_m = payload.home_amsl_m
+    vehicle_id = payload.vehicle_id or mission.vehicle_id
+    if vehicle_id:
+        try:
+            health = latest_health(session, vehicle_id)
+        except NotFoundError:
+            health = None
+        if (
+            health is not None
+            and not health_is_stale(health, settings)
+            and health.current_latitude is not None
+            and health.current_longitude is not None
+        ):
+            origin = PlanPosition(float(health.current_latitude), float(health.current_longitude))
+            if health.current_amsl_m is not None:
+                home_amsl_m = health.current_amsl_m
+    content = create_draft_plan(
+        origin,
+        PlanPosition(float(mission.destination_latitude), float(mission.destination_longitude)),
+        home_amsl_m=home_amsl_m,
+        altitude_m=float(mission.takeoff_altitude_m),
+    )
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="draft-{mission.id}.plan"',
+            "X-Draft-SHA256": plan_sha256(content.encode("utf-8")),
+        },
+    )
+
+
+@router.get(
+    "/missions/{mission_id}/qgroundcontrol-review",
+    response_class=Response,
+    summary="Baixar o arquivo .plan da revisão atual para abrir no QGroundControl",
+)
+def admin_download_qgroundcontrol_review(
+    mission_id: UUID, session: DatabaseSession, _admin: AdminUser
+) -> Response:
+    mission = session.scalar(
+        select(Mission).where(Mission.id == mission_id).with_for_update(read=True)
+    )
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    content, digest = export_reviewed_qgc_plan(session, mission)
+    filename = f"missao-{mission.id}-v{mission.version}-revisada-{digest[:8]}.plan"
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Plan-SHA256": digest,
+        },
+    )
+
+
+@router.post(
+    "/missions/{mission_id}/qgroundcontrol-review",
+    response_model=QGroundControlReviewRead,
+    summary="Registrar plano QGroundControl revisado sem autorizar voo",
+)
+def admin_qgroundcontrol_review(
+    mission_id: UUID,
+    payload: QGroundControlReviewRequest,
+    session: DatabaseSession,
+    admin: AdminUser,
+) -> QGroundControlReviewRead:
+    mission = session.scalar(select(Mission).where(Mission.id == mission_id).with_for_update())
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    if mission.status not in {
+        MissionStatus.GENERATED,
+        MissionStatus.EXPORTED_TO_MISSION_PLANNER,
+        MissionStatus.UNDER_REVIEW,
+        MissionStatus.READY_FOR_AUTHORIZATION,
+    }:
+        raise InvalidStateError("O estado atual da missão não aceita nova revisão")
+    if (mission.version, mission.mission_sha256) != (
+        payload.expected_version,
+        payload.expected_sha256,
+    ):
+        raise ConflictError("A missão mudou; atualize a tela e revise novamente")
+    if not payload.confirmed:
+        raise ConflictError("Confirme que revisou o arquivo no QGroundControl")
+    try:
+        reviewed_items = validate_reviewed_plan(
+            payload.plan,
+            PlanPosition(float(mission.destination_latitude), float(mission.destination_longitude)),
+        )
+    except ValueError as exc:
+        raise ConflictError(str(exc)) from exc
+    digest = plan_sha256(payload.plan.encode("utf-8"))
+    candidate = build_reviewed_candidate(
+        reviewed_items,
+        plan_digest=digest,
+        mission_version=mission.version,
+        mission_digest=mission.mission_sha256,
+    )
+    event, _ = record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        event_type=QGC_REVIEW_EVENT,
+        message="Plano QGroundControl recebido e revisão declarada; voo não autorizado",
+        metadata={
+            "mission_version": mission.version,
+            "mission_sha256": mission.mission_sha256,
+            "plan_sha256": digest,
+            "plan": payload.plan,
+            "reviewed_items": reviewed_items,
+            "candidate": candidate.content,
+            "candidate_sha256": candidate.sha256,
+            "ignored_camera_item": candidate.ignored_camera_item,
+        },
+    )
+    session.commit()
+    return QGroundControlReviewRead(
+        event_id=event.id,
+        mission_version=mission.version,
+        plan_sha256=digest,
+        reviewed_items=reviewed_items,
+        candidate_sha256=candidate.sha256,
+        ignored_camera_item=candidate.ignored_camera_item,
     )
 
 
@@ -228,6 +401,107 @@ async def admin_mark_reviewed(
     result = mark_reviewed(session, mission, admin, payload.notes if payload else None)
     await _broadcast_mission(result)
     return admin_mission_to_read(session, result)
+
+
+@router.post(
+    "/missions/{mission_id}/px4-sitl/upload", response_model=AdminMissionRead, status_code=202
+)
+async def admin_px4_sitl_upload(
+    mission_id: UUID,
+    payload: Px4SITLUploadRequest,
+    session: DatabaseSession,
+    settings: AppSettings,
+    admin: AdminUser,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)],
+) -> JSONResponse:
+    if not settings.px4_sitl_plan_validation:
+        raise NotFoundError("Ensaio PX4 SITL indisponível neste ambiente")
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+
+    def mutation() -> dict[str, object]:
+        authorize_flight(session, mission, admin, payload, settings, commit=False)
+        return admin_mission_to_read(session, mission).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.px4-sitl.upload:{mission_id}",
+        key=idempotency_key,
+        request_payload=payload.model_dump(mode="json"),
+        response_status=status.HTTP_202_ACCEPTED,
+        action=mutation,
+    )
+    await _broadcast_mission(mission)
+    return JSONResponse(result.body, result.status_code)
+
+
+@router.post(
+    "/missions/{mission_id}/px4-sitl/commands/{action}",
+    response_model=GatewayCommandRead,
+    status_code=202,
+)
+async def admin_px4_sitl_command(
+    mission_id: UUID,
+    action: Literal["ARM", "START", "RTL"],
+    payload: Px4SITLCommandRequest,
+    session: DatabaseSession,
+    settings: AppSettings,
+    admin: AdminUser,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=8, max_length=200)],
+) -> JSONResponse:
+    if not settings.px4_sitl_plan_validation:
+        raise NotFoundError("Ensaio PX4 SITL indisponível neste ambiente")
+    mission = session.get(Mission, mission_id)
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+
+    def mutation() -> dict[str, object]:
+        if action == "ARM":
+            _, command = request_vehicle_arm(
+                session, mission, admin, payload, settings, commit=False
+            )
+        else:
+            request_safety_action(
+                session, mission, admin, action, settings=settings, commit=False, px4_sitl=True
+            )
+            command = session.scalar(
+                select(GatewayCommand)
+                .where(GatewayCommand.mission_id == mission.id, GatewayCommand.command == action)
+                .order_by(GatewayCommand.requested_at.desc())
+                .limit(1)
+            )
+            if not command:
+                raise NotFoundError("Comando da missão não encontrado")
+        return GatewayCommandRead.model_validate(command).model_dump(mode="json")
+
+    result = execute_idempotently(
+        session,
+        user_id=admin.id,
+        operation=f"admin.px4-sitl.command:{mission_id}:{action}",
+        key=idempotency_key,
+        request_payload=payload.model_dump(mode="json"),
+        response_status=status.HTTP_202_ACCEPTED,
+        action=mutation,
+    )
+    return JSONResponse(result.body, result.status_code)
+
+
+@router.get("/missions/{mission_id}/px4-sitl/commands", response_model=list[GatewayCommandRead])
+def admin_px4_sitl_commands(
+    mission_id: UUID, session: DatabaseSession, settings: AppSettings, _admin: AdminUser
+) -> list[GatewayCommand]:
+    if not settings.px4_sitl_plan_validation:
+        raise NotFoundError("Ensaio PX4 SITL indisponível neste ambiente")
+    return list(
+        session.scalars(
+            select(GatewayCommand)
+            .where(GatewayCommand.mission_id == mission_id)
+            .order_by(GatewayCommand.requested_at.desc())
+            .limit(20)
+        )
+    )
 
 
 @router.post(

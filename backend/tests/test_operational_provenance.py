@@ -10,7 +10,153 @@ from app.modules.telemetry.schemas import TelemetryCreate
 from app.modules.telemetry.service import telemetry_is_stale
 from app.modules.vehicles.models import VehicleHealthSnapshot
 from app.modules.vehicles.schemas import VehicleHealthInput
-from app.modules.vehicles.service import _critical_hash, health_to_read
+from app.modules.vehicles.service import _critical_hash, health_failures, health_to_read
+
+
+def test_geofence_absence_does_not_block_or_change_critical_health_hash() -> None:
+    now = datetime.now(UTC)
+    snapshot = VehicleHealthSnapshot(
+        connected=True,
+        heartbeat=True,
+        source=OperationalSource.SITL,
+        gps_fix_type=3,
+        satellites=20,
+        ekf_ok=True,
+        battery_percent=90,
+        flight_mode="AUTO",
+        armed=False,
+        preflight_ok=True,
+        rtl_configured=True,
+        geofence_enabled=False,
+        origin_latitude=-23.1175,
+        origin_longitude=-46.5502,
+        critical_state_hash="a" * 64,
+        captured_at=now,
+        received_at=now,
+    )
+    for value in (False, None):
+        snapshot.geofence_enabled = value
+        assert health_failures(snapshot, Settings(_env_file=None)) == []
+    payload = VehicleHealthInput(
+        gateway_id="gateway",
+        vehicle_identifier="vehicle",
+        connected=True,
+        heartbeat=True,
+        geofence_enabled=True,
+    )
+    assert _critical_hash(payload) == _critical_hash(
+        payload.model_copy(update={"geofence_enabled": False})
+    )
+
+
+def test_ekf_is_informational_but_vehicle_preflight_still_blocks() -> None:
+    now = datetime.now(UTC)
+    snapshot = VehicleHealthSnapshot(
+        connected=True,
+        heartbeat=True,
+        source=OperationalSource.SITL,
+        gps_fix_type=3,
+        satellites=20,
+        ekf_ok=False,
+        battery_percent=90,
+        flight_mode="AUTO",
+        armed=False,
+        preflight_ok=True,
+        rtl_configured=True,
+        origin_latitude=-23.1175,
+        origin_longitude=-46.5502,
+        critical_state_hash="a" * 64,
+        captured_at=now,
+        received_at=now,
+    )
+    for value in (False, None):
+        snapshot.ekf_ok = value
+        assert health_failures(snapshot, Settings(_env_file=None)) == []
+    snapshot.preflight_ok = False
+    assert "PREFLIGHT_NOT_OK" in health_failures(snapshot, Settings(_env_file=None))
+    payload = VehicleHealthInput(
+        gateway_id="gateway", vehicle_identifier="vehicle", connected=True, heartbeat=True
+    )
+    assert _critical_hash(payload) == _critical_hash(payload.model_copy(update={"ekf_ok": False}))
+
+
+def test_px4_diagnostics_are_exposed_without_passing_authorization_checks(
+    client: TestClient, gateway_headers: dict[str, str], admin_headers: dict[str, str]
+) -> None:
+    response = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={
+            "gateway_id": gateway_headers["X-Gateway-ID"],
+            "vehicle_identifier": "px4-diagnostics",
+            "autopilot_system": "PX4",
+            "source": "HARDWARE_REAL",
+            "connected": True,
+            "heartbeat": True,
+            "flight_mode": "POSCTL",
+            "px4_diagnostics": {
+                "current_mode_prearm_ok": True,
+                "rtl_return_alt_m": 1,
+                "rtl_cone_angle_deg": 45,
+                "rtl_min_distance_m": 10,
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["failures"] == ["HARDWARE_OBSERVATION_ONLY"]
+    assert data["authorization_eligible"] is False
+    detail = client.get(
+        f"/api/v1/admin/vehicles/{data['vehicle']['id']}/health", headers=admin_headers
+    )
+    assert detail.status_code == 200, detail.text
+    diagnostic = detail.json()["px4_diagnostics"]
+    assert diagnostic["current_mode_prearm_ok"] is True
+    assert diagnostic["rtl_return_alt_m"] == 1
+    assert diagnostic["rtl_cone_angle_deg"] == 45
+    assert diagnostic["rtl_min_distance_m"] == 10
+    assert diagnostic["rtl_type"] is None
+
+
+def test_vehicle_observations_are_deduplicated_and_have_no_mission(
+    client: TestClient,
+    gateway_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    heartbeat = client.post(
+        "/api/v1/gateway/heartbeat",
+        headers=gateway_headers,
+        json={
+            "gateway_id": gateway_headers["X-Gateway-ID"],
+            "vehicle_identifier": "observed-px4",
+            "autopilot_system": "PX4",
+            "source": "HARDWARE_REAL",
+            "connected": True,
+            "heartbeat": True,
+            "armed": False,
+        },
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
+    vehicle_id = heartbeat.json()["vehicle"]["id"]
+    path = f"/api/v1/gateway/vehicles/{vehicle_id}/observations"
+    observation = {
+        "event_id": str(uuid4()),
+        "event_type": "MAVLINK_MISSION_CURRENT",
+        "message": "Autopiloto informou waypoint atual 1.",
+        "metadata": {"sequence": 1},
+    }
+    assert client.post(path, headers=admin_headers, json=[observation]).status_code == 401
+    assert client.post(path, headers=gateway_headers, json=[observation] * 2).status_code == 204
+    assert client.post(path, headers=gateway_headers, json=[observation]).status_code == 204
+    malformed = {**observation, "event_type": "MISSION_COMPLETED"}
+    assert client.post(path, headers=gateway_headers, json=[malformed]).status_code == 422
+    events = client.get("/api/v1/admin/events", headers=admin_headers).json()
+    matched = [event for event in events if event["event_id"] == observation["event_id"]]
+    assert len(matched) == 1
+    assert matched[0]["vehicle_id"] == vehicle_id
+    assert matched[0]["mission_id"] is None
+    assert matched[0]["order_id"] is None
+    assert matched[0]["metadata"] == {"sequence": 1}
 
 
 def test_gateway_authentication_binds_key_and_configured_identity(

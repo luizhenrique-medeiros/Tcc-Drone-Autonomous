@@ -1,4 +1,5 @@
 import logging
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -7,7 +8,7 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from app.clients.backend_client import BackendClient
-from app.core.config import Settings
+from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import (
     BackendContractError,
     BackendUnavailableError,
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 class BackendPort(Protocol):
     async def heartbeat(self, health: VehicleHealth) -> HeartbeatResponse: ...
+
+    async def report_vehicle_observations(
+        self, vehicle_id: UUID, observations: list[tuple[UUID, VehicleEvent]]
+    ) -> None: ...
 
     async def authorized_missions(self) -> list[AuthorizedMission]: ...
 
@@ -140,6 +145,12 @@ PROGRESS_DETAILS = {
         "próxima da origem."
     ),
 }
+PX4_SITL_PROGRESS_DETAILS = {
+    MissionStatus.DESTINATION_REACHED: "A telemetria do PX4 confirmou a chegada ao waypoint.",
+    MissionStatus.RETURNING: "O PX4 informou entrada na etapa de retorno.",
+    MissionStatus.COMPLETED: "Houve voo, e o PX4 confirmou pouso e desarmamento.",
+    MissionStatus.ABORTED: "O PX4 confirmou pouso após retorno antes do waypoint de entrega.",
+}
 
 
 @dataclass(slots=True)
@@ -176,6 +187,7 @@ class MissionExecutor:
         self._now = now or (lambda: datetime.now(UTC))
         self._backend_vehicle_id: UUID | None = None
         self._backend_health_failures: list[str] = []
+        self._observations: deque[tuple[UUID, VehicleEvent]] = deque(maxlen=200)
         self._last_telemetry_report_at: datetime | None = None
         self._pending_claim: AuthorizedMission | None = None
         self._active = self._restore_active()
@@ -281,6 +293,20 @@ class MissionExecutor:
             )
         self._backend_vehicle_id = heartbeat.vehicle.id
         self._backend_health_failures = heartbeat.failures
+        if self._settings.mavlink_mode in {
+            MavlinkMode.QGROUNDCONTROL_FORWARD,
+            MavlinkMode.MAVLINK_ROUTER,
+        } or (
+            self._settings.autopilot_system.strip().upper() == "PX4"
+            and not self._settings.px4_sitl_plan_validation
+        ):
+            await self._publish_observations(heartbeat.vehicle.id)
+            return
+        eligible = heartbeat.authorization_eligible
+        if self._settings.px4_sitl_plan_validation:
+            if health.source is not OperationalSource.SITL:
+                raise UnsafeOperationError("O ensaio PX4 aceita somente origem SITL.")
+            eligible = health.connected and health.heartbeat
         if await self._release_retired_preflight(health):
             return
         await self._forward_vehicle_events(await self._vehicle.drain_events())
@@ -300,7 +326,7 @@ class MissionExecutor:
             await self._claim_and_stage(
                 self._pending_claim,
                 health,
-                authorization_eligible=heartbeat.authorization_eligible,
+                authorization_eligible=eligible,
             )
             return
         commands = await self._backend.pending_commands(limit=20)
@@ -308,20 +334,20 @@ class MissionExecutor:
             await self._process_command(
                 commands[0],
                 health,
-                authorization_eligible=heartbeat.authorization_eligible,
+                authorization_eligible=eligible,
             )
             return
         if self._active is not None:
             await self._continue_active(
                 health,
-                authorization_eligible=heartbeat.authorization_eligible,
+                authorization_eligible=eligible,
             )
             return
         if (
             not self._settings.allow_mission_upload
             or not health.connected
             or not health.heartbeat
-            or not heartbeat.authorization_eligible
+            or not eligible
         ):
             return
         missions = await self._backend.authorized_missions()
@@ -336,8 +362,31 @@ class MissionExecutor:
         await self._claim_and_stage(
             offered,
             health,
-            authorization_eligible=heartbeat.authorization_eligible,
+            authorization_eligible=eligible,
         )
+
+    async def _publish_observations(self, vehicle_id: UUID) -> None:
+        observable_types = {
+            "MAVLINK_COMMAND_ACK",
+            "MAVLINK_MISSION_ACK",
+            "MAVLINK_MISSION_CURRENT",
+            "MAVLINK_MISSION_ITEM_REACHED",
+            "MAVLINK_STATUSTEXT",
+        }
+        self._observations.extend(
+            (uuid4(), event)
+            for event in await self._vehicle.drain_events()
+            if event.event_type in observable_types
+        )
+        batch = list(self._observations)[:20]
+        if not batch:
+            return
+        await self._backend.report_vehicle_observations(vehicle_id, batch)
+        for _ in batch:
+            self._observations.popleft()
+
+    def queue_plan_readback(self, observation: VehicleEvent) -> None:
+        self._observations.append((uuid4(), observation))
 
     async def _release_retired_preflight(self, health: VehicleHealth) -> bool:
         active = self._active
@@ -480,6 +529,13 @@ class MissionExecutor:
             )
             return
         if command.status is GatewayCommandStatus.ACKNOWLEDGED:
+            if self._settings.px4_sitl_plan_validation:
+                await self._backend.acknowledge_command(
+                    command.id,
+                    GatewayCommandStatus.FAILED,
+                    detail="Resultado anterior incerto. Nenhum comando foi reenviado.",
+                )
+                return
             reconciled_detail = None
             if command.command is GatewayCommandType.PAUSE and active.phase is ActivePhase.PAUSED:
                 reconciled_detail = (
@@ -546,13 +602,14 @@ class MissionExecutor:
                     raise UnsafeOperationError("Backend bloqueou a elegibilidade para início.")
                 await self._refresh_expired_claim(active)
                 health = await self._vehicle.read_health()
-                readiness = evaluate_start_readiness(
-                    health, active.claim, self._settings, now=self._now()
-                )
-                if not readiness.passed:
-                    raise UnsafeOperationError(
-                        "Início bloqueado pelo preflight: " + ", ".join(readiness.failures)
+                if not self._settings.px4_sitl_plan_validation:
+                    readiness = evaluate_start_readiness(
+                        health, active.claim, self._settings, now=self._now()
                     )
+                    if not readiness.passed:
+                        raise UnsafeOperationError(
+                            "Início bloqueado pelo preflight: " + ", ".join(readiness.failures)
+                        )
                 await self._start(active)
             elif command.command is GatewayCommandType.PAUSE:
                 if active.phase is not ActivePhase.EXECUTING:
@@ -617,7 +674,15 @@ class MissionExecutor:
             await self._backend.acknowledge_command(
                 command.id,
                 GatewayCommandStatus.COMPLETED,
-                detail="Comando aceito pelo adaptador do veículo.",
+                detail=(
+                    "ACK do PX4 e heartbeat novo confirmaram modo Missão."
+                    if self._settings.px4_sitl_plan_validation
+                    and command.command is GatewayCommandType.START
+                    else "ACK do PX4 e heartbeat novo confirmaram modo RTL."
+                    if self._settings.px4_sitl_plan_validation
+                    and command.command is GatewayCommandType.RTL
+                    else "Comando aceito pelo adaptador do veículo."
+                ),
             )
         except BackendUnavailableError:
             raise
@@ -681,18 +746,11 @@ class MissionExecutor:
                 ),
             )
             return
-        if not (
-            self._settings.allow_vehicle_arm
-            and self._settings.allow_flight_commands
-            and self._settings.allow_mission_start
-        ):
+        if not (self._settings.allow_vehicle_arm and self._settings.allow_flight_commands):
             await self._backend.acknowledge_command(
                 command.id,
                 GatewayCommandStatus.FAILED,
-                detail=(
-                    "ARM exige ALLOW_VEHICLE_ARM, ALLOW_FLIGHT_COMMANDS e "
-                    "ALLOW_MISSION_START habilitados."
-                ),
+                detail=("ARM exige ALLOW_VEHICLE_ARM e ALLOW_FLIGHT_COMMANDS habilitados."),
             )
             return
         if not health.connected or not health.heartbeat:
@@ -731,28 +789,25 @@ class MissionExecutor:
                 detail=f"ARM bloqueado ao revalidar autorização: {exc}",
             )
             return
-        preflight = evaluate_preflight(
-            health,
-            active.claim,
-            self._settings,
-            now=self._now(),
-        )
+        failures = []
+        if not self._settings.px4_sitl_plan_validation:
+            failures = list(
+                evaluate_preflight(health, active.claim, self._settings, now=self._now()).failures
+            )
+            if (health.flight_mode or "").strip().upper() != "STABILIZE":
+                failures.append("ARMING_MODE_NOT_ALLOWED")
         if (
             not authorization_eligible
             or not self._mission_matches_vehicle(active.claim.mission)
             or health.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}
-            or (health.flight_mode or "").strip().upper() != "STABILIZE"
-            or not preflight.passed
+            or failures
         ):
-            failures = list(preflight.failures)
             if not authorization_eligible:
                 failures.append("BACKEND_NOT_ELIGIBLE")
             if not self._mission_matches_vehicle(active.claim.mission):
                 failures.append("VEHICLE_MISMATCH")
             if health.source not in {OperationalSource.SITL, OperationalSource.HARDWARE_REAL}:
                 failures.append("OPERATIONAL_SOURCE_NOT_ALLOWED")
-            if (health.flight_mode or "").strip().upper() != "STABILIZE":
-                failures.append("ARMING_MODE_NOT_ALLOWED")
             await self._backend.acknowledge_command(
                 command.id,
                 GatewayCommandStatus.FAILED,
@@ -854,9 +909,14 @@ class MissionExecutor:
             if not self._mission_matches_vehicle(claim.mission):
                 raise MissionValidationError("Missão não pertence ao veículo conectado.")
             validate_claimed_mission(claim.mission, claim.mission_file, self._settings)
-            preflight = evaluate_preflight(health, claim, self._settings, now=self._now())
-            if not preflight.passed or not authorization_eligible:
-                failures = list(preflight.failures)
+            failures = (
+                []
+                if self._settings.px4_sitl_plan_validation
+                else list(
+                    evaluate_preflight(health, claim, self._settings, now=self._now()).failures
+                )
+            )
+            if failures or not authorization_eligible:
                 if not authorization_eligible:
                     failures.extend(self._backend_health_failures or ["BACKEND_INELIGIBLE"])
                 failures = list(dict.fromkeys(failures))
@@ -955,12 +1015,15 @@ class MissionExecutor:
             if not authorization_eligible:
                 await self._fail_active("Backend bloqueou a elegibilidade antes do upload.")
                 return
-            preflight = evaluate_preflight(health, active.claim, self._settings, now=self._now())
-            if not preflight.passed:
-                await self._fail_active(
-                    "Preflight mudou antes do upload: " + ", ".join(preflight.failures)
+            if not self._settings.px4_sitl_plan_validation:
+                preflight = evaluate_preflight(
+                    health, active.claim, self._settings, now=self._now()
                 )
-                return
+                if not preflight.passed:
+                    await self._fail_active(
+                        "Preflight mudou antes do upload: " + ", ".join(preflight.failures)
+                    )
+                    return
             try:
                 active.phase = ActivePhase.UPLOAD_COMMAND_SENT
                 active.upload_uncertain_reported = False
@@ -1287,7 +1350,7 @@ class MissionExecutor:
                     event_type="VEHICLE_LINK_LOST",
                     severity="ERROR",
                     message=(
-                        "Heartbeat MAVLink vencido durante a missão. O ArduPilot permanece "
+                        "Heartbeat MAVLink vencido durante a missão. O autopiloto permanece "
                         "responsável pelos failsafes; telemetria não será fabricada."
                     ),
                 )
@@ -1371,11 +1434,14 @@ class MissionExecutor:
         active: ActiveMission,
         status: MissionStatus,
     ) -> bool:
-        if status in PROGRESS_STATUSES:
-            suggested_index = PROGRESS_STATUSES.index(status)
+        progress = PROGRESS_STATUSES
+        if self._settings.px4_sitl_plan_validation:
+            progress = tuple(item for item in progress if item != MissionStatus.DELIVERY_CONFIRMED)
+        if status in progress:
+            suggested_index = progress.index(status)
             last_index = (
-                PROGRESS_STATUSES.index(active.last_reported_progress_status)
-                if active.last_reported_progress_status in PROGRESS_STATUSES
+                progress.index(active.last_reported_progress_status)
+                if active.last_reported_progress_status in progress
                 else -1
             )
             if suggested_index <= last_index:
@@ -1408,13 +1474,13 @@ class MissionExecutor:
         status = active.pending_status
         if status is None:
             return
+        detail = PROGRESS_DETAILS.get(status, "Transição derivada de evento explícito do veículo.")
+        if self._settings.px4_sitl_plan_validation:
+            detail = PX4_SITL_PROGRESS_DETAILS.get(status, detail)
         await self._backend.report_status(
             active.claim.mission.id,
             status,
-            detail=PROGRESS_DETAILS.get(
-                status,
-                "Transição derivada de evento explícito do adaptador do veículo.",
-            ),
+            detail=detail,
             event_id=active.pending_status_event_id,
         )
         active.pending_status = None

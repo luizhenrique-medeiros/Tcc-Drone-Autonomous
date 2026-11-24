@@ -1,5 +1,14 @@
 # Arquitetura
 
+## Fluxo PX4 vigente
+
+O painel aprova pedidos, exporta o rascunho `.plan`, guarda a revisão e
+exibe telemetria. Os dados atuais do veículo podem preencher a origem do
+rascunho. Sem telemetria, o arquivo usa a origem planejada da missão.
+O operador revisa, grava e opera a Pixhawk pelo QGroundControl, com as
+proteções nativas do PX4. Os contratos de autorização, claim e comandos
+descritos nas seções legadas permanecem para testes e simulação.
+
 ## Visão geral
 
 O sistema mantém um monólito modular como fonte de verdade e separa apenas os executáveis que possuem responsabilidade e risco diferentes.
@@ -118,7 +127,7 @@ As transições válidas ficam no domínio, não nos routers ou componentes visu
 - Rotas de `saved-locations` derivam `user_id` exclusivamente do JWT e devolvem a resposta não enumerável do projeto para recurso alheio.
 - Antes de contar e inserir uma localização, a transação bloqueia a linha do cliente com `FOR NO KEY UPDATE`; duas criações concorrentes não ultrapassam três.
 - Segredos vêm do ambiente; CORS é restrito; logs removem token, senha e chaves.
-- Heartbeat, GPS, EKF, bateria, geofence, RTL, origem, distância e área controlada são pré-condições.
+- Heartbeat, GPS, preflight do veículo, RTL, origem, distância e área controlada são pré-condições; bateria e EKF são informativos no site. O gateway mantém sua verificação independente de bateria. Geofence não é exigida pelo sistema e qualquer proteção ativa permanece sob controle do PX4.
 - Timeouts e reconexão têm limite; upload/claim/eventos possuem chaves de idempotência.
 - O ARM normal possui endpoint, chave de idempotência, confirmações presenciais, auditoria, ACK e heartbeat próprios; campo ausente, nulo, vencido ou divergente falha fechado.
 - Perda do backend não muda a autoridade do ArduPilot sobre um voo em execução.

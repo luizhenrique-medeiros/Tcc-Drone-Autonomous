@@ -76,6 +76,31 @@ def test_preflight_accepts_healthy_authorized_mission() -> None:
     assert result.passed
 
 
+def test_preflight_does_not_require_geofence() -> None:
+    now = datetime.now(UTC)
+    for enabled in (False, None):
+        health = healthy_vehicle().model_copy(update={"geofence_enabled": enabled})
+        result = evaluate_preflight(
+            health, build_claim(now + timedelta(minutes=2)), Settings(_env_file=None), now=now
+        )
+        assert result.passed
+
+
+def test_preflight_relies_on_vehicle_preflight_instead_of_extra_ekf_gate() -> None:
+    now = datetime.now(UTC)
+    for status in (False, None):
+        health = healthy_vehicle().model_copy(update={"ekf_ok": status})
+        result = evaluate_preflight(
+            health, build_claim(now + timedelta(minutes=2)), Settings(_env_file=None), now=now
+        )
+        assert result.passed
+    health = healthy_vehicle().model_copy(update={"ekf_ok": False, "preflight_ok": False})
+    result = evaluate_preflight(
+        health, build_claim(now + timedelta(minutes=2)), Settings(_env_file=None), now=now
+    )
+    assert "PREFLIGHT" in result.failures
+
+
 def test_preflight_rejects_low_battery_and_expired_authorization() -> None:
     now = datetime.now(UTC)
     health = healthy_vehicle().model_copy(update={"battery_percent": 10})

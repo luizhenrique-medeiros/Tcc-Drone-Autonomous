@@ -162,6 +162,8 @@ export interface Mission {
   reviewer_name?: string;
   vehicle_id?: string;
   authorization?: MissionAuthorization;
+  qgroundcontrol_review_status?: 'CURRENT' | 'OUTDATED';
+  qgroundcontrol_sitl_review_event_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -198,11 +200,23 @@ export interface VehicleHealth extends OperationalMetadata {
   battery_percent: number | null;
   battery_voltage: number | null;
   origin_known: boolean | null;
+  origin_latitude?: number | null;
+  origin_longitude?: number | null;
   current_latitude: number | null;
   current_longitude: number | null;
   current_altitude_m: number | null;
+  current_amsl_m?: number | null;
   geofence_enabled: boolean | null;
   rtl_configured: boolean | null;
+  px4_diagnostics?: {
+    current_mode_prearm_ok?: boolean | null;
+    rtl_type?: number | null;
+    rtl_return_alt_m?: number | null;
+    rtl_descend_alt_m?: number | null;
+    rtl_land_delay_s?: number | null;
+    rtl_cone_angle_deg?: number | null;
+    rtl_min_distance_m?: number | null;
+  } | null;
   preflight_ok: boolean | null;
   preflight_messages: string[];
   measured_at: string | null;
@@ -263,6 +277,7 @@ export interface FlightAuthorizationInput {
   operator_name: string;
   controlled_area_confirmed: true;
   checklist: HumanFlightConfirmations;
+  qgroundcontrol_review_event_id?: string;
 }
 
 export interface ArmMissionInput {
@@ -328,6 +343,13 @@ export interface AdminApi {
     reason: string,
   ): Promise<Mission>;
   exportMission(id: string): Promise<void>;
+  exportQgcDraft(id: string, vehicleId?: string, homeAmsl?: number): Promise<void>;
+  downloadReviewedQgcPlan(id: string): Promise<string>;
+  recordQgcReview(id: string, version: number, hash: string, plan: string): Promise<{
+    plan_sha256: string;
+    candidate_sha256: string;
+    ignored_camera_item: boolean;
+  }>;
   listVehicles(): Promise<Vehicle[]>;
   getVehicleHealth(id: string): Promise<VehicleHealth>;
   listEvents(): Promise<SystemEvent[]>;

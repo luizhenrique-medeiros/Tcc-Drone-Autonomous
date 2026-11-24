@@ -10,6 +10,8 @@ def render_qgc_wpl(waypoints: list[MissionWaypoint]) -> str:
     ordered = sorted(waypoints, key=lambda waypoint: waypoint.sequence)
     lines = [HEADER]
     for waypoint in ordered:
+        if waypoint.param4 is None:
+            raise MissionValidationError("QGC WPL legado não representa orientação nula.")
         lines.append(
             "\t".join(
                 (

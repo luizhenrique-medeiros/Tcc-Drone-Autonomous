@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
@@ -26,11 +27,44 @@ class MissionWaypointRead(BaseModel):
     param1: float
     param2: float
     param3: float
-    param4: float
+    param4: float | None
     latitude: Decimal
     longitude: Decimal
     altitude_m: Decimal
     label: str
+
+
+class QGroundControlDraftRequest(BaseModel):
+    vehicle_id: UUID | None = None
+    home_amsl_m: float | None = Field(
+        default=None, ge=-1000, le=100_000, description="Altitude AMSL usada na falta de telemetria"
+    )
+
+
+class QGroundControlReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    expected_sha256: str = Field(min_length=64, max_length=64)
+    plan: str = Field(min_length=1, max_length=65536)
+    confirmed: StrictBool
+
+
+class QGroundControlReviewItem(BaseModel):
+    sequence: int
+    command: int
+    frame: int
+    autocontinue: bool
+    params: list[int | float | None]
+
+
+class QGroundControlReviewRead(BaseModel):
+    event_id: UUID
+    mission_version: int
+    plan_sha256: str
+    reviewed_items: list[QGroundControlReviewItem]
+    candidate_sha256: str
+    ignored_camera_item: bool
 
 
 class MissionRead(BaseModel):
@@ -82,6 +116,8 @@ class MissionAuthorizationRead(BaseModel):
 
 class AdminMissionRead(MissionRead):
     authorization: MissionAuthorizationRead | None = None
+    qgroundcontrol_review_status: Literal["CURRENT", "OUTDATED"] | None = None
+    qgroundcontrol_sitl_review_event_id: UUID | None = None
 
 
 class MissionReview(BaseModel):
@@ -113,6 +149,24 @@ class RetiredVersionReleaseResult(RetiredVersionRelease):
 
 class SafetyActionRequest(BaseModel):
     reason: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class Px4SITLCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    confirmed: StrictBool
+
+    @field_validator("confirmed")
+    @classmethod
+    def require_confirmation(cls, confirmed: bool) -> bool:
+        if not confirmed:
+            raise ValueError("Confirme explicitamente a ação no SITL")
+        return confirmed
+
+
+class Px4SITLUploadRequest(Px4SITLCommandRequest):
+    vehicle_id: UUID
+    qgroundcontrol_review_event_id: UUID
 
 
 class VehicleArmRequest(BaseModel):
@@ -154,6 +208,7 @@ class FlightAuthorizationCreate(BaseModel):
     operator_name: str = Field(min_length=2, max_length=120)
     controlled_area_confirmed: bool
     checklist: PreflightChecklist
+    qgroundcontrol_review_event_id: UUID | None = None
 
 
 class FlightAuthorizationRead(BaseModel):
@@ -165,6 +220,8 @@ class FlightAuthorizationRead(BaseModel):
     mission_version: int
     issued_at: datetime
     expires_at: datetime
+    qgroundcontrol_review_event_id: UUID | None = None
+    qgroundcontrol_candidate_sha256: str | None = None
 
 
 class MissionAuthorizationResult(BaseModel):

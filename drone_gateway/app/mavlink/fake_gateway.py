@@ -126,10 +126,8 @@ class FakeVehicleGateway:
     async def arm_vehicle(self) -> VehicleArmResult:
         if not self._settings.allow_vehicle_arm:
             raise UnsafeOperationError("ALLOW_VEHICLE_ARM não foi habilitado.")
-        if not self._settings.allow_flight_commands or not self._settings.allow_mission_start:
-            raise UnsafeOperationError(
-                "Armamento fake exige ALLOW_FLIGHT_COMMANDS e ALLOW_MISSION_START habilitados."
-            )
+        if not self._settings.allow_flight_commands:
+            raise UnsafeOperationError("Armamento fake exige ALLOW_FLIGHT_COMMANDS habilitado.")
         if not self._connected:
             raise VehicleTimeoutError("Heartbeat fake não está válido.")
         if self._flight_mode != "STABILIZE":

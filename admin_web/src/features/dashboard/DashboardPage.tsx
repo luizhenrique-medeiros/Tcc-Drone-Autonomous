@@ -117,8 +117,8 @@ export function DashboardPage() {
       mission.status,
     ),
   ).length;
-  const authorization = data.missions.filter(
-    (mission) => mission.status === 'READY_FOR_AUTHORIZATION',
+  const reviewed = data.missions.filter(
+    (mission) => mission.qgroundcontrol_review_status === 'CURRENT',
   ).length;
   const active = data.missions.filter((mission) => mission.status === 'EXECUTING');
   const vehicle = data.vehicles[0];
@@ -130,7 +130,6 @@ export function DashboardPage() {
         : undefined),
     vehicle,
     health: data.health,
-    mission: active[0] ?? null,
     events: data.events,
     expectVehicle: true,
   });
@@ -153,7 +152,7 @@ export function DashboardPage() {
         <Link className="metric-card metric-card--orange" to="/orders?status=pending">
           <span className="metric-card__icon"><ClipboardList size={22} /></span>
           <div><strong>{pending}</strong><span>Pedidos aguardando análise</span></div>
-          <small>Primeira decisão humana</small>
+          <small>Aprovação administrativa</small>
         </Link>
         <Link className="metric-card" to="/orders?status=approved">
           <span className="metric-card__icon"><CheckCircle2 size={22} /></span>
@@ -163,12 +162,12 @@ export function DashboardPage() {
         <Link className="metric-card" to="/orders">
           <span className="metric-card__icon"><Route size={22} /></span>
           <div><strong>{review}</strong><span>Missões em revisão</span></div>
-          <small>Mission Planner obrigatório</small>
+          <small>Revisão externa necessária</small>
         </Link>
         <Link className="metric-card metric-card--blue" to="/orders">
           <span className="metric-card__icon"><ShieldAlert size={22} /></span>
-          <div><strong>{authorization}</strong><span>Aguardando voo</span></div>
-          <small>Segunda autorização</small>
+          <div><strong>{reviewed}</strong><span>Planos revisados</span></div>
+          <small>Revisão registrada</small>
         </Link>
       </section>
 
@@ -183,7 +182,7 @@ export function DashboardPage() {
               state="empty"
               compact
               title="Veículo sem leitura"
-              description="A autorização permanece bloqueada até uma leitura válida."
+              description="A telemetria aparecerá quando o gateway publicar uma leitura."
             />
           ) : (
             <>
@@ -202,35 +201,21 @@ export function DashboardPage() {
                   icon={<BatteryCharging size={20} />}
                   label="Bateria"
                   value={formatPercent(data.health.battery_percent)}
-                  ok={
-                    data.health.battery_percent !== null &&
-                    data.health.authorization_limits !== null &&
-                    data.health.battery_percent >=
-                      data.health.authorization_limits.min_battery_percent
-                  }
                 />
                 <HealthMetric
                   icon={<Satellite size={20} />}
                   label="GPS"
                   value={`${formatOptionalNumber(data.health.satellites)} sat. · ${formatNullableText(data.health.gps_fix)}`}
-                  ok={
-                    data.health.satellites !== null &&
-                    data.health.authorization_limits !== null &&
-                    data.health.satellites >=
-                      data.health.authorization_limits.min_gps_satellites
-                  }
                 />
                 <HealthMetric
                   icon={<Navigation size={20} />}
                   label="Modo"
                   value={formatNullableText(data.health.flight_mode)}
-                  ok={data.health.armed === false}
                 />
                 <HealthMetric
                   icon={<Activity size={20} />}
-                  label="Heartbeat / EKF"
+                  label="EKF"
                   value={data.health.ekf_ok === true ? 'Nominal' : data.health.ekf_ok === false ? 'Verificar' : '--'}
-                  ok={data.health.heartbeat_ok === true && data.health.ekf_ok === true}
                 />
               </div>
               <p className="last-update">
@@ -302,15 +287,13 @@ function HealthMetric({
   icon,
   label,
   value,
-  ok,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
-  ok: boolean;
 }) {
   return (
-    <div className={`health-metric ${ok ? 'health-metric--ok' : 'health-metric--alert'}`}>
+    <div className="health-metric">
       <span>{icon}</span>
       <div><small>{label}</small><strong>{value}</strong></div>
     </div>

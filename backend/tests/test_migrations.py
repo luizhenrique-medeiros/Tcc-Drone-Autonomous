@@ -62,6 +62,8 @@ def test_alembic_head_contains_optional_integration_health_columns(tmp_path: Pat
         "current_latitude",
         "current_longitude",
         "current_altitude_m",
+        "current_amsl_m",
+        "px4_diagnostics",
         "mission_upload_enabled",
         "flight_commands_enabled",
         "mission_start_enabled",

@@ -122,6 +122,40 @@ async def test_heartbeat_returns_typed_contract() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("connected", "heartbeat", "expected"),
+    [(False, False, "Não identificado"), (True, False, "Não identificado"), (True, True, "PX4")],
+)
+async def test_heartbeat_does_not_claim_configured_px4_when_offline(
+    connected: bool, heartbeat: bool, expected: str
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "vehicle": {
+                    "id": str(uuid4()),
+                    "identifier": "academic-vehicle-01",
+                    "gateway_id": "dev-gateway-01",
+                },
+                "authorization_eligible": False,
+                "failures": [],
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        base_url="http://backend", transport=httpx.MockTransport(handler)
+    ) as http:
+        client = BackendClient(Settings(_env_file=None, autopilot_system="PX4"), http)
+        await client.heartbeat(VehicleHealth(connected=connected, heartbeat=heartbeat))
+    assert captured["autopilot_system"] == expected
+
+
+@pytest.mark.asyncio
 async def test_event_payload_stays_within_backend_severity_contract() -> None:
     captured: dict[str, object] = {}
 

@@ -225,7 +225,7 @@ class _ExactLocationScreenState extends State<ExactLocationScreen> {
                     const AppBanner(
                       title: 'Área segura confirmada pelo cliente',
                       message:
-                          'A análise administrativa e o checklist operacional continuam obrigatórios.',
+                          'A equipe ainda analisará o ponto de entrega informado.',
                     ),
                   ],
                   const SizedBox(height: AppSpacing.lg),

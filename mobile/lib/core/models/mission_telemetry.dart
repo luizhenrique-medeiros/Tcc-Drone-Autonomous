@@ -49,8 +49,8 @@ extension MissionStatusX on MissionStatus {
     MissionStatus.generated => 'Missão gerada',
     MissionStatus.exportedToMissionPlanner => 'Exportada para revisão',
     MissionStatus.underReview => 'Missão em revisão',
-    MissionStatus.readyForAuthorization => 'Pronta para autorização',
-    MissionStatus.authorized => 'Voo autorizado',
+    MissionStatus.readyForAuthorization => 'Missão em revisão',
+    MissionStatus.authorized => 'Missão registrada',
     MissionStatus.uploading => 'Upload em andamento',
     MissionStatus.uploaded => 'Upload concluído',
     MissionStatus.verified => 'Missão verificada',
@@ -68,8 +68,7 @@ extension MissionStatusX on MissionStatus {
   String get description => switch (this) {
     MissionStatus.verified =>
       'O conteúdo enviado foi relido e conferido; esta etapa não inicia o voo.',
-    MissionStatus.paused =>
-      'O ArduPilot confirmou a pausa; o veículo permanece sob supervisão do operador.',
+    MissionStatus.paused => 'O veículo reportou a pausa da missão.',
     MissionStatus.unknown =>
       'O backend enviou um estado de missão que esta versão não reconhece.',
     _ => 'Estado informado pelo backend para a missão deste pedido.',

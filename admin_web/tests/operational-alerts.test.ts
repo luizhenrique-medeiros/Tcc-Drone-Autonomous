@@ -9,7 +9,7 @@ import { readyHealth, readyMission, readyVehicle } from './fixtures';
 const now = new Date('2026-08-06T12:10:00Z');
 
 describe('gerador puro de alertas operacionais', () => {
-  it('cobre falhas de saúde, origem, heartbeat, navegação, bateria e armamento', () => {
+  it('relata a disponibilidade da telemetria sem avaliar aptidão para voo', () => {
     const alerts = generateOperationalAlerts({
       health: {
         ...readyHealth,
@@ -32,17 +32,12 @@ describe('gerador puro de alertas operacionais', () => {
       'health-source-unknown',
       'health-stale',
       'heartbeat-unavailable',
-      'gps-invalid',
-      'satellites-low',
-      'ekf-invalid',
-      'battery-low',
-      'flight-mode-unknown',
-      'unexpected-armed-state',
     ]));
+    expect(keys).toHaveLength(3);
     expect(alerts.every((alert) => alert.what && alert.impact && alert.recommended_action)).toBe(true);
   });
 
-  it('cobre backend, WebSocket, gateway, telemetria, autorização e upload vencidos', () => {
+  it('cobre indisponibilidade do backend, WebSocket, gateway e telemetria', () => {
     const telemetry: TelemetryPoint = {
       id: 'telemetry-1',
       mission_id: readyMission.id,
@@ -64,18 +59,6 @@ describe('gerador puro de alertas operacionais', () => {
       streamStatus: 'disconnected',
       vehicle: { ...readyVehicle, connected: false, status: 'OFFLINE' },
       health: readyHealth,
-      mission: {
-        ...readyMission,
-        status: 'UPLOADING',
-        updated_at: '2026-08-06T12:00:00Z',
-        authorization: {
-          id: 'authorization-1',
-          admin_name: 'Admin',
-          operator_name: 'Operador',
-          authorized_at: '2026-08-06T11:50:00Z',
-          expires_at: '2026-08-06T12:05:00Z',
-        },
-      },
       telemetry: [telemetry],
       now,
     });
@@ -85,8 +68,6 @@ describe('gerador puro de alertas operacionais', () => {
       'operations-stream-disconnected',
       'gateway-disconnected',
       'telemetry-stale',
-      'authorization-expired',
-      'upload-stale',
     ]));
   });
 

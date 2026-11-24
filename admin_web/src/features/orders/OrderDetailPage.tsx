@@ -216,7 +216,7 @@ export function OrderDetailPage() {
             {canDecide ? (
               <div className="decision-actions">
                 <Feedback tone="warning">
-                  Confirme visualmente o ponto, as instruções e a adequação do local antes de decidir.
+                  Confira o destino e as instruções do pedido antes de decidir.
                 </Feedback>
                 <Button onClick={() => { setActionError(''); setApprovalConfirmed(false); setDecisionModal('approve'); }}>
                   <Check size={18} /> Aprovar pedido
@@ -227,14 +227,14 @@ export function OrderDetailPage() {
               </div>
             ) : canPrepare ? (
               <div className="decision-actions">
-                <Feedback tone="success">A primeira aprovação foi concluída. Preparar a missão não autoriza seu envio ou execução.</Feedback>
+                <Feedback tone="success">O pedido foi aprovado. Prepare o plano para abrir no QGroundControl.</Feedback>
                 <Button loading={isActing} onClick={() => void handlePrepareMission()}>
                   <Route size={18} /> Preparar missão
                 </Button>
               </div>
             ) : order.mission_id ? (
               <div className="decision-actions">
-                <Feedback>O fluxo segue na revisão da missão e, depois, na autorização reforçada de voo.</Feedback>
+                <Feedback>Abra a missão para baixar o plano e revisar no QGroundControl.</Feedback>
                 <Link className="button" to={`/missions/${order.mission_id}`}><Route size={18} /> Abrir missão</Link>
               </div>
             ) : (

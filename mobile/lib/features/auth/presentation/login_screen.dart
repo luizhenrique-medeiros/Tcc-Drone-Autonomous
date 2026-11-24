@@ -11,7 +11,11 @@ import 'auth_frame.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key}) : checkoutEmail = null;
+  const LoginScreen.forCheckout({required String email, super.key})
+    : checkoutEmail = email;
+
+  final String? checkoutEmail;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -19,7 +23,9 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final TextEditingController _emailController = TextEditingController();
+  late final TextEditingController _emailController = TextEditingController(
+    text: widget.checkoutEmail,
+  );
   final TextEditingController _passwordController = TextEditingController();
   bool _loading = false;
   String? _error;
@@ -32,21 +38,30 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _submit() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_loading || !(_formKey.currentState?.validate() ?? false)) return;
     setState(() {
       _loading = true;
       _error = null;
     });
-    final String? error = await AppScope.of(context).login(
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-    );
+    final controller = AppScope.of(context);
+    final String? error = widget.checkoutEmail != null
+        ? await controller.renewCheckoutSession(
+            password: _passwordController.text,
+          )
+        : await controller.login(
+            email: _emailController.text.trim(),
+            password: _passwordController.text,
+          );
     if (!mounted) return;
     setState(() {
       _loading = false;
       _error = error;
     });
     if (error == null) {
+      if (widget.checkoutEmail != null) {
+        Navigator.of(context).pop(true);
+        return;
+      }
       await Navigator.of(context).pushReplacement<void, void>(
         MaterialPageRoute<void>(builder: (_) => const HomeScreen()),
       );
@@ -55,16 +70,24 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final String? startupError = AppScope.of(context).initializationError;
+    final bool isCheckout = widget.checkoutEmail != null;
+    final String? startupError = isCheckout
+        ? null
+        : AppScope.of(context).initializationError;
     return AuthFrame(
       child: Form(
         key: _formKey,
         child: Column(
           children: <Widget>[
-            const Text('Bem-vindo', style: AppTypography.headline),
+            Text(
+              isCheckout ? 'Sua sessão expirou' : 'Bem-vindo',
+              style: AppTypography.headline,
+            ),
             const SizedBox(height: AppSpacing.xs),
-            const Text(
-              'Entre para escolher produtos e o ponto da entrega.',
+            Text(
+              isCheckout
+                  ? 'Entre com sua senha para continuar com este pedido.'
+                  : 'Entre para escolher produtos e o ponto da entrega.',
               style: AppTypography.body,
               textAlign: TextAlign.center,
             ),
@@ -83,6 +106,7 @@ class _LoginScreenState extends State<LoginScreen> {
               label: 'E-mail',
               hint: 'Digite seu e-mail',
               icon: Icons.mail_outline,
+              enabled: !isCheckout,
               keyboardType: TextInputType.emailAddress,
               textInputAction: TextInputAction.next,
               validator: (String? value) {
@@ -116,18 +140,20 @@ class _LoginScreenState extends State<LoginScreen> {
               loading: _loading,
               onPressed: _submit,
             ),
-            const SizedBox(height: AppSpacing.md),
-            AppButton(
-              label: 'Criar uma conta',
-              variant: AppButtonVariant.text,
-              onPressed: () async {
-                await Navigator.of(context).push<void>(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const RegisterScreen(),
-                  ),
-                );
-              },
-            ),
+            if (!isCheckout) ...<Widget>[
+              const SizedBox(height: AppSpacing.md),
+              AppButton(
+                label: 'Criar uma conta',
+                variant: AppButtonVariant.text,
+                onPressed: () async {
+                  await Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const RegisterScreen(),
+                    ),
+                  );
+                },
+              ),
+            ],
           ],
         ),
       ),

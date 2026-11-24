@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.modules.vehicles.schemas import VehicleHealthInput
+from app.modules.vehicles.service import _critical_hash
 
 
 def battery_payload(percentage: float | None) -> dict[str, object]:
@@ -29,25 +30,15 @@ def battery_payload(percentage: float | None) -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
-    ("percentage", "failure"),
-    [
-        (None, "BATTERY_NOT_RECEIVED"),
-        (0, "BATTERY_LOW"),
-        (10, "BATTERY_LOW"),
-        (20, "BATTERY_LOW"),
-        (25, "BATTERY_LOW"),
-        (39.9, "BATTERY_LOW"),
-        (40, None),
-        (100, None),
-    ],
+    "percentage",
+    [None, 0, 10, 20, 25, 39.9, 40, 100],
 )
-def test_heartbeat_preserves_battery_and_enforces_limit(
+def test_heartbeat_preserves_battery_without_site_block(
     client: TestClient,
     gateway_headers: dict[str, str],
     admin_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     percentage: float | None,
-    failure: str | None,
 ) -> None:
     monkeypatch.setattr(get_settings(), "min_battery_percent", 40)
     response = client.post(
@@ -58,8 +49,8 @@ def test_heartbeat_preserves_battery_and_enforces_limit(
     assert response.status_code == 200
     body = response.json()
     assert body["health"]["battery_percent"] == percentage
-    assert body["authorization_eligible"] is (failure is None)
-    assert body["failures"] == ([] if failure is None else [failure])
+    assert body["authorization_eligible"] is False
+    assert body["failures"] == ["HARDWARE_OBSERVATION_ONLY"]
     health = client.get(
         f"/api/v1/admin/vehicles/{body['vehicle']['id']}/health", headers=admin_headers
     )
@@ -77,3 +68,10 @@ def test_invalid_battery_cannot_be_replaced_with_full_charge(percentage: float) 
 def test_default_battery_threshold_is_restored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MIN_BATTERY_PERCENT", raising=False)
     assert Settings(_env_file=None).min_battery_percent == 40
+
+
+def test_battery_changes_do_not_invalidate_site_health_hash() -> None:
+    payload = VehicleHealthInput.model_validate(battery_payload(90))
+    assert _critical_hash(payload) == _critical_hash(
+        payload.model_copy(update={"battery_percent": None})
+    )

@@ -1855,6 +1855,11 @@
   color: var(--color-danger-700);
 }
 
+.diagnostic--info .diagnostic__icon,
+.diagnostic--info .diagnostic__result {
+  color: var(--color-warning-700);
+}
+
 .diagnostic div {
   min-width: 0;
   display: grid;

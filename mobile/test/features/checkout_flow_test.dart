@@ -3,7 +3,9 @@ import 'package:drone_delivery_mobile/app/app_scope.dart';
 import 'package:drone_delivery_mobile/core/location/location_service.dart';
 import 'package:drone_delivery_mobile/core/maps/map_provider.dart';
 import 'package:drone_delivery_mobile/core/models/delivery_point.dart';
+import 'package:drone_delivery_mobile/core/models/order.dart';
 import 'package:drone_delivery_mobile/core/models/saved_location.dart';
+import 'package:drone_delivery_mobile/core/network/api_client.dart';
 import 'package:drone_delivery_mobile/core/repositories/auth_repository.dart';
 import 'package:drone_delivery_mobile/core/repositories/checkout_repository.dart';
 import 'package:drone_delivery_mobile/core/repositories/product_repository.dart';
@@ -241,6 +243,84 @@ void main() {
     expect(find.byKey(const Key('save-current-location-toggle')), findsNothing);
   });
 
+  testWidgets(
+    'renova a sessão no checkout sem perder o pedido ou enviá-lo automaticamente',
+    (WidgetTester tester) async {
+      _setViewport(tester);
+      final products = controller.products;
+      controller.dispose();
+      final checkout = _ExpiredCheckoutRepository();
+      controller =
+          AppController(
+              authRepository: DemoAuthRepository(),
+              productRepository: DemoProductRepository(),
+              checkoutRepository: checkout,
+              mapProvider: const DevelopmentMapProvider(),
+              locationService: const DevelopmentLocationService(),
+              isDemoMode: true,
+            )
+            ..products = products
+            ..session = const UserSession(
+              name: 'Cliente',
+              email: 'cliente@example.com',
+            )
+            ..addProduct(products.first)
+            ..selectApproximatePlace(
+              const PlaceSuggestion(
+                label: 'Campus',
+                referenceAddress: 'Região aproximada',
+                coordinate: GeoCoordinate(
+                  latitude: -23.1175,
+                  longitude: -46.5502,
+                ),
+              ),
+            )
+            ..updateExactCoordinate(
+              const GeoCoordinate(latitude: -23.1176, longitude: -46.5503),
+            )
+            ..updateDeliveryDetails(instructions: 'Gramado', safeArea: true)
+            ..selectPayment(SimulatedPaymentMethod.creditCard);
+
+      await tester.pumpWidget(
+        _TestHost(controller: controller, child: const PaymentScreen()),
+      );
+      final Finder confirm = find.byKey(const Key('submit-simulated-order'));
+      await tester.ensureVisible(confirm);
+      await tester.tap(confirm);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Sua sessão expirou'), findsOneWidget);
+      final Finder email = find.descendant(
+        of: find.byKey(const Key('login-email')),
+        matching: find.byType(TextFormField),
+      );
+      expect(tester.widget<TextFormField>(email).enabled, false);
+      expect(find.text('cliente@example.com'), findsOneWidget);
+      await tester.enterText(
+        find.descendant(
+          of: find.byKey(const Key('login-password')),
+          matching: find.byType(TextFormField),
+        ),
+        'senha-teste',
+      );
+      await tester.tap(find.byKey(const Key('login-submit')));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(PaymentScreen), findsOneWidget);
+      expect(controller.cartCount, 1);
+      expect(controller.exactCoordinate?.formatted, '-23.117600, -46.550300');
+      expect(controller.deliveryInstructions, 'Gramado');
+      expect(controller.paymentMethod, SimulatedPaymentMethod.creditCard);
+      expect(controller.checkoutSessionExpired, false);
+      expect(checkout.attempts, 1);
+      await tester.ensureVisible(confirm);
+      await tester.tap(confirm);
+      await tester.pumpAndSettle();
+      expect(checkout.attempts, 2);
+      expect(controller.order?.status, OrderStatus.pendingAdminApproval);
+    },
+  );
+
   testWidgets('oferece salvar seleção manual confirmada', (
     WidgetTester tester,
   ) async {
@@ -411,6 +491,19 @@ void main() {
     expect(trabalho.width, greaterThan(100));
     expect(tester.takeException(), isNull);
   });
+}
+
+class _ExpiredCheckoutRepository implements CheckoutRepository {
+  int attempts = 0;
+
+  @override
+  Future<OrderSnapshot> submit(CheckoutRequest request) async {
+    attempts++;
+    if (attempts == 1) {
+      throw const ApiException('Token expirado', statusCode: 401);
+    }
+    return const DemoCheckoutRepository().submit(request);
+  }
 }
 
 void _setViewport(WidgetTester tester, [Size size = const Size(600, 1400)]) {

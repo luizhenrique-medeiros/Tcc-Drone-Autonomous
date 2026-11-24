@@ -168,6 +168,8 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `GET /admin/missions` | `ADMIN` |
 | `GET /admin/missions/{id}` | `ADMIN` |
 | `GET /admin/missions/{id}/export` | missão gerada |
+| `POST /admin/missions/{id}/qgroundcontrol-draft` | missão existente, com telemetria opcional |
+| `GET /admin/missions/{id}/qgroundcontrol-review` | `ADMIN` e revisão da versão atual |
 | `POST /admin/missions/{id}/mark-under-review` | exportada |
 | `POST /admin/missions/{id}/mark-reviewed` | em revisão |
 | `POST /admin/missions/{id}/authorize-flight` | revisada + checklist + saúde |
@@ -181,11 +183,43 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `GET /admin/events` | `ADMIN` e paginação |
 | `GET /admin/telemetry` | `ADMIN`, filtro opcional por missão |
 
-A autorização recebe veículo, operador, confirmação de área controlada e exatamente três confirmações auditáveis em `checklist`: `area_and_conditions_clear`, `aircraft_and_payload_inspected` e `operator_ready`. Não há booleanos técnicos preenchidos manualmente nem frase digitada; conexão, heartbeat, GPS, satélites, EKF, bateria, home, geofence, RTL, armamento e preflight vêm do snapshot real e são recalculados pelo servidor. O servidor vincula a autorização à versão e ao hash atuais da missão; ele nunca aceita resultado técnico enviado pelo navegador como forma de contornar as verificações.
+O rascunho `.plan` do QGroundControl contém Takeoff, um Waypoint no ponto
+confirmado do pedido com 5 segundos em `param1` e Return To Launch (RTL).
+O corpo aceita `{}`. Sem posição recente, o rascunho usa a origem planejada
+da missão. O parâmetro `home_amsl_m` é opcional e completa a altitude quando
+ela não é recebida pela telemetria.
+O GET da revisão devolve o `.plan` original como anexo e informa seu
+`X-Plan-SHA256`. Retorna `404` quando falta uma revisão e `409` quando a
+revisão está desatualizada ou os bytes divergem do hash registrado.
 
-O objeto de saúde inclui `authorization_limits` com `min_battery_percent`, `battery_warning_percent` e `min_gps_satellites`. Esses valores vêm da configuração efetiva do backend e são a fonte canônica usada pelo painel; contrato legado sem limites permanece bloqueante em vez de assumir números locais.
+Na leitura de auditoria, `metadata` preserva valores JSON estruturados. O
+registro de revisão do QGroundControl inclui a lista `reviewed_items` com os
+comandos e parâmetros do plano revisado.
+
+A autorização legada é usada em testes e simulação. Ela vincula a versão e o hash da missão ao veículo simulado e conserva os campos auditáveis `area_and_conditions_clear`, `aircraft_and_payload_inspected` e `operator_ready`. Para hardware real, o site oferece planejamento, revisão de arquivos e telemetria. A operação de voo é feita no QGroundControl.
+
+O objeto de saúde preserva o campo legado `authorization_limits` com `min_battery_percent`, `battery_warning_percent` e `min_gps_satellites` para compatibilidade com a simulação. O painel apresenta os dados recebidos.
+
+O diagnóstico opcional `px4_diagnostics` inclui `current_mode_prearm_ok`,
+`rtl_type`, `rtl_return_alt_m`, `rtl_descend_alt_m`, `rtl_land_delay_s`,
+`rtl_cone_angle_deg` e `rtl_min_distance_m`.
+Os campos ausentes ou expirados permanecem nulos. O pré-arm se refere ao modo
+`flight_mode` da amostra. Os critérios de autorização continuam usando
+`preflight_ok` e `rtl_configured`.
 
 As respostas administrativas de missão incluem `authorization` com o último registro real, quando existente: identificadores da autorização e do administrador, nome real do administrador e operador, status, versão, emissão, expiração e consumo. Isso preserva a evidência após reload sem expor checklist bruto nem fabricar nomes no navegador.
+
+O campo administrativo `qgroundcontrol_review_status` retorna `null` quando
+não há revisão registrada. Retorna `CURRENT` quando o último registro do
+`.plan` corresponde à versão e ao hash da missão ou `OUTDATED` quando pertence
+a um artefato anterior. A revisão legada e a autorização em hardware continuam
+bloqueadas nesses estados. Somente em `APP_ENV=test` com
+`PX4_SITL_PLAN_VALIDATION=true`, o detalhe administrativo pode informar
+`qgroundcontrol_sitl_review_event_id`. Envie esse ID como
+`qgroundcontrol_review_event_id` na autorização para o veículo PX4 SITL.
+A autorização registra esse ID e `qgroundcontrol_candidate_sha256`.
+O claim devolve o artefato revisado com seu hash, e o gateway confere o
+conteúdo antes de enviar ao simulador isolado.
 
 `POST /admin/missions/{id}/authorize-flight` aceita `Idempotency-Key`: repetir chave e corpo devolve a mesma autorização com `Idempotency-Replayed`. O painel conserva a chave enquanto a resposta for ambígua. Nova emissão fora de `READY_FOR_AUTHORIZATION` retorna conflito, exceto pela renovação explícita de `VERIFIED` abaixo.
 
@@ -206,7 +240,7 @@ antes de persistir o novo prazo. Divergência/indisponibilidade nunca libera com
 
 No `claim`, o gateway precisa corresponder ao veículo autorizado. Mudanças saudáveis de telemetria, como pequenas variações de bateria ou satélites, não revogam a autorização por igualdade exata de amostra; qualquer falha atual nos limites técnicos, expiração ou alteração de versão/hash revoga a autorização, retorna a missão para nova autorização e registra o motivo em `SystemEvent`.
 
-### Armamento normal dedicado
+### Armamento legado em SITL
 
 `POST /api/v1/admin/missions/{id}/arm` exige JWT `ADMIN`, header `Idempotency-Key` e exatamente este formato:
 
@@ -224,7 +258,7 @@ No `claim`, o gateway precisa corresponder ao veículo autorizado. Mudanças sau
 Antes de persistir `ARM`, o backend bloqueia a missão para serializar ações críticas e exige:
 
 - missão `VERIFIED`, já reivindicada, com veículo e gateway correspondentes;
-- último snapshot do mesmo veículo fresco, conectado, com heartbeat, origem `SITL` ou `HARDWARE_REAL` e `armed=false`;
+- último snapshot do mesmo veículo fresco, conectado, com heartbeat, origem `SITL` e `armed=false`;
 - GPS/satélites, EKF,  home/origem, geofence, RTL e preflight completos e dentro dos limites canônicos;
 - `flight_mode=STABILIZE`;
 - `vehicle_arm_enabled=true`, `flight_commands_enabled=true` e `mission_start_enabled=true`;
@@ -234,7 +268,42 @@ Campo ausente, nulo, stale ou falso falha fechado com `409`; o navegador não po
 
 O endpoint genérico de comando aceita `SafetyActionRequest` opcional e `Idempotency-Key`. `START` só é criado em `VERIFIED`; `PAUSE`, durante estados físicos permitidos; `CONTINUE`, somente em `PAUSED`. O `202` significa que o pedido foi persistido, não que o autopiloto executou. O gateway ainda rejeita comando vencido, identidade de veículo divergente, snapshot/heartbeat/preflight inválido ou gate local fechado. Em especial, `START` requer `flight_commands_enabled=true`, `mission_start_enabled=true` e veículo já armado; ele nunca envia ARM implicitamente. O único caminho de armamento é o endpoint dedicado descrito acima.
 
+## Ensaios PX4 SITL
+
+Os endpoints administrativos a seguir existem em ambiente de teste com
+`PX4_SITL_PLAN_VALIDATION`. Eles exigem JWT administrativo. Solicitações
+`POST` requerem `Idempotency-Key` e `confirmed: true`.
+
+| Método e rota | Resultado |
+| --- | --- |
+| `POST /admin/missions/{id}/px4-sitl/upload` | Fila o upload e vincula o veículo e o registro atual da revisão a partir de `vehicle_id` e `qgroundcontrol_review_event_id`. |
+| `POST /admin/missions/{id}/px4-sitl/commands/{action}` | Registra uma solicitação `ARM`, `START` ou `RTL` e devolve o comando com seu ID. |
+| `GET /admin/missions/{id}/px4-sitl/commands` | Consulta os estados e detalhes dos comandos recentes. |
+
+O retorno `202` indica recebimento administrativo. O resultado do PX4 é
+registrado após correlação da resposta com o comando e confirmação do estado
+esperado. Falhas e timeouts permanecem visíveis.
+
 ## Gateway
+
+`POST /gateway/vehicles/{vehicle_id}/observations` recebe até 20 observações
+MAVLink normalizadas do veículo associado ao gateway autenticado. Os tipos
+aceitos são respostas de comando e de missão, waypoint atual, waypoint
+alcançado e mensagens de estado. O gateway mantém os identificadores de
+evento durante novas tentativas após falhas de comunicação. A API deduplica,
+registra as observações no veículo e publica `system.event` aos administradores.
+A operação preserva os estados da missão e do pedido. Uma resposta observada
+pode ter sido dirigida ao QGroundControl e deve ser interpretada como evento
+do veículo.
+
+Em hardware PX4, o gateway registra `PX4_PHYSICAL_PLAN_READBACK` após
+conferir a missão gravada com o arquivo revisado. Quando uma observação
+posterior `MAVLINK_MISSION_CURRENT` traz o mesmo identificador nativo
+e os mesmos IDs MAVLink, a API publica
+`PX4_PHYSICAL_MISSION_PROGRESS_OBSERVED` na missão e no pedido que têm
+uma única revisão atual correspondente ao hash conferido. O evento bruto
+também permanece na lista de observações do veículo. Uma revisão ambígua
+ou identificador ausente deixa o progresso sem vínculo.
 
 | Método e rota | Semântica |
 |---|---|

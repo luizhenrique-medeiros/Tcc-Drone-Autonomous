@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
 from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,7 +27,7 @@ class SystemEvent(Base):
         Enum(EventSeverity, name="event_severity", native_enum=False), nullable=False
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    event_metadata: Mapped[dict[str, str | int | float | bool | None]] = mapped_column(
+    event_metadata: Mapped[dict[str, JsonValue]] = mapped_column(
         "metadata", JSON, default=dict, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
