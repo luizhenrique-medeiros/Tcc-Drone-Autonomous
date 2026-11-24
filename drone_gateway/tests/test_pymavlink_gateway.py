@@ -1,6 +1,9 @@
+import math
+import struct
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -8,13 +11,14 @@ import pytest
 
 from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import (
+    ConfigurationError,
     MissionUploadError,
     UnsafeOperationError,
     VehiclePortBusyError,
     VehiclePortNotFoundError,
     VehicleTimeoutError,
 )
-from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
+from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway, _mission_plan_id
 from app.models import AuthorizedMission, ConnectionState, MissionStatus, MissionWaypoint
 from app.telemetry.normalizer import normalize_telemetry
 
@@ -74,6 +78,236 @@ class FakeConnection:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_px4_heartbeat_selection_rejects_ardupilot() -> None:
+    gateway = PymavlinkVehicleGateway(Settings(_env_file=None, autopilot_system="PX4"))
+    gateway._mavutil = fake_mavutil()
+    gateway._connection = FakeConnection(
+        [
+            FakeMessage("HEARTBEAT", autopilot=3, base_mode=0),
+            FakeMessage("HEARTBEAT", source_system=7, autopilot=12, base_mode=0),
+        ]
+    )
+    heartbeat = gateway._wait_for_target_heartbeat()
+    assert heartbeat is not None
+    assert heartbeat.autopilot == 12
+    assert gateway._connection.target_system == 7
+
+
+def test_px4_ignores_non_px4_heartbeat_from_same_target() -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._last_heartbeat_monotonic = None
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=3, base_mode=128))
+    assert gateway._last_heartbeat_monotonic is None
+    assert gateway._armed is None
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=0))
+    assert gateway._last_heartbeat_monotonic is not None
+    assert gateway._armed is False
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "allow_mission_upload",
+        "allow_flight_commands",
+        "allow_mission_start",
+        "allow_vehicle_arm",
+        "allow_telemetry_requests",
+    ],
+)
+def test_px4_rejects_mutating_and_telemetry_request_gates(flag: str) -> None:
+    with pytest.raises(ConfigurationError):
+        Settings(_env_file=None, autopilot_system="PX4", **{flag: True})
+
+
+@pytest.mark.asyncio
+async def test_px4_connect_is_receive_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(_env_file=None, autopilot_system="PX4", mavlink_mode=MavlinkMode.SITL)
+    gateway = PymavlinkVehicleGateway(settings)
+    connection = FakeConnection([FakeMessage("HEARTBEAT", autopilot=12, base_mode=0)])
+    module = fake_mavutil()
+    module.mavlink_connection = lambda *args, **kwargs: connection
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
+    await gateway.connect()
+    await gateway.read_health()
+    assert gateway.connection_state is ConnectionState.CONNECTED
+    assert connection.mav.calls == []
+    gateway._request_autopilot_version()
+    assert connection.mav.calls == []
+    await gateway.close()
+
+
+@pytest.mark.parametrize(
+    ("passive", "requests_enabled", "expected_count"),
+    [(True, False, 0), (True, True, 0), (False, False, 0), (False, True, 1)],
+)
+def test_version_query_respects_passive_and_telemetry_guards(
+    passive: bool, requests_enabled: bool, expected_count: int
+) -> None:
+    gateway, connection = configured_gateway()
+    gateway._passive_connection = passive
+    gateway._telemetry_requests_enabled = requests_enabled
+    gateway._mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE = 512
+    gateway._mavutil.mavlink.MAVLINK_MSG_ID_AUTOPILOT_VERSION = 148
+    gateway._request_autopilot_version()
+    assert len(connection.mav.calls) == expected_count
+    if expected_count:
+        assert connection.mav.calls[0][1][:5] == (1, 1, 512, 0, 148)
+
+
+@pytest.mark.asyncio
+async def test_qgroundcontrol_forward_stays_passive_even_with_acknowledgement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=MavlinkMode.QGROUNDCONTROL_FORWARD,
+        mavlink_connection="udpin:127.0.0.1:14551",
+        real_hardware_acknowledged=True,
+    )
+    gateway = PymavlinkVehicleGateway(settings)
+    connection = FakeConnection([FakeMessage("HEARTBEAT", autopilot=3, base_mode=0)])
+    module = fake_mavutil()
+    module.mavlink_connection = lambda *args, **kwargs: connection
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
+    await gateway.connect()
+    await gateway.read_health()
+    assert gateway.connection_state is ConnectionState.CONNECTED
+    assert connection.mav.calls == []
+    await gateway.close()
+
+
+@pytest.mark.parametrize(
+    ("present", "enabled", "healthy", "expected"),
+    [(0, 0, 1, None), (1, 0, 1, None), (1, 1, 0, False), (1, 1, 1, True)],
+)
+def test_px4_preflight_requires_reported_and_enabled_status(
+    present: int, enabled: int, healthy: int, expected: bool | None
+) -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    bit = 1 << 28
+    gateway._ingest_message(
+        FakeMessage(
+            "SYS_STATUS",
+            battery_remaining=-1,
+            voltage_battery=0xFFFF,
+            onboard_control_sensors_present=present * bit,
+            onboard_control_sensors_enabled=enabled * bit,
+            onboard_control_sensors_health=healthy * bit,
+        )
+    )
+    assert gateway._preflight_ok is expected
+
+
+def test_px4_does_not_interpret_ardupilot_safety_parameters() -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    for name in ("FENCE_ENABLE", "RTL_ALT"):
+        gateway._ingest_message(FakeMessage("PARAM_VALUE", param_id=name, param_value=1))
+    assert gateway._geofence_enabled is None
+    assert gateway._rtl_configured is None
+
+
+@pytest.mark.asyncio
+async def test_px4_requires_new_preflight_sample_after_mode_change() -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = Settings(_env_file=None, autopilot_system="PX4")
+    gateway._mavutil.mode_string_v10 = lambda message: message.mode
+    bit = 1 << 28
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=0, mode="POSCTL"))
+    gateway._ingest_message(
+        FakeMessage(
+            "SYS_STATUS",
+            battery_remaining=-1,
+            voltage_battery=0xFFFF,
+            onboard_control_sensors_present=bit,
+            onboard_control_sensors_enabled=bit,
+            onboard_control_sensors_health=bit,
+        )
+    )
+    assert (await gateway.read_health()).preflight_ok is True
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=0, mode="MISSION"))
+    assert (await gateway.read_health()).preflight_ok is None
+
+
+@pytest.mark.asyncio
+async def test_px4_passive_diagnostics_use_live_target_evidence() -> None:
+    gateway, connection = configured_gateway()
+    gateway._settings = Settings(_env_file=None, autopilot_system="PX4")
+    gateway._passive_connection = True
+    gateway._mavutil.mode_string_v10 = lambda message: message.mode
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=0, mode="POSCTL"))
+    gateway._ingest_message(
+        FakeMessage(
+            "SYS_STATUS",
+            battery_remaining=-1,
+            voltage_battery=0xFFFF,
+            onboard_control_sensors_health=1 << 28,
+        )
+    )
+    wire_type = struct.unpack("<f", struct.pack("<i", 3))[0]
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", param_id=b"RTL_TYPE\x00", param_value=wire_type, param_type=6)
+    )
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", param_id="RTL_RETURN_ALT", param_value=1.0, param_type=9)
+    )
+    wire_angle = struct.unpack("<f", struct.pack("<i", 45))[0]
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", param_id="RTL_CONE_ANG", param_value=wire_angle, param_type=6)
+    )
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", param_id="RTL_MIN_DIST", param_value=10, param_type=9)
+    )
+    gateway._ingest_message(
+        FakeMessage(
+            "PARAM_VALUE", source_system=9, param_id="RTL_DESCEND_ALT", param_value=2, param_type=9
+        )
+    )
+    health = await gateway.read_health()
+    assert health.preflight_ok is None and health.rtl_configured is None
+    assert health.px4_diagnostics is not None
+    assert health.px4_diagnostics.model_dump(exclude_none=True) == {
+        "current_mode_prearm_ok": True,
+        "rtl_type": 3,
+        "rtl_return_alt_m": 1.0,
+        "rtl_cone_angle_deg": 45,
+        "rtl_min_distance_m": 10,
+    }
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=0, mode="MISSION"))
+    gateway._last_message_monotonic["PARAM:RTL_TYPE"] = time.monotonic() - 61
+    gateway._last_message_monotonic["PARAM:RTL_MIN_DIST"] = time.monotonic() - 61
+    invalid_angle = struct.unpack("<f", struct.pack("<i", 91))[0]
+    gateway._ingest_message(
+        FakeMessage("PARAM_VALUE", param_id="RTL_CONE_ANG", param_value=invalid_angle, param_type=6)
+    )
+    gateway._ingest_message(
+        FakeMessage(
+            "PARAM_VALUE", param_id="RTL_RETURN_ALT", param_value=float("nan"), param_type=9
+        )
+    )
+    assert (await gateway.read_health()).px4_diagnostics is None
+    assert connection.mav.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [(19, True), (3, False), (19 | 128, False), (19 | 1024, False), (19 | 2048, False)],
+)
+async def test_px4_estimator_status_uses_real_flags_and_expires(flags: int, expected: bool) -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(FakeMessage("ESTIMATOR_STATUS", flags=flags))
+    assert (await gateway.read_health()).ekf_ok is expected
+    gateway._last_message_monotonic["ESTIMATOR"] = (
+        time.monotonic() - gateway._settings.mavlink_telemetry_stale_seconds - 1
+    )
+    assert (await gateway.read_health()).ekf_ok is None
 
 
 class AckAfterCommandConnection(FakeConnection):
@@ -373,7 +607,7 @@ def test_serial_errors_keep_missing_and_busy_cases_distinct(
     translated = gateway._translate_connection_error(PermissionError(13, "Access is denied"))
     assert isinstance(translated, VehiclePortBusyError)
     assert "ocupada ou com acesso negado" in str(translated)
-    assert "mission_planner_forward" in str(translated)
+    assert "encaminhamento UDP" in str(translated)
 
 
 @pytest.mark.asyncio
@@ -393,7 +627,7 @@ async def test_open_without_heartbeat_closes_resource_and_sets_error_state(
     monkeypatch.setattr(gateway, "_load_mavutil", lambda: module)
     monkeypatch.setattr(gateway, "_validate_serial_port_exists", lambda: None)
 
-    with pytest.raises(VehicleTimeoutError, match="nenhum heartbeat ArduPilot"):
+    with pytest.raises(VehicleTimeoutError, match="nenhum heartbeat ARDUPILOT"):
         await gateway.connect()
 
     assert connection.closed
@@ -484,6 +718,8 @@ async def test_arm_sends_only_normal_command_and_requires_strict_ack_plus_new_he
         ]
     )
 
+    gateway._settings = gateway._settings.model_copy(update={"allow_mission_start": False})
+
     result = await gateway.arm_vehicle()
 
     arm_calls = [
@@ -510,9 +746,9 @@ async def test_arm_is_blocked_by_gate_mode_and_stale_or_failed_preflight() -> No
 
     inconsistent, inconsistent_connection = configured_arm_gateway()
     inconsistent._settings = inconsistent._settings.model_copy(
-        update={"allow_mission_start": False}
+        update={"allow_flight_commands": False}
     )
-    with pytest.raises(UnsafeOperationError, match="ALLOW_MISSION_START"):
+    with pytest.raises(UnsafeOperationError, match="ALLOW_FLIGHT_COMMANDS"):
         await inconsistent.arm_vehicle()
     assert not any(name == "command_long_send" for name, _ in inconsistent_connection.mav.calls)
 
@@ -615,6 +851,34 @@ async def test_arm_terminal_rejection_is_not_retried() -> None:
         if name == "command_long_send" and arguments[2] == 400
     ]
     assert len(arm_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("received", "error", "detail"),
+    [
+        ([], VehicleTimeoutError, "COMMAND_ACK"),
+        ([FakeMessage("COMMAND_ACK", command=400, result=2)], UnsafeOperationError, "rejeitado"),
+    ],
+)
+async def test_px4_sitl_arm_does_not_repeat_on_failure(
+    received: list[FakeMessage], error: type[Exception], detail: str
+) -> None:
+    gateway, connection = configured_arm_gateway(received, mode="POSCTL", preflight_ok=False)
+    gateway._settings = gateway._settings.model_copy(
+        update={"autopilot_system": "PX4", "px4_sitl_plan_validation": True}
+    )
+
+    with pytest.raises(error, match=detail):
+        await gateway.arm_vehicle()
+
+    packets = [
+        args
+        for name, args in connection.mav.calls
+        if name == "command_long_send" and args[2] == 400
+    ]
+    assert len(packets) == 1
+    assert packets[0][4:6] == (1, 0)
 
 
 @pytest.mark.asyncio
@@ -916,6 +1180,104 @@ def downloaded_waypoint(
     return FakeMessage(message_type, **fields)
 
 
+def test_px4_protocol_mock_upload_ack_and_readback() -> None:
+    mission = mission_with_one_waypoint()
+    gateway, connection = configured_gateway(
+        [
+            FakeMessage("MISSION_REQUEST_INT", seq=0),
+            FakeMessage("MISSION_ACK", type=0),
+            FakeMessage("MISSION_COUNT", count=1),
+            downloaded_waypoint(mission.waypoints[0]),
+        ]
+    )
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._upload_sync(mission)
+    gateway._verify_mission_sync(mission)
+    names = [name for name, _ in connection.mav.calls]
+    assert "mission_item_int_send" in names
+    assert "mission_request_int_send" in names
+    assert "mission_ack_send" in names
+
+
+def test_px4_protocol_rejects_gripper_before_transmission() -> None:
+    gateway, connection = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    with pytest.raises(MissionUploadError, match="comando não validado"):
+        gateway._upload_sync(canonical_mission())
+    assert connection.mav.calls == []
+
+
+@pytest.mark.parametrize("command", [16, 22])
+def test_px4_unspecified_yaw_is_sent_as_nan_and_checked_on_readback(command: int) -> None:
+    waypoint = (
+        mission_with_one_waypoint()
+        .waypoints[0]
+        .model_copy(update={"command": command, "param4": None})
+    )
+    gateway, connection = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._send_mission_item_int(waypoint)
+    sent = next(args for name, args in connection.mav.calls if name == "mission_item_int_send")
+    assert math.isnan(sent[10])
+    gateway._verify_downloaded_waypoint(
+        downloaded_waypoint(waypoint, param4=float("nan")), waypoint
+    )
+    with pytest.raises(MissionUploadError, match="param4"):
+        gateway._verify_downloaded_waypoint(downloaded_waypoint(waypoint, param4=0), waypoint)
+
+
+def test_legacy_sender_rejects_unspecified_yaw() -> None:
+    waypoint = mission_with_one_waypoint().waypoints[0].model_copy(update={"param4": None})
+    gateway, connection = configured_gateway()
+    with pytest.raises(MissionUploadError, match="Orientação nula"):
+        gateway._send_mission_item_int(waypoint)
+    assert connection.mav.calls == []
+
+
+def test_px4_rtl_uses_mission_frame_and_round_trips() -> None:
+    rtl = MissionWaypoint(sequence=0, command=20, frame=2, latitude=0, longitude=0, altitude_m=0)
+    mission = mission_with_one_waypoint().model_copy(update={"waypoints": [rtl]})
+    gateway, connection = configured_gateway(
+        [
+            FakeMessage("MISSION_REQUEST_INT", seq=0),
+            FakeMessage("MISSION_ACK", type=0),
+            FakeMessage("MISSION_COUNT", count=1),
+            downloaded_waypoint(rtl),
+        ]
+    )
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._upload_sync(mission)
+    gateway._verify_mission_sync(mission)
+    sent = next(args for name, args in connection.mav.calls if name == "mission_item_int_send")
+    assert sent[3] == 2
+    assert sent[4] == 20
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"frame": 3}, {"latitude": 1}, {"longitude": 1}, {"altitude_m": 1}, {"param4": 1}],
+)
+def test_px4_rtl_rejects_invalid_frame_or_reserved_values_before_send(
+    changes: dict[str, object],
+) -> None:
+    rtl = MissionWaypoint(sequence=0, command=20, frame=2, latitude=0, longitude=0, altitude_m=0)
+    rtl = rtl.model_copy(update=changes)
+    mission = mission_with_one_waypoint().model_copy(update={"waypoints": [rtl]})
+    gateway, connection = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    with pytest.raises(MissionUploadError):
+        gateway._upload_sync(mission)
+    assert connection.mav.calls == []
+
+
+def test_px4_readback_does_not_apply_ardupilot_parameter_normalization() -> None:
+    gateway, _ = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    waypoint = canonical_mission().waypoints[3]
+    with pytest.raises(MissionUploadError, match="param3"):
+        gateway._verify_downloaded_waypoint(downloaded_waypoint(waypoint, param3=1), waypoint)
+
+
 @pytest.mark.parametrize("message_type", ["MISSION_ITEM_INT", "MISSION_ITEM"])
 @pytest.mark.parametrize("frames", [(0, 5), (3, 6), (10, 11)])
 @pytest.mark.parametrize("reverse", [False, True])
@@ -1034,6 +1396,42 @@ def ingest_test_home(gateway: PymavlinkVehicleGateway, waypoint: MissionWaypoint
             altitude=742_320,
         )
     )
+
+
+@pytest.mark.parametrize("reported_mode", ["RTL", "LOITER"])
+def test_px4_rtl_requires_new_return_heartbeat(
+    monkeypatch: pytest.MonkeyPatch, reported_mode: str
+) -> None:
+    gateway, connection = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=128))
+    ingest_test_home(gateway, mission_with_one_waypoint().waypoints[0])
+
+    def send_command(*args: object) -> None:
+        assert args[:4] == (1, 1, 20, 0)
+        assert args[4:] == (0, 0, 0, 0, 0, 0, 0)
+        connection.messages.extend(
+            [
+                FakeMessage("COMMAND_ACK", command=20, result=0),
+                FakeMessage("HEARTBEAT", autopilot=12, base_mode=128, mode_string=reported_mode),
+            ]
+        )
+
+    monkeypatch.setattr(connection.mav, "command_long_send", send_command)
+    if reported_mode == "RTL":
+        gateway._request_px4_rtl_sync()
+    else:
+        with pytest.raises(VehicleTimeoutError, match="não confirmou o modo RTL"):
+            gateway._request_px4_rtl_sync()
+
+
+def test_px4_rtl_refuses_to_send_without_fresh_home() -> None:
+    gateway, connection = configured_gateway()
+    gateway._settings = gateway._settings.model_copy(update={"autopilot_system": "PX4"})
+    gateway._ingest_message(FakeMessage("HEARTBEAT", autopilot=12, base_mode=128))
+    with pytest.raises(UnsafeOperationError, match="Home atual"):
+        gateway._request_px4_rtl_sync()
+    assert all(name != "command_long_send" for name, _ in connection.mav.calls)
 
 
 @pytest.mark.asyncio
@@ -1409,6 +1807,24 @@ async def test_health_and_telemetry_accept_all_standard_mavlink_gps_fix_types() 
 
 
 @pytest.mark.asyncio
+async def test_current_amsl_is_distinct_from_relative_altitude_and_expires_with_position() -> None:
+    gateway, _connection = configured_gateway()
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(
+        FakeMessage(
+            "GLOBAL_POSITION_INT", lat=10000, lon=10000, alt=755200, relative_alt=250, vx=0, vy=0
+        )
+    )
+    fresh = await gateway.read_health()
+    assert fresh.current_altitude_m == 0.25
+    assert fresh.current_amsl_m == 755.2
+    gateway._last_message_monotonic["GLOBAL_POSITION_INT"] -= 60
+    stale = await gateway.read_health()
+    assert stale.current_altitude_m is None
+    assert stale.current_amsl_m is None
+
+
+@pytest.mark.asyncio
 async def test_battery_status_is_normalized_then_becomes_stale() -> None:
     gateway, _connection = configured_gateway()
     gateway._last_heartbeat_monotonic = time.monotonic()
@@ -1455,6 +1871,72 @@ async def test_unknown_battery_clears_previous_reading(message_type: str, remain
     assert health.battery_percent is None
     assert health.battery_voltage is None
     assert all(name == "heartbeat_send" for name, _ in connection.mav.calls)
+
+
+@pytest.mark.asyncio
+async def test_px4_bench_readback_sends_only_read_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mission = mission_with_one_waypoint()
+    vehicle, connection = configured_gateway(
+        [
+            FakeMessage("MISSION_COUNT", count=1, opaque_id=4815),
+            downloaded_waypoint(mission.waypoints[0]),
+        ]
+    )
+    vehicle._settings = Settings(
+        _env_file=None,
+        autopilot_system="PX4",
+        mavlink_mode="mavlink_router",
+        mavlink_connection="udpin:127.0.0.1:14600",
+        mavlink_forward_source="HARDWARE_REAL",
+        px4_bench_readback_dir=tmp_path,
+    )
+    vehicle._passive_connection = True
+    vehicle._last_heartbeat_monotonic = time.monotonic()
+    vehicle._armed = False
+    monkeypatch.setattr(vehicle, "_drain_messages", lambda: True)
+
+    with pytest.raises(UnsafeOperationError, match="identidade"):
+        await vehicle.verify_bench_readback(mission.waypoints, 2, 1)
+    vehicle._armed = True
+    with pytest.raises(UnsafeOperationError, match="desarmado"):
+        await vehicle.verify_bench_readback(mission.waypoints, 1, 1)
+    assert connection.mav.calls == []
+
+    vehicle._armed = False
+    assert await vehicle.verify_bench_readback(mission.waypoints, 1, 1) == 4815
+    assert [name for name, _ in connection.mav.calls] == [
+        "mission_request_list_send",
+        "mission_request_int_send",
+        "mission_ack_send",
+    ]
+
+
+@pytest.mark.parametrize(("field", "offset"), [("opaque_id", 5), ("mission_id", 6)])
+def test_mission_plan_id_reads_extensions_from_older_dialects(field: str, offset: int) -> None:
+    payload = bytes(offset) + b"\x34\x12"
+    frame = bytes([0xFD, len(payload)]) + bytes(8) + payload + bytes(2)
+    assert _mission_plan_id(SimpleNamespace(get_msgbuf=lambda: frame), field, offset) == 0x1234
+    assert _mission_plan_id(SimpleNamespace(get_msgbuf=lambda: frame[:-1]), field, offset) is None
+    assert _mission_plan_id(SimpleNamespace(**{field: 0}), field, offset) is None
+
+
+@pytest.mark.asyncio
+async def test_passive_px4_records_received_command_and_mission_ack() -> None:
+    gateway, connection = configured_gateway()
+    gateway._settings = Settings(_env_file=None, autopilot_system="PX4")
+    gateway._passive_connection = True
+    gateway._ingest_message(FakeMessage("COMMAND_ACK", source_system=2, command=400, result=0))
+    gateway._ingest_message(FakeMessage("COMMAND_ACK", command=400, result=2))
+    gateway._ingest_message(FakeMessage("MISSION_ACK", type=0, mission_type=0))
+
+    events = await gateway.drain_events()
+    assert [(event.event_type, event.metadata) for event in events] == [
+        ("MAVLINK_COMMAND_ACK", {"command": 400, "result": 2}),
+        ("MAVLINK_MISSION_ACK", {"result": 0, "mission_type": 0}),
+    ]
+    assert connection.mav.calls == []
 
 
 @pytest.mark.asyncio

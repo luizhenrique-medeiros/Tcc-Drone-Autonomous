@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,6 +25,14 @@ from app.modules.approvals.models import FlightAuthorization
 from app.modules.delivery_points.models import DeliveryPoint
 from app.modules.delivery_points.service import haversine_distance_m
 from app.modules.missions.models import GatewayCommand, Mission, MissionWaypoint
+from app.modules.missions.qgroundcontrol_plan import (
+    QGC_REVIEW_EVENT,
+    PlanPosition,
+    QGroundControlCandidate,
+    build_reviewed_candidate,
+    plan_sha256,
+    validate_reviewed_plan,
+)
 from app.modules.missions.schemas import (
     AdminMissionRead,
     FlightAuthorizationCreate,
@@ -31,6 +40,9 @@ from app.modules.missions.schemas import (
     MissionAuthorizationRead,
     MissionOriginRevision,
     MissionRead,
+    MissionWaypointRead,
+    Px4SITLCommandRequest,
+    Px4SITLUploadRequest,
     RetiredVersionRelease,
     VehicleArmRequest,
 )
@@ -40,6 +52,12 @@ from app.modules.system_events.service import record_event
 from app.modules.users.models import User
 from app.modules.vehicles.models import Vehicle, VehicleHealthSnapshot
 from app.modules.vehicles.service import health_failures, health_is_stale, latest_health
+
+
+def _require_non_hardware_vehicle(session: Session, vehicle_id: UUID | None) -> None:
+    vehicle = session.get(Vehicle, vehicle_id) if vehicle_id else None
+    if vehicle and vehicle.operational_source == OperationalSource.HARDWARE_REAL:
+        raise ConflictError("A operação do veículo real é exclusiva do QGroundControl")
 
 
 def _authorization_to_read(
@@ -79,9 +97,31 @@ def admin_missions_to_read(session: Session, missions: list[Mission]) -> list[Ad
                 authorization, administrator_name
             )
 
+    latest_qgc_bindings: dict[UUID | None, tuple[int | None, str | None]] = {}
+    review_rows = session.execute(
+        select(
+            SystemEvent.mission_id,
+            SystemEvent.event_metadata["mission_version"].as_integer(),
+            SystemEvent.event_metadata["mission_sha256"].as_string(),
+        )
+        .where(SystemEvent.mission_id.in_(mission_ids), SystemEvent.event_type == QGC_REVIEW_EVENT)
+        .order_by(SystemEvent.created_at.desc(), SystemEvent.id.desc())
+    )
+    for mission_id, version, sha256 in review_rows:
+        latest_qgc_bindings.setdefault(mission_id, (version, sha256))
+
     return [
         AdminMissionRead.model_validate(mission).model_copy(
-            update={"authorization": latest_by_mission.get(mission.id)}
+            update={
+                "authorization": latest_by_mission.get(mission.id),
+                "qgroundcontrol_review_status": (
+                    None
+                    if mission.id not in latest_qgc_bindings
+                    else "CURRENT"
+                    if latest_qgc_bindings[mission.id] == (mission.version, mission.mission_sha256)
+                    else "OUTDATED"
+                ),
+            }
         )
         for mission in missions
     ]
@@ -504,9 +544,286 @@ def mark_under_review(session: Session, mission: Mission, admin: User) -> Missio
     return mission
 
 
+def _reject_unbound_qgroundcontrol_review(session: Session, mission: Mission) -> None:
+    """Do not let legacy review/authorization stand in for a reviewed .plan."""
+    review_id = session.scalar(
+        select(SystemEvent.id)
+        .where(
+            SystemEvent.mission_id == mission.id,
+            SystemEvent.event_type == QGC_REVIEW_EVENT,
+        )
+        .limit(1)
+    )
+    if review_id is not None:
+        raise ConflictError(
+            "O plano QGroundControl revisado ainda não está vinculado à missão executável; "
+            "a revisão legada e a autorização de voo estão bloqueadas."
+        )
+
+
+def _reviewed_plan_bytes(mission: Mission, review: SystemEvent) -> tuple[bytes, str]:
+    metadata = review.event_metadata
+    plan = metadata.get("plan")
+    if (
+        review.mission_id != mission.id
+        or review.event_type != QGC_REVIEW_EVENT
+        or metadata.get("mission_version") != mission.version
+        or metadata.get("mission_sha256") != mission.mission_sha256
+        or not isinstance(plan, str)
+    ):
+        raise ConflictError("A revisão do QGroundControl não corresponde à versão da missão")
+    content = plan.encode("utf-8")
+    plan_digest = plan_sha256(content)
+    if metadata.get("plan_sha256") != plan_digest:
+        raise ConflictError("O hash do plano revisado diverge do registro")
+    return content, plan_digest
+
+
+def _latest_qgc_review(session: Session, mission: Mission) -> SystemEvent | None:
+    return session.scalar(
+        select(SystemEvent)
+        .where(SystemEvent.mission_id == mission.id, SystemEvent.event_type == QGC_REVIEW_EVENT)
+        .order_by(SystemEvent.created_at.desc(), SystemEvent.id.desc())
+        .limit(1)
+    )
+
+
+def export_reviewed_qgc_plan(session: Session, mission: Mission) -> tuple[bytes, str]:
+    review = _latest_qgc_review(session, mission)
+    if review is None:
+        raise NotFoundError("A missão ainda não tem um plano QGroundControl revisado")
+    return _reviewed_plan_bytes(mission, review)
+
+
+def _observation_time(event: SystemEvent) -> datetime | None:
+    value = event.event_metadata.get("source_occurred_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        recorded_at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return recorded_at if recorded_at.tzinfo is not None else None
+
+
+def correlate_physical_progress(
+    session: Session, vehicle: Vehicle, observation: SystemEvent
+) -> SystemEvent | None:
+    if (
+        vehicle.operational_source != OperationalSource.HARDWARE_REAL
+        or vehicle.autopilot_system.upper() != "PX4"
+        or observation.event_type != "MAVLINK_MISSION_CURRENT"
+    ):
+        return None
+    metadata = observation.event_metadata
+    native_id = metadata.get("native_plan_id")
+    sequence = metadata.get("sequence")
+    if type(native_id) is not int or not 0 < native_id <= 0xFFFFFFFF or type(sequence) is not int:
+        return None
+    verification = session.scalar(
+        select(SystemEvent)
+        .where(
+            SystemEvent.vehicle_id == vehicle.id,
+            SystemEvent.actor_type == "GATEWAY",
+            SystemEvent.event_type == "PX4_PHYSICAL_PLAN_READBACK",
+        )
+        .order_by(SystemEvent.created_at.desc(), SystemEvent.id.desc())
+        .limit(1)
+    )
+    if verification is None:
+        return None
+    verified_at = _observation_time(verification)
+    observed_at = _observation_time(observation)
+    evidence = verification.event_metadata
+    count = evidence.get("item_count")
+    if (
+        verified_at is None
+        or observed_at is None
+        or observed_at <= verified_at
+        or type(count) is not int
+        or not 0 <= sequence < count <= 20
+        or type(evidence.get("native_plan_id")) is not int
+        or evidence.get("native_plan_id") != native_id
+        or any(
+            type(metadata.get(key)) is not int or metadata.get(key) != evidence.get(key)
+            for key in ("system_id", "component_id")
+        )
+    ):
+        return None
+    digest = evidence.get("plan_sha256")
+    if not isinstance(digest, str) or len(digest) != 64:
+        return None
+    candidates = session.scalars(
+        select(Mission)
+        .join(SystemEvent, SystemEvent.mission_id == Mission.id)
+        .join(Order, Order.id == Mission.order_id)
+        .where(
+            SystemEvent.event_type == QGC_REVIEW_EVENT,
+            SystemEvent.event_metadata["plan_sha256"].as_string() == digest,
+            Mission.status.notin_(
+                {MissionStatus.COMPLETED, MissionStatus.ABORTED, MissionStatus.FAILED}
+            ),
+            Order.status.notin_(
+                {OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.COMPLETED}
+            ),
+        )
+        .distinct()
+    )
+    matches = []
+    for mission in candidates:
+        if mission.vehicle_id is not None and mission.vehicle_id != vehicle.id:
+            continue
+        review = _latest_qgc_review(session, mission)
+        if review is None or review.event_metadata.get("plan_sha256") != digest:
+            continue
+        try:
+            _reviewed_plan_bytes(mission, review)
+        except ConflictError:
+            continue
+        matches.append(mission)
+        if len(matches) > 1:
+            return None
+    if not matches:
+        return None
+    matched = matches[0]
+    event, _ = record_event(
+        session,
+        actor_type="GATEWAY",
+        order_id=matched.order_id,
+        mission_id=matched.id,
+        vehicle_id=vehicle.id,
+        event_type="PX4_PHYSICAL_MISSION_PROGRESS_OBSERVED",
+        message=f"PX4 informou o item {sequence + 1} de {count} da missão física do pedido.",
+        metadata={
+            "native_plan_id": native_id,
+            "plan_sha256": digest,
+            "sequence": sequence,
+            "mission_state": metadata.get("mission_state"),
+            "readback_event_id": str(verification.id),
+            "observation_event_id": str(observation.id),
+        },
+    )
+    return event
+
+
+def _reviewed_px4_artifact(mission: Mission, review: SystemEvent) -> QGroundControlCandidate:
+    content, plan_digest = _reviewed_plan_bytes(mission, review)
+    try:
+        items = validate_reviewed_plan(
+            content.decode("utf-8"),
+            PlanPosition(float(mission.destination_latitude), float(mission.destination_longitude)),
+        )
+    except ValueError as exc:
+        raise ConflictError("O plano revisado não passou pela revalidação") from exc
+    candidate = build_reviewed_candidate(
+        items,
+        plan_digest=plan_digest,
+        mission_version=mission.version,
+        mission_digest=mission.mission_sha256,
+    )
+    if review.event_metadata.get("candidate_sha256") != candidate.sha256:
+        raise ConflictError("O artefato PX4 diverge da revisão registrada")
+    return candidate
+
+
+def _px4_authorization_review(
+    session: Session, mission: Mission, review_id: UUID, settings: Settings
+) -> SystemEvent:
+    if not settings.px4_sitl_plan_validation:
+        raise ConflictError("O vínculo executável PX4 só está disponível no ensaio SITL")
+    review = _latest_qgc_review(session, mission)
+    if review is None or review.id != review_id:
+        raise ConflictError("Selecione o registro mais recente do plano revisado")
+    return review
+
+
+def _require_px4_sitl_transport(
+    vehicle: Vehicle | None, snapshot: VehicleHealthSnapshot, settings: Settings
+) -> None:
+    if (
+        not settings.px4_sitl_plan_validation
+        or not vehicle
+        or vehicle.gateway_id != settings.gateway_id
+        or vehicle.autopilot_system.upper() != "PX4"
+        or vehicle.operational_source != OperationalSource.SITL
+        or snapshot.source != OperationalSource.SITL
+        or snapshot.connection_mode != "sitl"
+    ):
+        raise ConflictError("Operação exclusiva do PX4 SITL do gateway de teste")
+    if not snapshot.connected or not snapshot.heartbeat or health_is_stale(snapshot, settings):
+        raise ConflictError("A conexão com o PX4 SITL está indisponível ou desatualizada")
+
+
+def gateway_mission_artifact(
+    session: Session, mission: Mission, authorization: FlightAuthorization, settings: Settings
+) -> tuple[MissionRead, str]:
+    _require_non_hardware_vehicle(session, mission.vehicle_id)
+    base = MissionRead.model_validate(mission)
+    review_id = authorization.qgroundcontrol_review_event_id
+    candidate_sha256 = authorization.qgroundcontrol_candidate_sha256
+    if review_id is None and candidate_sha256 is None:
+        _reject_unbound_qgroundcontrol_review(session, mission)
+        return base, mission.mission_file
+    if not settings.px4_sitl_plan_validation or review_id is None or candidate_sha256 is None:
+        raise ConflictError("Autorização PX4 indisponível nesta configuração")
+    review = session.get(SystemEvent, review_id)
+    if review is None:
+        raise ConflictError("A revisão vinculada à autorização está indisponível")
+    candidate = _reviewed_px4_artifact(mission, review)
+    if candidate.sha256 != candidate_sha256:
+        raise ConflictError("O artefato PX4 mudou após a autorização")
+    waypoints = []
+    for item in json.loads(candidate.content)["items"]:
+        sequence = item["sequence"]
+        param1, param2, param3, param4, latitude, longitude, altitude = item["params"]
+        waypoints.append(
+            MissionWaypointRead(
+                id=uuid5(review_id, str(sequence)),
+                sequence=sequence,
+                command=item["command"],
+                frame=item["frame"],
+                current=int(sequence == 0),
+                autocontinue=int(item["autocontinue"]),
+                param1=param1,
+                param2=param2,
+                param3=param3,
+                param4=param4,
+                latitude=Decimal(str(latitude)),
+                longitude=Decimal(str(longitude)),
+                altitude_m=Decimal(str(altitude)),
+                label={22: "Decolagem", 16: "Waypoint", 20: "Return To Launch"}[item["command"]],
+            )
+        )
+    origin = waypoints[0]
+    return base.model_copy(
+        update={
+            "origin_latitude": origin.latitude,
+            "origin_longitude": origin.longitude,
+            "takeoff_altitude_m": origin.altitude_m,
+            "estimated_distance_m": haversine_distance_m(
+                float(origin.latitude),
+                float(origin.longitude),
+                float(base.destination_latitude),
+                float(base.destination_longitude),
+            ),
+            "waypoints": waypoints,
+            "mission_sha256": candidate.sha256,
+        }
+    ), candidate.content
+
+
 def mark_reviewed(session: Session, mission: Mission, admin: User, notes: str | None) -> Mission:
+    mission = session.scalar(
+        select(Mission)
+        .where(Mission.id == mission.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
     if mission.status != MissionStatus.UNDER_REVIEW:
         raise InvalidStateError("A missão precisa estar em revisão")
+    _reject_unbound_qgroundcontrol_review(session, mission)
     mission.status = MissionStatus.READY_FOR_AUTHORIZATION
     mission.reviewed_by_id = admin.id
     mission.reviewed_at = datetime.now(UTC)
@@ -533,7 +850,7 @@ def authorize_flight(
     session: Session,
     mission: Mission,
     admin: User,
-    payload: FlightAuthorizationCreate,
+    payload: FlightAuthorizationCreate | Px4SITLUploadRequest,
     settings: Settings,
     *,
     commit: bool = True,
@@ -547,7 +864,17 @@ def authorize_flight(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
+    _require_non_hardware_vehicle(session, payload.vehicle_id)
+    review_id = payload.qgroundcontrol_review_event_id
+    candidate = None
+    if review_id is None:
+        _reject_unbound_qgroundcontrol_review(session, mission)
+    else:
+        review = _px4_authorization_review(session, mission, review_id, settings)
+        candidate = _reviewed_px4_artifact(mission, review)
     renewing = mission.status == MissionStatus.VERIFIED
+    if candidate is not None and renewing:
+        raise InvalidStateError("O ensaio SITL do plano revisado não renova autorizações")
     previous = None
     if renewing:
         previous = claimed_authorization(session, mission, require_fresh=False)
@@ -570,20 +897,37 @@ def authorize_flight(
         )
         if pending:
             raise ConflictError("Aguarde o resultado do comando crítico antes de renovar")
-    elif mission.status != MissionStatus.READY_FOR_AUTHORIZATION:
+    elif mission.status != MissionStatus.READY_FOR_AUTHORIZATION and not (
+        candidate is not None
+        and mission.status
+        in {
+            MissionStatus.GENERATED,
+            MissionStatus.EXPORTED_TO_MISSION_PLANNER,
+            MissionStatus.UNDER_REVIEW,
+        }
+    ):
         raise InvalidStateError("A missão ainda não está pronta para autorização")
     _require_revision_released(session, mission)
-    if not payload.controlled_area_confirmed:
-        raise ConflictError("A área controlada deve ser confirmada explicitamente")
-    checklist = payload.checklist.model_dump()
-    failed_items = [name for name, passed in checklist.items() if not passed]
-    if failed_items:
-        raise ConflictError(
-            "Todos os itens do checklist devem estar aprovados",
-            fields={name: "required" for name in failed_items},
-        )
+    sitl_upload = isinstance(payload, Px4SITLUploadRequest)
+    checklist = {}
+    operator_name = admin.name
+    if isinstance(payload, FlightAuthorizationCreate):
+        if not payload.controlled_area_confirmed:
+            raise ConflictError("A área controlada deve ser confirmada explicitamente")
+        operator_name = payload.operator_name
+        checklist = payload.checklist.model_dump()
+        failed_items = [name for name, passed in checklist.items() if not passed]
+        if failed_items:
+            raise ConflictError(
+                "Todos os itens do checklist devem estar aprovados",
+                fields={name: "required" for name in failed_items},
+            )
     snapshot = latest_health(session, payload.vehicle_id)
-    failures = health_failures(snapshot, settings)
+    if candidate is not None:
+        _require_px4_sitl_transport(session.get(Vehicle, payload.vehicle_id), snapshot, settings)
+    if sitl_upload and snapshot.mission_upload_enabled is not True:
+        raise ConflictError("O gateway SITL não está recebendo solicitações de upload")
+    failures = [] if candidate is not None else health_failures(snapshot, settings)
     if failures:
         raise ConflictError(
             "O estado real do veículo não permite autorizar o voo",
@@ -604,9 +948,11 @@ def authorize_flight(
         vehicle_health_snapshot_id=snapshot.id,
         mission_version=mission.version,
         mission_sha256=mission.mission_sha256,
+        qgroundcontrol_review_event_id=review_id,
+        qgroundcontrol_candidate_sha256=candidate.sha256 if candidate else None,
         checklist=checklist,
-        controlled_area_confirmed=True,
-        operator_name=payload.operator_name,
+        controlled_area_confirmed=not sitl_upload,
+        operator_name=operator_name,
         issued_at=now,
         expires_at=now + timedelta(seconds=settings.flight_authorization_ttl_seconds),
     )
@@ -626,17 +972,27 @@ def authorize_flight(
         order_id=mission.order_id,
         mission_id=mission.id,
         vehicle_id=payload.vehicle_id,
-        event_type="FLIGHT_AUTHORIZATION_RENEWED" if renewing else "FLIGHT_AUTHORIZED",
+        event_type=(
+            "PX4_SITL_UPLOAD_REQUESTED"
+            if sitl_upload
+            else "FLIGHT_AUTHORIZATION_RENEWED"
+            if renewing
+            else "FLIGHT_AUTHORIZED"
+        ),
         message=(
             "Nova autorização consumida pelo claim existente; ARM e START continuam separados"
             if renewing
+            else "Upload do plano revisado solicitado no SITL"
+            if sitl_upload
             else "Autorização de voo de uso único emitida"
         ),
         metadata={
             "authorization_id": str(authorization.id),
             "expires_at": authorization.expires_at.isoformat(),
-            "operator_name": payload.operator_name,
+            "operator_name": operator_name,
             "previous_authorization_id": str(previous.id) if previous else None,
+            "qgroundcontrol_review_event_id": str(review_id) if review_id else None,
+            "qgroundcontrol_candidate_sha256": candidate.sha256 if candidate else None,
         },
     )
     session.flush()
@@ -764,6 +1120,7 @@ def claim_mission(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
+    _require_non_hardware_vehicle(session, mission.vehicle_id)
     if mission.status == MissionStatus.VERIFIED:
         vehicle = session.get(Vehicle, mission.vehicle_id)
         if (
@@ -789,6 +1146,11 @@ def claim_mission(
     if not vehicle or vehicle.gateway_id != gateway_id:
         raise ConflictError("O gateway não está vinculado ao veículo autorizado")
     authorization = active_authorization(session, mission)
+    if (
+        authorization.qgroundcontrol_review_event_id is not None
+        or authorization.qgroundcontrol_candidate_sha256 is not None
+    ):
+        gateway_mission_artifact(session, mission, authorization, settings)
     snapshot_at_authorization = session.get(
         VehicleHealthSnapshot, authorization.vehicle_health_snapshot_id
     )
@@ -803,7 +1165,11 @@ def claim_mission(
             message="Autorização revogada porque o snapshot original não está disponível",
         )
         raise ConflictError("O snapshot usado na autorização não está disponível")
-    failures = health_failures(current_snapshot, settings)
+    if authorization.qgroundcontrol_review_event_id is not None:
+        _require_px4_sitl_transport(vehicle, current_snapshot, settings)
+        failures = []
+    else:
+        failures = health_failures(current_snapshot, settings)
     if failures:
         _invalidate_authorization(
             session,
@@ -961,6 +1327,7 @@ def request_safety_action(
     settings: Settings | None = None,
     *,
     commit: bool = True,
+    px4_sitl: bool = False,
 ) -> Mission:
     command_type = GatewayCommandType(action)
     if command_type == GatewayCommandType.ARM:
@@ -974,6 +1341,25 @@ def request_safety_action(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
+    _require_non_hardware_vehicle(session, mission.vehicle_id)
+    if px4_sitl:
+        if settings is None or command_type not in {
+            GatewayCommandType.START,
+            GatewayCommandType.RTL,
+        }:
+            raise InvalidStateError("Ação incompatível com o ensaio PX4 SITL")
+        authorization = claimed_authorization(
+            session, mission, require_fresh=command_type == GatewayCommandType.START
+        )
+        if authorization.qgroundcontrol_review_event_id is None:
+            raise ConflictError("A missão não está vinculada a um plano revisado PX4 SITL")
+        snapshot = latest_health(session, mission.vehicle_id)
+        vehicle = session.get(Vehicle, mission.vehicle_id)
+        _require_px4_sitl_transport(vehicle, snapshot, settings)
+        if mission.claimed_by_gateway != settings.gateway_id:
+            raise ConflictError("O gateway da missão não corresponde à sessão SITL")
+        if snapshot.flight_commands_enabled is not True:
+            raise ConflictError("O gateway SITL não está recebendo comandos")
     allowed_states_by_command = {
         GatewayCommandType.START: {MissionStatus.VERIFIED},
         GatewayCommandType.PAUSE: {
@@ -1087,11 +1473,15 @@ def request_safety_action(
             and mission.claimed_by_gateway == settings.gateway_id
         )
         snapshot = latest_health(session, mission.vehicle_id)
-        failures = [
-            failure
-            for failure in health_failures(snapshot, settings)
-            if failure != "VEHICLE_ALREADY_ARMED"
-        ]
+        failures = (
+            []
+            if px4_sitl
+            else [
+                failure
+                for failure in health_failures(snapshot, settings)
+                if failure != "VEHICLE_ALREADY_ARMED"
+            ]
+        )
         if not identity_matches:
             failures.append("GATEWAY_IDENTITY_MISMATCH")
         if snapshot.source.value not in {"SITL", "HARDWARE_REAL"}:
@@ -1137,7 +1527,7 @@ def request_safety_action(
         vehicle_id=mission.vehicle_id,
         event_type=f"{action}_REQUESTED",
         message=(
-            f"Administrador solicitou {action}; aguarda confirmação do gateway/ArduPilot"
+            f"Administrador solicitou {action}; aguarda confirmação do autopiloto"
             + (f". Motivo: {reason}" if reason else "")
         ),
         severity=EventSeverity.CRITICAL,
@@ -1152,7 +1542,7 @@ def request_vehicle_arm(
     session: Session,
     mission: Mission,
     admin: User,
-    payload: VehicleArmRequest,
+    payload: VehicleArmRequest | Px4SITLCommandRequest,
     settings: Settings,
     *,
     commit: bool = True,
@@ -1168,9 +1558,10 @@ def request_vehicle_arm(
     if not locked_mission:
         raise NotFoundError("Missão não encontrada")
     mission = locked_mission
+    _require_non_hardware_vehicle(session, mission.vehicle_id)
     if mission.status != MissionStatus.VERIFIED:
         raise InvalidStateError("O armamento só pode ser solicitado para missão verificada")
-    claimed_authorization(session, mission)
+    authorization = claimed_authorization(session, mission)
     if not mission.vehicle_id or not mission.claimed_by_gateway:
         raise ConflictError("A missão verificada não está vinculada a um gateway e veículo")
 
@@ -1183,20 +1574,28 @@ def request_vehicle_arm(
         raise ConflictError("O gateway da missão não corresponde ao veículo vinculado")
 
     snapshot = latest_health(session, mission.vehicle_id)
-    if snapshot.source.value not in {"SITL", "HARDWARE_REAL"}:
-        raise ConflictError("Armamento remoto só é permitido em SITL ou hardware real identificado")
+    if snapshot.source != OperationalSource.SITL:
+        raise ConflictError("O endpoint legado de armamento é exclusivo de SITL")
 
     disabled_gates = [
         name
         for name, enabled in (
             ("VEHICLE_ARM_DISABLED", snapshot.vehicle_arm_enabled),
             ("FLIGHT_COMMANDS_DISABLED", snapshot.flight_commands_enabled),
-            ("MISSION_START_DISABLED", snapshot.mission_start_enabled),
         )
         if enabled is not True
     ]
-    failures = [*health_failures(snapshot, settings), *disabled_gates]
-    if (snapshot.flight_mode or "").upper() != "STABILIZE":
+    if isinstance(payload, Px4SITLCommandRequest):
+        if authorization.qgroundcontrol_review_event_id is None:
+            raise ConflictError("A missão não está vinculada a um plano revisado PX4 SITL")
+        _require_px4_sitl_transport(vehicle, snapshot, settings)
+        failures = disabled_gates
+    else:
+        failures = [*health_failures(snapshot, settings), *disabled_gates]
+    if (
+        isinstance(payload, VehicleArmRequest)
+        and (snapshot.flight_mode or "").upper() != "STABILIZE"
+    ):
         failures.append("ARMING_MODE_NOT_ALLOWED")
     if failures:
         raise ConflictError(
@@ -1221,7 +1620,7 @@ def request_vehicle_arm(
         mission_id=mission.id,
         requested_by_id=admin.id,
         command=GatewayCommandType.ARM,
-        reason=payload.reason,
+        reason=payload.reason if isinstance(payload, VehicleArmRequest) else None,
         status=GatewayCommandStatus.PENDING,
     )
     session.add(command)
@@ -1240,10 +1639,7 @@ def request_vehicle_arm(
             "command_id": str(command.id),
             "gateway_id": mission.claimed_by_gateway,
             "health_snapshot_id": str(snapshot.id),
-            "reason": payload.reason,
-            "area_clear_confirmed": payload.area_clear_confirmed,
-            "operator_present_confirmed": payload.operator_present_confirmed,
-            "safety_switch_ready_confirmed": payload.safety_switch_ready_confirmed,
+            **payload.model_dump(),
         },
     )
     if commit:

@@ -1,544 +1,99 @@
-import {
-  AlertOctagon,
-  ArrowLeft,
-  CheckCircle2,
-  Download,
-  FileCheck2,
-  MapPin,
-  Navigation,
-  Pause,
-  Play,
-  Power,
-  Radio,
-  RefreshCw,
-  RotateCcw,
-  Route,
-  Satellite,
-  ShieldCheck,
-} from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { ArrowLeft, Download, FileCheck2, MapPin, Navigation, Radio, RefreshCw, Route } from 'lucide-react';
+import { useCallback, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
 import { SatelliteMap } from '../../components/SatelliteMap';
-import {
-  Button,
-  Card,
-  Feedback,
-  Modal,
-  PageHeader,
-  StateView,
-  StatusBadge,
-} from '../../design-system/components';
+import { Button, Card, Feedback, Modal, PageHeader, StateView, StatusBadge } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { useOperationsStream } from '../../hooks/useOperationsStream';
-import {
-  adminApi,
-  getErrorMessage,
-  type ArmMissionInput,
-  type FlightAuthorizationInput,
-  type GatewayCommand,
-  type Mission,
-  type MissionOriginRevisionInput,
-  type Order,
-  type Vehicle,
-  type VehicleHealth,
-} from '../../services';
-import {
-  formatCoordinate,
-  formatDateTime,
-  formatDistance,
-  shortId,
-} from '../../utils/format';
-import { AutomaticPreflightChecks } from './AutomaticPreflightChecks';
-import { ArmVehicleDialog } from './ArmVehicleDialog';
-import {
-  getArmRequestReadiness,
-  getArmTrackingExpectation,
-  getArmTrackingOutcome,
-  type ArmTrackingExpectation,
-} from './arm-request-readiness';
-import {
-  authorizationTitle,
-  authorizationUsageMessage,
-  canAuthorizeMission,
-  hasCurrentClaimAuthorization,
-} from './authorization-presentation';
-import { FlightAuthorizationDialog } from './FlightAuthorizationDialog';
-import { OriginRevisionDialog } from './OriginRevisionDialog';
-import { canReviseOrigin } from './origin-revision-readiness';
-import { getMissionReadiness } from './vehicle-readiness';
-
-interface MissionPageData {
-  mission: Mission;
-  order: Order;
-  vehicle: Vehicle | null;
-  health: VehicleHealth | null;
-  healthError: string;
-}
-
-interface ActiveArmRequest {
-  startedAt: number;
-  command: GatewayCommand;
-  expectation: ArmTrackingExpectation;
-}
-
-const flowStages = [
-  { label: 'Gerada', statuses: ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'] },
-  { label: 'Revisão', statuses: ['UNDER_REVIEW'] },
-  { label: 'Pronta', statuses: ['READY_FOR_AUTHORIZATION'] },
-  {
-    label: 'Autorizada',
-    statuses: ['AUTHORIZED', 'UPLOADING', 'UPLOADED'],
-  },
-  { label: 'Verificada', statuses: ['VERIFIED'] },
-  {
-    label: 'Execução',
-    statuses: [
-      'EXECUTING',
-      'PAUSED',
-      'DESTINATION_REACHED',
-      'DELIVERY_CONFIRMED',
-      'RETURNING',
-    ],
-  },
-  { label: 'Concluída', statuses: ['COMPLETED'] },
-];
-
-const getStage = (status: Mission['status']) => {
-  const index = flowStages.findIndex((stage) => stage.statuses.includes(status));
-  return index < 0 ? 0 : index;
-};
-
-const ARM_CONFIRMATION_TIMEOUT_MS = 75_000;
+import { adminApi, getErrorMessage } from '../../services';
+import { formatCoordinate, formatDateTime, formatDistance, shortId } from '../../utils/format';
+import { Px4SitlControls } from './Px4SitlControls';
 
 export function MissionPage() {
   const { missionId = '' } = useParams();
-  const loader = useCallback(async (): Promise<MissionPageData> => {
+  const loader = useCallback(async () => {
     const mission = await adminApi.getMission(missionId);
     const [order, vehicles] = await Promise.all([
       adminApi.getOrder(mission.order_id),
-      adminApi.listVehicles(),
+      adminApi.listVehicles().catch(() => []),
     ]);
-    const vehicle =
-      vehicles.find((item) => item.id === mission.vehicle_id) ?? vehicles[0] ?? null;
-    let health: VehicleHealth | null = null;
-    let healthError = '';
-    if (vehicle) {
-      try {
-        health = await adminApi.getVehicleHealth(vehicle.id);
-      } catch (loadError) {
-        healthError = getErrorMessage(loadError);
-      }
-    }
-    return { mission, order, vehicle, health, healthError };
+    const vehicle = mission.vehicle_id
+      ? vehicles.find((item) => item.id === mission.vehicle_id)
+      : vehicles.find((item) =>
+        item.connected &&
+        item.autopilot_system.trim().toUpperCase() === 'PX4' &&
+        (!mission.qgroundcontrol_sitl_review_event_id || item.operational_source === 'SITL'),
+      );
+    const health = vehicle ? await adminApi.getVehicleHealth(vehicle.id).catch(() => null) : null;
+    return { mission, order, vehicle, health };
   }, [missionId]);
   const { data, isLoading, error, reload, setData } = useAsyncData(loader);
   useOperationsStream(() => void reload());
   const [isActing, setIsActing] = useState(false);
   const [actionError, setActionError] = useState('');
   const [success, setSuccess] = useState('');
-  const [authorizationOpen, setAuthorizationOpen] = useState(false);
-  const [armDialogOpen, setArmDialogOpen] = useState(false);
-  const [originRevisionOpen, setOriginRevisionOpen] = useState(false);
-  const [activeArmRequest, setActiveArmRequest] =
-    useState<ActiveArmRequest | null>(null);
-  const [trackedArmCommand, setTrackedArmCommand] =
-    useState<GatewayCommand | null>(null);
-  const [criticalAction, setCriticalAction] = useState<
-    'start' | 'pause' | 'continue' | 'rtl' | 'abort' | null
-  >(null);
-  const [criticalReason, setCriticalReason] = useState('');
-  const activeArmMissionId = activeArmRequest?.expectation.missionId ?? null;
-
-  useEffect(() => {
-    if (activeArmMissionId && activeArmMissionId !== missionId) {
-      setActiveArmRequest(null);
-      setTrackedArmCommand(null);
-    }
-  }, [activeArmMissionId, missionId]);
-
-  useEffect(() => {
-    if (
-      !activeArmRequest ||
-      activeArmRequest.expectation.missionId !== missionId
-    ) {
-      return undefined;
-    }
-
-    let stopped = false;
-    let pollTimer: number | undefined;
-    let latestCommand = activeArmRequest.command;
-    const remaining = Math.max(
-      0,
-      ARM_CONFIRMATION_TIMEOUT_MS -
-        (Date.now() - activeArmRequest.startedAt),
-    );
-
-    const stopWithTimeout = () => {
-      if (stopped) return;
-      stopped = true;
-      setActiveArmRequest(null);
-      setSuccess('');
-      setActionError(
-        `O comando de armamento permaneceu em ${latestCommand.status} ou não foi confirmado por telemetria fresca dentro do prazo. Verifique o ACK e as mensagens de pré-arm antes de tentar novamente.`,
-      );
-    };
-
-    if (remaining === 0) {
-      stopWithTimeout();
-      return undefined;
-    }
-
-    const timeout = window.setTimeout(stopWithTimeout, remaining);
-
-    const poll = async () => {
-      const [pageResult, commandResult] = await Promise.allSettled([
-        loader(),
-        adminApi.getMissionCommand(
-          activeArmRequest.expectation.missionId,
-          activeArmRequest.expectation.commandId,
-        ),
-      ]);
-      if (stopped) return;
-
-      if (commandResult.status === 'fulfilled') {
-        latestCommand = commandResult.value;
-        setTrackedArmCommand(commandResult.value);
-        const outcome = getArmTrackingOutcome(
-          commandResult.value,
-          activeArmRequest.expectation,
-          pageResult.status === 'fulfilled' &&
-            pageResult.value.mission.id ===
-              activeArmRequest.expectation.missionId
-            ? pageResult.value.health
-            : null,
-        );
-        if (outcome.state === 'FAILED') {
-          stopped = true;
-          window.clearTimeout(timeout);
-          setActiveArmRequest(null);
-          setSuccess('');
-          setActionError(outcome.detail);
-          return;
-        }
-        if (outcome.state === 'CONFIRMED') {
-          stopped = true;
-          window.clearTimeout(timeout);
-          if (pageResult.status === 'fulfilled') {
-            setData(pageResult.value);
-          }
-          setActiveArmRequest(null);
-          setActionError('');
-          setSuccess(
-            'Armamento confirmado pelo comando concluído e por telemetria fresca. O START continua sujeito aos gates próprios.',
-          );
-          return;
-        }
-      }
-
-      if (pageResult.status === 'fulfilled') {
-        setData(pageResult.value);
-      }
-
-      pollTimer = window.setTimeout(() => void poll(), 1_500);
-    };
-
-    void poll();
-    return () => {
-      stopped = true;
-      window.clearTimeout(timeout);
-      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
-    };
-  }, [activeArmRequest, loader, missionId, setData]);
+  const [qgcDraftOpen, setQgcDraftOpen] = useState(false);
+  const [homeAmsl, setHomeAmsl] = useState('');
+  const [qgcReviewOpen, setQgcReviewOpen] = useState(false);
+  const [qgcPlan, setQgcPlan] = useState<File | null>(null);
 
   if (isLoading && !data) return <StateView state="loading" />;
   if (error && !data) {
-    return (
-      <StateView
-        state="error"
-        description={error}
-        actionLabel="Tentar novamente"
-        onAction={() => void reload()}
-      />
-    );
+    return <StateView state="error" description={error} actionLabel="Tentar novamente" onAction={() => void reload()} />;
   }
   if (!data) return null;
 
-  const { mission, order, vehicle, health, healthError } = data;
-  const readiness = getMissionReadiness(mission, health);
-  const armReadiness = getArmRequestReadiness(mission, vehicle, health);
-  const activeStage = getStage(mission.status);
-  const canStartReview = ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER'].includes(
-    mission.status,
-  );
-  const canFinishReview = mission.status === 'UNDER_REVIEW';
-  const canAuthorize = canAuthorizeMission(mission);
-  const canAbort = [
-    'UPLOADING',
-    'UPLOADED',
-    'VERIFIED',
-    'EXECUTING',
-    'PAUSED',
-    'DESTINATION_REACHED',
-    'DELIVERY_CONFIRMED',
-    'RETURNING',
-  ].includes(mission.status);
-  const canRequestRtl = [
-    'EXECUTING',
-    'PAUSED',
-    'DESTINATION_REACHED',
-    'DELIVERY_CONFIRMED',
-    'RETURNING',
-  ].includes(mission.status);
-  const canRequestStart = mission.status === 'VERIFIED';
-  const canRequestArm = mission.status === 'VERIFIED';
-  const canRequestPause = [
-    'EXECUTING',
-    'DESTINATION_REACHED',
-    'DELIVERY_CONFIRMED',
-    'RETURNING',
-  ].includes(mission.status);
-  const canRequestContinue = mission.status === 'PAUSED';
-  const canIntervene =
-    canAbort ||
-    canRequestRtl ||
-    canRequestStart ||
-    canRequestPause ||
-    canRequestContinue;
-  const flightCommandsEnabled = health?.flight_commands_enabled === true;
-  const missionStartEnabled = health?.mission_start_enabled === true;
-  const missionVehicleMatchesHealth =
-    mission.vehicle_id !== undefined &&
-    vehicle?.id === mission.vehicle_id &&
-    health?.vehicle_id === mission.vehicle_id;
-  const startCommandBlockedReason = !hasCurrentClaimAuthorization(mission)
-    ? 'Renove a autorização da missão antes de solicitar START.'
-    : !flightCommandsEnabled
-    ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.'
-    : !missionStartEnabled
-      ? 'ALLOW_MISSION_START está desabilitado no gateway.'
-      : !missionVehicleMatchesHealth
-        ? 'A leitura de saúde não pertence ao veículo vinculado à missão.'
-        : health?.is_stale
-          ? 'A leitura de saúde está vencida; atualize o gateway antes de solicitar START.'
-          : health?.connected !== true || health.heartbeat_ok !== true
-            ? 'Gateway/Pixhawk está sem conexão ou heartbeat atual.'
-            : health.armed !== true
-              ? 'O operador ainda não confirmou armamento físico.'
-              : null;
+  const { mission, order, vehicle, health } = data;
+  const reviewStatus = mission.qgroundcontrol_review_status;
+  const mayRegisterReview = ['GENERATED', 'EXPORTED_TO_MISSION_PLANNER', 'UNDER_REVIEW', 'READY_FOR_AUTHORIZATION'].includes(mission.status);
+  const homeLatitude = health?.origin_latitude;
+  const homeLongitude = health?.origin_longitude;
+  const px4Home = vehicle?.autopilot_system.trim().toUpperCase() === 'PX4' &&
+    health?.is_stale === false && homeLatitude != null && homeLongitude != null
+    ? { latitude: homeLatitude, longitude: homeLongitude, label: 'Home informado pelo PX4' }
+    : null;
+  const hasLivePosition = health?.is_stale === false &&
+    health.current_latitude != null && health.current_longitude != null;
+  const draftAmsl = hasLivePosition ? health?.current_amsl_m ?? null : null;
+  const manualAmsl = homeAmsl.trim() ? Number(homeAmsl) : undefined;
+  const invalidAmsl = manualAmsl !== undefined &&
+    (!Number.isFinite(manualAmsl) || manualAmsl < -1000 || manualAmsl > 100000);
 
-  const updateMission = (next: Mission) => setData({ ...data, mission: next });
-
-  const openAuthorization = async () => {
+  const runFileAction = async (action: () => Promise<void>) => {
     setIsActing(true);
     setActionError('');
     setSuccess('');
     try {
-      const refreshed = await loader();
-      setData(refreshed);
-      const refreshedReadiness = getMissionReadiness(
-        refreshed.mission,
-        refreshed.health,
-      );
-      if (
-        !canAuthorizeMission(refreshed.mission) ||
-        !refreshedReadiness.ready
-      ) {
-        setActionError(
-          refreshedReadiness.blockers.join(' ') ||
-            'A missão não está mais pronta para autorização.',
-        );
-        return;
-      }
-      setAuthorizationOpen(true);
-    } catch (refreshError) {
-      setActionError(getErrorMessage(refreshError));
+      await action();
+    } catch (actionError) {
+      setActionError(getErrorMessage(actionError));
     } finally {
       setIsActing(false);
     }
   };
 
-  const openArmDialog = async () => {
-    if (activeArmRequest !== null) return;
-    setIsActing(true);
-    setActionError('');
-    setSuccess('');
-    try {
-      const refreshed = await loader();
-      setData(refreshed);
-      const refreshedReadiness = getArmRequestReadiness(
-        refreshed.mission,
-        refreshed.vehicle,
-        refreshed.health,
-      );
-      if (!refreshedReadiness.ready) {
-        setActionError(
-          `Armamento bloqueado: ${refreshedReadiness.blockers.join(' ')}`,
-        );
-        return;
-      }
-      setArmDialogOpen(true);
-    } catch (refreshError) {
-      setActionError(getErrorMessage(refreshError));
-    } finally {
-      setIsActing(false);
-    }
-  };
+  const handleDraftDownload = () => runFileAction(async () => {
+    if (invalidAmsl) return;
+    await adminApi.exportQgcDraft(mission.id, vehicle?.id, manualAmsl);
+    setQgcDraftOpen(false);
+    setSuccess('Rascunho .plan baixado. Abra no QGroundControl em Plan → Open e revise a origem e a rota.');
+  });
 
-  const runMissionAction = async (
-    action: () => Promise<Mission>,
-    successMessage: string,
-  ) => {
-    setIsActing(true);
-    setActionError('');
-    setSuccess('');
-    try {
-      updateMission(await action());
-      setSuccess(successMessage);
-    } catch (missionError) {
-      setActionError(getErrorMessage(missionError));
-    } finally {
-      setIsActing(false);
-    }
-  };
+  const handleQgcReview = () => runFileAction(async () => {
+    if (!qgcPlan || !mission.file_hash) return;
+    if (qgcPlan.size > 65536) throw new Error('O arquivo .plan excede 64 KiB.');
+    const result = await adminApi.recordQgcReview(mission.id, mission.version, mission.file_hash, await qgcPlan.text());
+    setData({ ...data, mission: { ...mission, qgroundcontrol_review_status: 'CURRENT' } });
+    setQgcReviewOpen(false);
+    setQgcPlan(null);
+    setSuccess(`Plano revisado registrado (${result.plan_sha256}).`);
+    await reload();
+  });
 
-  const handleOriginRevision = async (input: MissionOriginRevisionInput) => {
-    setIsActing(true);
-    setActionError('');
-    setSuccess('');
-    try {
-      await adminApi.reviseMissionOrigin(mission.id, input);
-      setOriginRevisionOpen(false);
-      await reload();
-      setSuccess('Nova versão gerada, mantendo o destino. Baixe e revise o novo arquivo; nenhum comando foi enviado ao drone.');
-    } catch (revisionError) {
-      setActionError(getErrorMessage(revisionError));
-    } finally { setIsActing(false); }
-  };
-
-  const handleExport = async () => {
-    setIsActing(true);
-    setActionError('');
-    try {
-      await adminApi.exportMission(mission.id);
-      setSuccess('Arquivo compatível com Mission Planner exportado. Revise-o externamente antes de registrar a revisão.');
-    } catch (exportError) {
-      setActionError(getErrorMessage(exportError));
-    } finally {
-      setIsActing(false);
-    }
-  };
-
-  const handleAuthorize = async (input: FlightAuthorizationInput) => {
-    setIsActing(true);
-    setActionError('');
-    try {
-      updateMission(await adminApi.authorizeFlight(mission.id, input));
-      setAuthorizationOpen(false);
-      setSuccess(mission.status === 'VERIFIED'
-        ? 'Autorização renovada. A rota verificada foi preservada; ARM e START continuam sendo ações separadas.'
-        : 'Autorização de uso único criada. O gateway ainda deve validar prazo, versão e saúde antes do upload.');
-    } catch (authorizationError) {
-      setActionError(getErrorMessage(authorizationError));
-    } finally {
-      setIsActing(false);
-    }
-  };
-
-  const handleArm = async (input: ArmMissionInput) => {
-    setIsActing(true);
-    setActionError('');
-    setSuccess('');
-    try {
-      const refreshed = await loader();
-      setData(refreshed);
-      const refreshedReadiness = getArmRequestReadiness(
-        refreshed.mission,
-        refreshed.vehicle,
-        refreshed.health,
-      );
-      if (!refreshedReadiness.ready) {
-        setActionError(
-          `Armamento bloqueado após revalidação: ${refreshedReadiness.blockers.join(' ')}`,
-        );
-        return;
-      }
-
-      const result = await adminApi.armMission(refreshed.mission.id, input);
-      if (
-        result.mission.id !== refreshed.mission.id ||
-        result.mission.vehicle_id !== refreshed.mission.vehicle_id
-      ) {
-        setActionError(
-          'A resposta do armamento não corresponde à missão e ao veículo revalidados.',
-        );
-        return;
-      }
-      const expectation = getArmTrackingExpectation(
-        result.command.id,
-        refreshed.mission,
-        refreshed.vehicle,
-      );
-      if (!expectation) {
-        setActionError(
-          'Não foi possível correlacionar o comando ao veículo da missão.',
-        );
-        return;
-      }
-
-      setData({ ...refreshed, mission: result.mission });
-      setArmDialogOpen(false);
-      setTrackedArmCommand(result.command);
-      const failure = getArmTrackingOutcome(
-        result.command,
-        expectation,
-        refreshed.health,
-      );
-      if (failure.state === 'FAILED') {
-        setActionError(failure.detail);
-        return;
-      }
-      setActiveArmRequest({
-        startedAt: Date.now(),
-        command: result.command,
-        expectation,
-      });
-    } catch (armError) {
-      setActionError(getErrorMessage(armError));
-    } finally {
-      setIsActing(false);
-    }
-  };
-
-  const handleCriticalAction = async () => {
-    if (!criticalAction) return;
-    const action = criticalAction;
-    const successMessages = {
-      start:
-        'Solicitação START registrada. O gateway ainda revalida armamento, preflight e flags locais.',
-      pause: 'Solicitação de pausa registrada; aguarde o COMMAND_ACK do ArduPilot.',
-      continue: 'Solicitação de continuação registrada; aguarde o COMMAND_ACK do ArduPilot.',
-      rtl: 'Solicitação de RTL registrada. A execução depende da validação do gateway e do estado físico do veículo.',
-      abort: 'Solicitação de abortamento registrada na missão.',
-    } as const;
-    await runMissionAction(
-      () => {
-        if (action === 'rtl') {
-          return adminApi.requestRtl(mission.id, criticalReason);
-        }
-        if (action === 'abort') {
-          return adminApi.abortMission(mission.id, criticalReason);
-        }
-        return adminApi.requestMissionCommand(
-          mission.id,
-          action.toUpperCase() as 'START' | 'PAUSE' | 'CONTINUE',
-          criticalReason,
-        );
-      },
-      successMessages[action],
-    );
-    setCriticalAction(null);
-  };
+  const handleReviewedPlanDownload = () => runFileAction(async () => {
+    const filename = await adminApi.downloadReviewedQgcPlan(mission.id);
+    setSuccess(`Arquivo ${filename} baixado. No QGroundControl, use Plan → Open para carregar a revisão.`);
+  });
 
   return (
     <>
@@ -546,7 +101,7 @@ export function MissionPage() {
         <ArrowLeft size={17} /> Voltar ao pedido #{shortId(order.id)}
       </Link>
       <PageHeader
-        eyebrow="Segunda autorização"
+        eyebrow="Planejamento"
         title={`Missão #${shortId(mission.id)}`}
         description={`Versão ${mission.version} · criada em ${formatDateTime(mission.created_at)} · vinculada ao pedido #${shortId(order.id)}.`}
         actions={
@@ -559,320 +114,111 @@ export function MissionPage() {
         }
       />
       {success ? <Feedback tone="success" className="page-feedback">{success}</Feedback> : null}
-      {actionError && !authorizationOpen && !armDialogOpen && !originRevisionOpen && !criticalAction ? (
+      {actionError && !qgcDraftOpen && !qgcReviewOpen ? (
         <Feedback tone="error" className="page-feedback">{actionError}</Feedback>
       ) : null}
-      {healthError ? (
-        <Feedback tone="error" className="page-feedback">
-          Falha ao atualizar a saúde: {healthError}. A autorização permanece bloqueada.
-        </Feedback>
-      ) : null}
-
-      <ol className="mission-progress" aria-label="Progresso da missão">
-        {flowStages.map((stage, index) => (
-          <li
-            key={stage.label}
-            className={
-              index < activeStage
-                ? 'mission-progress__done'
-                : index === activeStage
-                  ? 'mission-progress__active'
-                  : ''
-            }
-          >
-            <span>{index < activeStage ? <CheckCircle2 size={17} /> : index + 1}</span>
-            <strong>{stage.label}</strong>
-          </li>
-        ))}
-      </ol>
 
       <div className="mission-layout">
         <div className="stack">
-          <Card
-            title="Rota e waypoints"
-            action={<span className="analysis-label"><Satellite size={16} /> Revisão visual obrigatória</span>}
-          >
-            <SatelliteMap points={mission.waypoints} title="Traçado planejado" height={390} />
+          <Card title="Rota e waypoints">
+            <SatelliteMap points={mission.waypoints} homePoint={px4Home} title="Traçado de referência" height={390} />
+            {px4Home ? (
+              <dl className="data-list single-column">
+                <div>
+                  <dt>Home informado pelo PX4</dt>
+                  <dd>{formatCoordinate(px4Home.latitude)}, {formatCoordinate(px4Home.longitude)}</dd>
+                </div>
+              </dl>
+            ) : null}
             <div className="mission-facts">
-              <div><span><Route size={18} /></span><small>Distância total</small><strong>{formatDistance(mission.estimated_distance_m)}</strong></div>
-              <div><span><Navigation size={18} /></span><small>Altitude configurada</small><strong>{mission.altitude_m} m</strong></div>
-              <div><span><MapPin size={18} /></span><small>Waypoints</small><strong>{mission.waypoints.length}</strong></div>
+              <div><span><Route size={18} /></span><small>Distância estimada</small><strong>{formatDistance(mission.estimated_distance_m)}</strong></div>
+              <div><span><Navigation size={18} /></span><small>Altitude planejada</small><strong>{mission.altitude_m} m</strong></div>
+              <div><span><MapPin size={18} /></span><small>Destino</small><strong>{mission.destination.label ?? 'Ponto de entrega'}</strong></div>
               <div><span><FileCheck2 size={18} /></span><small>Versão</small><strong>v{mission.version}</strong></div>
-            </div>
-          </Card>
-
-          <Card title="Sequência da missão">
-            <div className="table-wrap">
-              <table className="data-table waypoints-table">
-                <thead>
-                  <tr><th>#</th><th>Comando</th><th>Latitude</th><th>Longitude</th><th>Altitude</th><th>Finalidade</th></tr>
-                </thead>
-                <tbody>
-                  {mission.waypoints.map((waypoint) => (
-                    <tr key={waypoint.id}>
-                      <td><span className="waypoint-index">{waypoint.sequence}</span></td>
-                      <td><strong>{waypoint.command}</strong></td>
-                      <td className="mono">{formatCoordinate(waypoint.latitude)}</td>
-                      <td className="mono">{formatCoordinate(waypoint.longitude)}</td>
-                      <td>{waypoint.altitude_m} m</td>
-                      <td>{waypoint.description}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           </Card>
         </div>
 
         <aside className="stack mission-side">
-          <Card title="Revisão no Mission Planner">
-            {canReviseOrigin(mission, health) ? <Button variant="secondary" disabled={isActing || activeArmRequest !== null}
-              onClick={() => { setActionError(''); setOriginRevisionOpen(true); }}>
-              <MapPin size={17} /> Atualizar origem e retorno
-            </Button> : null}
-            <div className="review-flow">
-              <ReviewStep
-                done={Boolean(mission.exported_at) || activeStage > 0}
-                number="1"
-                title="Exportar arquivo"
-                detail="Baixe a versão exata da missão."
-              />
-              <ReviewStep
-                done={Boolean(mission.reviewed_at) || activeStage > 1}
-                number="2"
-                title="Revisar externamente"
-                detail="Abra no Mission Planner e confira o traçado."
-              />
-              <ReviewStep
-                done={activeStage > 2}
-                number="3"
-                title="Autorizar missão"
-                detail="Somente após saúde e checklist válidos."
-              />
-            </div>
+          {mission.qgroundcontrol_sitl_review_event_id && vehicle?.operational_source === 'SITL' ? (
+            <Px4SitlControls mission={mission} vehicle={vehicle} onChange={() => void reload()} />
+          ) : null}
+          <Card title="Revisão da missão">
             <div className="decision-actions mission-actions">
-              {canStartReview ? (
-                <>
-                  <Button variant="secondary" onClick={() => void handleExport()} loading={isActing}>
-                    <Download size={17} /> Baixar .waypoints
-                  </Button>
-                  <Button
-                    onClick={() =>
-                      void runMissionAction(
-                        () => adminApi.markMissionUnderReview(mission.id),
-                        'Abertura no Mission Planner registrada. Conclua a revisão antes de avançar.',
-                      )
-                    }
-                    loading={isActing}
-                  >
-                    <FileCheck2 size={17} /> Registrar abertura no Planner
-                  </Button>
-                </>
+              {reviewStatus === 'CURRENT' ? (
+                <Button variant="primary" loading={isActing} onClick={() => void handleReviewedPlanDownload()}>
+                  <Download size={17} /> Baixar plano revisado para o QGroundControl
+                </Button>
               ) : null}
-              {canFinishReview ? (
-                <>
-                  <Feedback tone="warning">Confirme somente depois de revisar a rota no Mission Planner. O navegador não substitui essa revisão.</Feedback>
-                  <Button
-                    onClick={() =>
-                      void runMissionAction(
-                        () => adminApi.markMissionReviewed(mission.id),
-                        'Revisão registrada. A missão aguarda a segunda autorização.',
-                      )
-                    }
-                    loading={isActing}
-                  >
-                    <CheckCircle2 size={17} /> Confirmar revisão operacional
-                  </Button>
-                </>
+              {reviewStatus === 'OUTDATED' ? (
+                <Feedback tone="warning">A revisão é de uma versão anterior. Registre o arquivo da versão atual.</Feedback>
               ) : null}
-              {canAuthorize ? (
-                <>
-                  <Feedback tone={readiness.ready ? 'success' : 'error'}>
-                    {readiness.ready
-                      ? readiness.warnings.length > 0
-                        ? 'Sem bloqueios técnicos. Revise os avisos e faça as três confirmações humanas.'
-                        : 'Verificações automáticas aprovadas. Ainda são necessárias três confirmações humanas.'
-                      : `Autorização bloqueada: ${readiness.blockers.join(' ')}`}
-                  </Feedback>
-                  <Button
-                    loading={isActing}
-                    onClick={() => void openAuthorization()}
-                  >
-                    <ShieldCheck size={18} />{' '}
-                    {mission.status === 'VERIFIED'
-                      ? 'Renovar autorização'
-                      : readiness.ready
-                      ? 'Autorizar missão'
-                      : 'Revalidar para autorizar'}
-                  </Button>
-                </>
+              <Button variant="secondary" disabled={isActing} onClick={() => {
+                setActionError('');
+                setHomeAmsl('');
+                setQgcDraftOpen(true);
+              }}>
+                <Download size={17} /> Baixar plano do QGroundControl
+              </Button>
+              {mayRegisterReview ? (
+                <Button variant="secondary" disabled={!mission.file_hash || isActing} onClick={() => {
+                  setActionError('');
+                  setQgcPlan(null);
+                  setQgcReviewOpen(true);
+                }}>
+                  <FileCheck2 size={17} /> Enviar plano revisado
+                </Button>
               ) : null}
-              {mission.authorization ? (
-                <div className="authorization-record">
-                  <ShieldCheck size={25} />
-                  <div>
-                    <strong>{authorizationTitle(mission.authorization)}</strong>
-                    <span>
-                      Por {mission.authorization.admin_name}
-                      {mission.authorization.administrator_id
-                        ? ` · Admin #${shortId(mission.authorization.administrator_id)}`
-                        : ''}
-                    </span>
-                    <span>Operador: {mission.authorization.operator_name}</span>
-                    <span>
-                      Emitida: {formatDateTime(mission.authorization.authorized_at)}
-                    </span>
-                    <span>Expira: {formatDateTime(mission.authorization.expires_at)}</span>
-                    {mission.authorization.mission_version ? (
-                      <small>Versão autorizada: {mission.authorization.mission_version}</small>
-                    ) : null}
-                    <small>
-                      {authorizationUsageMessage(mission.authorization)}
-                    </small>
-                  </div>
-                </div>
-              ) : null}
-              {canIntervene ? (
-                <>
-                  <Link className="button button--secondary" to={`/operations?mission=${mission.id}`}><Radio size={17} /> Abrir telemetria</Link>
-                  <div className="critical-actions">
-                    {canRequestArm ? (
-                      <>
-                        <Button
-                          variant="warning"
-                          disabled={
-                            !armReadiness.ready ||
-                            activeArmRequest !== null ||
-                            isActing
-                          }
-                          aria-describedby="arm-request-state"
-                          onClick={() => void openArmDialog()}
-                        >
-                          <Power size={17} />{' '}
-                          {activeArmRequest !== null
-                            ? 'Aguardando armamento'
-                            : health?.armed === true
-                              ? 'Veículo armado'
-                              : 'Solicitar armamento'}
-                        </Button>
-                        {!armReadiness.ready || activeArmRequest !== null ? (
-                          <p
-                            className="arm-blocked-reason"
-                            id="arm-request-state"
-                            role="status"
-                          >
-                            {activeArmRequest !== null
-                              ? `Comando #${shortId(activeArmRequest.expectation.commandId)} em ${trackedArmCommand?.status ?? activeArmRequest.command.status}. O painel exige COMPLETED e telemetria do mesmo veículo posterior ao ACK.`
-                              : `Armamento indisponível: ${armReadiness.blockers.join(' ')}`}
-                          </p>
-                        ) : (
-                          <span id="arm-request-state" className="sr-only">
-                            Armamento padrão disponível após nova validação da saúde.
-                          </span>
-                        )}
-                      </>
-                    ) : null}
-                    {canRequestStart ? <Button variant="primary" disabled={startCommandBlockedReason !== null} title={startCommandBlockedReason ?? undefined} onClick={() => { setCriticalReason(''); setCriticalAction('start'); }}><Play size={17} /> Solicitar START</Button> : null}
-                    {canRequestPause ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('pause'); }}><Pause size={17} /> Pausar missão</Button> : null}
-                    {canRequestContinue ? <Button variant="secondary" disabled={!flightCommandsEnabled} title={!flightCommandsEnabled ? 'ALLOW_FLIGHT_COMMANDS está desabilitado no gateway.' : undefined} onClick={() => { setCriticalReason(''); setCriticalAction('continue'); }}><Play size={17} /> Continuar missão</Button> : null}
-                    {canRequestRtl ? <Button variant="secondary" onClick={() => { setCriticalReason(''); setCriticalAction('rtl'); }}><RotateCcw size={17} /> Solicitar RTL</Button> : null}
-                    {canAbort ? <Button variant="danger" onClick={() => { setCriticalReason(''); setCriticalAction('abort'); }}><AlertOctagon size={17} /> Abortar missão</Button> : null}
-                  </div>
-                </>
-              ) : null}
+              <p>Abra o .plan em Plan → Open. A revisão operacional, o upload ao veículo e a operação de voo são feitos no QGroundControl.</p>
             </div>
           </Card>
-
-          <Card
-            title="Verificações automáticas"
-            action={
-              <div className="cluster">
-                {health ? <OperationalSourceBadge {...health} /> : null}
-                <Link to="/vehicles">Diagnóstico</Link>
-              </div>
-            }
-          >
-            <AutomaticPreflightChecks mission={mission} health={health} />
-          </Card>
-
-          <Card title="Integridade do artefato">
+          <Card title="Integridade do plano">
             <dl className="data-list single-column">
-              <div><dt>Hash</dt><dd className="mono">{mission.file_hash ?? 'Gerado no backend'}</dd></div>
               <div><dt>Destino final</dt><dd className="mono">{formatCoordinate(mission.destination.latitude)}, {formatCoordinate(mission.destination.longitude)}</dd></div>
-              <div><dt>Revisão</dt><dd>{mission.reviewed_at ? `${mission.reviewer_name ?? 'Admin'} · ${formatDateTime(mission.reviewed_at)}` : 'Pendente'}</dd></div>
+              <div><dt>Revisão registrada</dt><dd>{reviewStatus === 'CURRENT' ? `Versão ${mission.version}` : reviewStatus === 'OUTDATED' ? 'Versão anterior' : 'Pendente'}</dd></div>
             </dl>
+            <Link className="button button--secondary" to={`/operations?mission=${mission.id}`}>
+              <Radio size={17} /> Abrir telemetria
+            </Link>
           </Card>
         </aside>
       </div>
 
-      <OriginRevisionDialog open={originRevisionOpen} mission={mission} health={health}
-        busy={isActing} error={originRevisionOpen ? actionError : ''}
-        onClose={() => setOriginRevisionOpen(false)} onSubmit={handleOriginRevision} />
-      <FlightAuthorizationDialog
-        open={authorizationOpen}
-        mission={mission}
-        vehicle={vehicle}
-        health={health}
-        isSubmitting={isActing}
-        error={actionError}
-        onClose={() => setAuthorizationOpen(false)}
-        onSubmit={handleAuthorize}
-      />
-
-      <ArmVehicleDialog
-        open={armDialogOpen}
-        mission={mission}
-        vehicle={vehicle}
-        health={health}
-        blockers={armReadiness.blockers}
-        isSubmitting={isActing}
-        error={armDialogOpen ? actionError : ''}
-        onClose={() => setArmDialogOpen(false)}
-        onSubmit={handleArm}
-      />
-
-      <Modal
-        open={criticalAction !== null}
-        title={
-          {
-            start: 'Solicitar início explícito da missão',
-            pause: 'Solicitar pausa da missão',
-            continue: 'Solicitar continuação da missão',
-            rtl: 'Solicitar retorno ao ponto de origem',
-            abort: 'Abortar missão',
-          }[criticalAction ?? 'abort']
-        }
-        onClose={() => setCriticalAction(null)}
-        closeDisabled={isActing}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setCriticalAction(null)} disabled={isActing}>Cancelar</Button>
-            <Button variant="danger" onClick={() => void handleCriticalAction()} loading={isActing} disabled={criticalReason.trim().length < 10}>
-              Confirmar solicitação crítica
-            </Button>
-          </>
-        }
-      >
+      <Modal open={qgcDraftOpen} title="Montar missão para o QGroundControl" onClose={() => setQgcDraftOpen(false)} closeDisabled={isActing}
+        footer={<><Button variant="secondary" onClick={() => setQgcDraftOpen(false)} disabled={isActing}>Cancelar</Button>
+          <Button onClick={() => void handleDraftDownload()} loading={isActing} disabled={invalidAmsl}>Baixar .plan</Button></>}>
         <div className="stack">
-          <Feedback tone="error">
-            A solicitação será auditada e enviada ao gateway. O ArduPilot e o operador continuam sendo responsáveis pela resposta segura conforme o estado físico atual.
-          </Feedback>
+          <ol>
+            <li>Decolagem {hasLivePosition ? 'na posição recebida pela telemetria' : 'na origem planejada da missão'}.</li>
+            <li>Um waypoint no ponto de entrega do pedido, com espera de 5 segundos.</li>
+            <li><strong>Return To Launch (RTL)</strong>.</li>
+          </ol>
+          {draftAmsl === null ? (
+            <div className="field">
+              <label htmlFor="qgc-home-amsl">Altitude AMSL da origem em metros (opcional)</label>
+              <input id="qgc-home-amsl" className="input" type="number" min="-1000" max="100000" step="any"
+                value={homeAmsl} onChange={(event) => setHomeAmsl(event.target.value)} disabled={isActing} />
+              <small>Se estiver em branco, confira a altitude planejada no QGroundControl.</small>
+            </div>
+          ) : (
+            <p>Altitude AMSL da origem recebida pela telemetria: {draftAmsl.toFixed(1)} m.</p>
+          )}
+          {actionError ? <Feedback tone="error">{actionError}</Feedback> : null}
+        </div>
+      </Modal>
+      <Modal open={qgcReviewOpen} title="Registrar plano revisado no QGroundControl" onClose={() => setQgcReviewOpen(false)} closeDisabled={isActing}
+        footer={<><Button variant="secondary" onClick={() => setQgcReviewOpen(false)} disabled={isActing}>Cancelar</Button>
+          <Button onClick={() => void handleQgcReview()} loading={isActing} disabled={!qgcPlan || isActing}>Registrar plano revisado</Button></>}>
+        <div className="stack">
+          <p>Selecione o arquivo que você revisou e salvou no QGroundControl.</p>
           <div className="field">
-            <label htmlFor="critical-reason">Justificativa operacional</label>
-            <textarea className="textarea" id="critical-reason" value={criticalReason} onChange={(event) => setCriticalReason(event.target.value)} minLength={10} maxLength={500} />
+            <label htmlFor="qgc-review-file">Arquivo .plan revisado</label>
+            <input id="qgc-review-file" type="file" accept=".plan,application/json" disabled={isActing}
+              onChange={(event) => setQgcPlan(event.target.files?.[0] ?? null)} />
           </div>
           {actionError ? <Feedback tone="error">{actionError}</Feedback> : null}
         </div>
       </Modal>
     </>
-  );
-}
-
-function ReviewStep({ done, number, title, detail }: { done: boolean; number: string; title: string; detail: string }) {
-  return (
-    <div className={`review-step ${done ? 'review-step--done' : ''}`}>
-      <span>{done ? <CheckCircle2 size={18} /> : number}</span>
-      <div><strong>{title}</strong><small>{detail}</small></div>
-    </div>
   );
 }

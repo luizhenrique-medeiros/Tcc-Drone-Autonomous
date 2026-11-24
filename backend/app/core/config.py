@@ -35,6 +35,7 @@ class Settings(BaseSettings):
 
     gateway_api_key: str = "development-gateway-key"
     gateway_id: str = Field(default="dev-gateway-01", min_length=2, max_length=120)
+    px4_sitl_plan_validation: bool = False
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,"
         "http://localhost:5173,http://127.0.0.1:5173,"
@@ -97,6 +98,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def reject_development_secrets_in_production(self) -> Settings:
+        if self.px4_sitl_plan_validation and self.app_env != "test":
+            raise ValueError("PX4_SITL_PLAN_VALIDATION exige APP_ENV=test")
         if self.app_env in {"demo", "production"}:
             if self.jwt_secret == "development-only-change-me":
                 raise ValueError("JWT_SECRET deve ser configurado em demo/production")

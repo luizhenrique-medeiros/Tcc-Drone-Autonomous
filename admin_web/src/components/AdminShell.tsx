@@ -42,7 +42,7 @@ export function AdminShell() {
   const currentLabel = location.pathname.startsWith('/orders/')
     ? 'Detalhe do pedido'
     : location.pathname.startsWith('/missions/')
-      ? 'Missão e autorização'
+      ? 'Planejamento da missão'
       : (pageLabels[location.pathname] ?? 'Centro de operações');
 
   return (
@@ -106,13 +106,6 @@ export function AdminShell() {
             </>
           ) : null}
         </nav>
-        <div className="sidebar__safety">
-          <span className="sidebar__safety-icon"><Activity size={18} /></span>
-          <div>
-            <strong>Segurança operacional</strong>
-            <small>Revisão e autorização são etapas independentes.</small>
-          </div>
-        </div>
       </aside>
 
       {menuOpen ? (

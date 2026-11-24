@@ -1,6 +1,5 @@
 import type {
   EventSeverity,
-  Mission,
   SystemEvent,
   TelemetryPoint,
   Vehicle,
@@ -32,7 +31,6 @@ export interface OperationalAlertInput {
     | 'disconnected';
   vehicle?: Vehicle | null;
   health?: VehicleHealth | null;
-  mission?: Mission | null;
   telemetry?: TelemetryPoint[];
   events?: SystemEvent[];
   expectVehicle?: boolean;
@@ -116,7 +114,7 @@ const eventCandidate = (event: SystemEvent): AlertCandidate | null => {
       severity,
       title: 'Falha no upload da missão',
       what: event.message,
-      impact: 'A missão não foi confirmada e relida no veículo; execução e armamento devem permanecer bloqueados.',
+      impact: 'O evento indica que a gravação não foi confirmada no veículo.',
       last_updated_at: event.created_at,
       recommended_action: 'Revise o ACK e os eventos MAVLink; reconcilie o estado antes de qualquer nova tentativa.',
     };
@@ -152,9 +150,9 @@ const eventCandidate = (event: SystemEvent): AlertCandidate | null => {
       severity,
       title: 'Modo de voo inesperado',
       what: event.message,
-      impact: 'O modo observado diverge da condição validada pelo gateway para esta etapa.',
+      impact: 'O evento registra uma divergência no modo observado.',
       last_updated_at: event.created_at,
-      recommended_action: 'Confirme o modo e a etapa no Mission Planner; não force a continuidade pelo painel.',
+      recommended_action: 'Confira as mensagens do veículo na estação de controle.',
     };
   }
 
@@ -175,7 +173,7 @@ const eventCandidate = (event: SystemEvent): AlertCandidate | null => {
       severity,
       title: 'Evento de conexão serial',
       what: event.message,
-      impact: 'O gateway pode não conseguir ler o veículo ou executar comandos autorizados.',
+      impact: 'O gateway pode deixar de receber dados do veículo.',
       last_updated_at: event.created_at,
       recommended_action: 'Verifique porta, cabo, permissões e configuração do gateway sem armar o veículo.',
     };
@@ -186,7 +184,7 @@ const eventCandidate = (event: SystemEvent): AlertCandidate | null => {
       severity,
       title: 'Gateway desconectado',
       what: event.message,
-      impact: 'Saúde, comandos e telemetria podem não refletir o estado físico atual.',
+      impact: 'A telemetria pode não refletir o estado físico atual.',
       last_updated_at: event.created_at,
       recommended_action: 'Confirme o processo do gateway e o link MAVLink antes de operar.',
     };
@@ -207,7 +205,6 @@ export const generateOperationalAlerts = ({
   streamStatus,
   vehicle,
   health,
-  mission,
   telemetry = [],
   events = [],
   expectVehicle = false,
@@ -250,7 +247,7 @@ export const generateOperationalAlerts = ({
       severity: 'ERROR',
       title: 'Veículo ou gateway indisponível',
       what: 'Nenhum veículo foi retornado pela API administrativa.',
-      impact: 'Não há fonte técnica para saúde ou autorização de voo.',
+      impact: 'A telemetria do veículo está indisponível.',
       last_updated_at: now.toISOString(),
       recommended_action: 'Inicie e autentique o gateway no modo esperado e confirme seu heartbeat.',
     });
@@ -260,7 +257,7 @@ export const generateOperationalAlerts = ({
       severity: 'ERROR',
       title: 'Gateway desconectado',
       what: `${vehicle.name} está marcado como desconectado.`,
-      impact: 'Leituras e comandos podem não representar o veículo físico.',
+      impact: 'O painel pode mostrar apenas a última leitura disponível.',
       last_updated_at: vehicle.last_seen_at || null,
       recommended_action: 'Verifique processo do gateway, rede e conexão MAVLink antes de operar.',
     });
@@ -274,7 +271,7 @@ export const generateOperationalAlerts = ({
         severity: 'ERROR',
         title: 'Origem da saúde desconhecida',
         what: 'A API não identificou se a leitura veio de simulação, SITL ou hardware real.',
-        impact: 'A evidência não pode ser usada para autorizar voo.',
+        impact: 'A origem da telemetria não pôde ser identificada.',
         last_updated_at: updatedAt,
         recommended_action: 'Corrija a identificação de origem no gateway e publique um novo snapshot.',
       });
@@ -285,7 +282,7 @@ export const generateOperationalAlerts = ({
         severity: 'ERROR',
         title: 'Saúde do veículo vencida',
         what: 'O último snapshot ultrapassou o limite de frescor do backend.',
-        impact: 'O estado físico atual é desconhecido e a autorização deve permanecer bloqueada.',
+        impact: 'A amostra pode não representar o estado físico atual.',
         last_updated_at: updatedAt,
         recommended_action: 'Restabeleça heartbeat e aguarde um snapshot novo antes de continuar.',
       });
@@ -298,104 +295,7 @@ export const generateOperationalAlerts = ({
         what: 'Conexão ou heartbeat não estão confirmados.',
         impact: 'O painel não consegue confirmar presença e estado atual do veículo.',
         last_updated_at: updatedAt,
-        recommended_action: 'Verifique gateway e link MAVLink; não autorize enquanto estiver ausente.',
-      });
-    }
-    if (!health.gps_fix || health.gps_fix === 'SEM FIX') {
-      add({
-        key: 'gps-invalid',
-        severity: 'ERROR',
-        title: 'GPS não confirmado',
-        what: health.gps_fix ? `Fix reportado: ${health.gps_fix}.` : 'Fix GPS indisponível.',
-        impact: 'Posição, origem e navegação autônoma não são confiáveis.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Aguarde fix adequado em área aberta e investigue mensagens do autopiloto.',
-      });
-    }
-    const minimumSatellites = health.authorization_limits?.min_gps_satellites;
-    if (
-      health.satellites === null ||
-      minimumSatellites === undefined ||
-      health.satellites < minimumSatellites
-    ) {
-      add({
-        key: 'satellites-low',
-        severity: 'WARNING',
-        title: 'Satélites insuficientes',
-        what:
-          health.satellites === null
-            ? 'Quantidade de satélites indisponível.'
-            : minimumSatellites === undefined
-              ? `${health.satellites} satélites reportados; limite do backend indisponível.`
-              : `${health.satellites} satélites reportados; mínimo do backend: ${minimumSatellites}.`,
-        impact: 'A precisão de navegação pode ser insuficiente para a missão.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Aguarde estabilização do GPS e valide o limite efetivo no backend.',
-      });
-    }
-    if (health.ekf_ok !== true) {
-      add({
-        key: 'ekf-invalid',
-        severity: 'ERROR',
-        title: 'EKF não confirmado',
-        what: health.ekf_ok === false ? 'O gateway reportou EKF inválido.' : 'Estado do EKF indisponível.',
-        impact: 'A estimativa de posição e atitude pode não ser segura.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Investigue a mensagem no Mission Planner sem contornar pre-arm.',
-      });
-    }
-    const minimumBattery = health.authorization_limits?.min_battery_percent;
-    if (
-      health.battery_percent === null ||
-      minimumBattery === undefined ||
-      health.battery_percent < minimumBattery
-    ) {
-      add({
-        key: 'battery-low',
-        severity: 'WARNING',
-        title: 'Bateria abaixo do mínimo ou indisponível',
-        what:
-          health.battery_percent === null
-            ? 'Percentual da bateria indisponível.'
-            : minimumBattery === undefined
-              ? `${Math.round(health.battery_percent)}% reportados; limite do backend indisponível.`
-              : `${Math.round(health.battery_percent)}% reportados; mínimo do backend: ${minimumBattery}%.`,
-        impact: 'Não há margem confirmada para executar e retornar com segurança.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Interrompa a autorização e valide bateria, tensão e reserva operacional.',
-      });
-    }
-    if (!health.flight_mode) {
-      add({
-        key: 'flight-mode-unknown',
-        severity: 'WARNING',
-        title: 'Modo de voo indisponível',
-        what: 'O gateway não informou o modo atual do autopiloto.',
-        impact: 'O operador não consegue confirmar a condição operacional do veículo.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Confirme o modo no Mission Planner e restabeleça a leitura do gateway.',
-      });
-    }
-
-    const armedAllowedStatuses: Mission['status'][] = [
-      'AUTHORIZED',
-      'UPLOADING',
-      'UPLOADED',
-      'VERIFIED',
-      'EXECUTING',
-      'DESTINATION_REACHED',
-      'DELIVERY_CONFIRMED',
-      'RETURNING',
-    ];
-    if (health.armed === true && (!mission || !armedAllowedStatuses.includes(mission.status))) {
-      add({
-        key: 'unexpected-armed-state',
-        severity: 'CRITICAL',
-        title: 'Armamento sem etapa operacional compatível',
-        what: 'O veículo está armado sem missão autorizada, em upload ou execução conhecida pelo painel.',
-        impact: 'Há divergência crítica entre estado físico e autorização administrativa.',
-        last_updated_at: updatedAt,
-        recommended_action: 'Não envie comandos automáticos; acione imediatamente o operador e o procedimento seguro local.',
+        recommended_action: 'Verifique o gateway e o link MAVLink.',
       });
     }
   }
@@ -413,36 +313,6 @@ export const generateOperationalAlerts = ({
       last_updated_at: latestTelemetry.received_at ?? latestTelemetry.recorded_at,
       recommended_action: 'Use a estação de solo como referência e restabeleça gateway/backend antes de continuar.',
     });
-  }
-
-  if (mission?.authorization && !mission.authorization.consumed_at) {
-    const expiresAt = Date.parse(mission.authorization.expires_at);
-    if (Number.isFinite(expiresAt) && expiresAt <= now.getTime()) {
-      add({
-        key: 'authorization-expired',
-        severity: 'ERROR',
-        title: 'Autorização de voo expirada',
-        what: 'A autorização de uso único venceu antes do consumo pelo gateway.',
-        impact: 'Upload ou execução não podem prosseguir com esta autorização.',
-        last_updated_at: mission.authorization.expires_at,
-        recommended_action: 'Atualize saúde e checklist e emita nova autorização para a mesma versão, se ainda segura.',
-      });
-    }
-  }
-
-  if (mission?.status === 'UPLOADING') {
-    const updatedAt = Date.parse(mission.updated_at);
-    if (Number.isFinite(updatedAt) && now.getTime() - updatedAt > 30_000) {
-      add({
-        key: 'upload-stale',
-        severity: 'WARNING',
-        title: 'Upload sem atualização recente',
-        what: 'A missão permanece em upload há mais de 30 segundos sem novo estado.',
-        impact: 'O envio pode estar travado ou sem ACK do veículo.',
-        last_updated_at: mission.updated_at,
-        recommended_action: 'Verifique eventos e Mission Planner; não reinicie o upload sem reconciliar o estado.',
-      });
-    }
   }
 
   for (const event of events) {

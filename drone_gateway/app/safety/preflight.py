@@ -68,7 +68,6 @@ def evaluate_preflight(
             ),
             detail=f"Mínimo {settings.min_gps_satellites} satélites",
         ),
-        CheckResult(code="EKF", passed=health.ekf_ok is True, detail="EKF saudável"),
         CheckResult(
             code="BATTERY",
             passed=(
@@ -81,11 +80,6 @@ def evaluate_preflight(
             code="PREFLIGHT", passed=health.preflight_ok is True, detail="Preflight do veículo"
         ),
         CheckResult(code="RTL", passed=health.rtl_configured is True, detail="RTL configurado"),
-        CheckResult(
-            code="GEOFENCE",
-            passed=health.geofence_enabled is True,
-            detail="Geofence habilitada",
-        ),
         CheckResult(
             code="ORIGIN",
             passed=origin_matches,

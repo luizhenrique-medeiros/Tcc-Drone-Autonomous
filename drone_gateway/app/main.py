@@ -6,9 +6,11 @@ from app.core.config import Settings
 from app.core.exceptions import BackendUnavailableError, GatewayError
 from app.core.logging import configure_logging
 from app.mavlink.factory import build_vehicle_gateway
+from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
 from app.mavlink.vehicle_gateway import VehicleGateway
 from app.missions.executor import MissionExecutor
 from app.models import ConnectionState
+from app.tools.px4_bench_readback import service_next_readback
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,19 @@ async def run() -> None:
                     continue
             try:
                 await executor.run_cycle()
+                if settings.px4_bench_readback_dir is not None and isinstance(
+                    vehicle, PymavlinkVehicleGateway
+                ):
+                    try:
+                        observation = await service_next_readback(
+                            settings.px4_bench_readback_dir, vehicle
+                        )
+                        if observation is not None:
+                            executor.queue_plan_readback(observation)
+                    except OSError:
+                        logger.warning(
+                            "Falha de I/O no diagnóstico local de bancada", exc_info=True
+                        )
                 backend_failures = 0
                 if vehicle.connection_state in {
                     ConnectionState.DISCONNECTED,
@@ -87,7 +102,10 @@ async def run() -> None:
                 logger.error("gateway cycle failed", exc_info=True)
                 await vehicle.close()
                 vehicle.mark_reconnecting()
-            await asyncio.sleep(settings.gateway_poll_interval_seconds)
+            interval = settings.gateway_poll_interval_seconds
+            if settings.px4_sitl_plan_validation:
+                interval = min(interval, 0.15)
+            await asyncio.sleep(interval)
     finally:
         await vehicle.close()
         await backend.close()

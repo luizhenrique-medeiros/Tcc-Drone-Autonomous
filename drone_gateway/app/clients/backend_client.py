@@ -16,6 +16,7 @@ from app.models import (
     MissionStatus,
     RetiredVersionReleaseResult,
     TelemetrySnapshot,
+    VehicleEvent,
     VehicleHealth,
 )
 
@@ -80,11 +81,36 @@ class BackendClient:
             "gateway_id": self._settings.gateway_id,
             "vehicle_identifier": self._settings.vehicle_identifier,
             "vehicle_name": self._settings.vehicle_name,
-            "autopilot_system": self._settings.autopilot_system,
+            "autopilot_system": (
+                self._settings.autopilot_system.strip().upper()
+                if health.connected and health.heartbeat
+                else "Não identificado"
+            ),
             **health.model_dump(mode="json"),
         }
         response = await self._request("POST", "/api/v1/gateway/heartbeat", json=body)
         return self._model(HeartbeatResponse, response)
+
+    async def report_vehicle_observations(
+        self, vehicle_id: UUID, observations: list[tuple[UUID, VehicleEvent]]
+    ) -> None:
+        await self._request(
+            "POST",
+            f"/api/v1/gateway/vehicles/{vehicle_id}/observations",
+            json=[
+                {
+                    "event_id": str(event_id),
+                    "event_type": event.event_type,
+                    "severity": event.severity,
+                    "message": event.message,
+                    "metadata": {
+                        **event.metadata,
+                        "source_occurred_at": event.occurred_at.isoformat(),
+                    },
+                }
+                for event_id, event in observations
+            ],
+        )
 
     async def authorized_missions(self) -> list[AuthorizedMission]:
         response = await self._request("GET", "/api/v1/gateway/missions/authorized")

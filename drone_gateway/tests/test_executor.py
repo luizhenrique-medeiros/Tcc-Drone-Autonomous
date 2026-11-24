@@ -22,6 +22,7 @@ from app.models import (
     OperationalSource,
     TelemetrySnapshot,
     VehicleArmResult,
+    VehicleEvent,
     VehicleHealth,
 )
 
@@ -545,6 +546,65 @@ async def test_simulation_runs_one_claim_through_return_and_completion(tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [MavlinkMode.QGROUNDCONTROL_FORWARD, MavlinkMode.MAVLINK_ROUTER])
+async def test_qgc_forward_publishes_health_without_consuming_commands(
+    tmp_path: Path, mode: MavlinkMode
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        mavlink_mode=mode,
+        mavlink_connection="udpin:127.0.0.1:14445",
+        gateway_journal_path=tmp_path / "observe.json",
+    )
+
+    class ObservationBackend(RecordingBackend):
+        def __init__(self, claim: ClaimResponse) -> None:
+            super().__init__(claim)
+            self.attempts: list[list[tuple[UUID, VehicleEvent]]] = []
+
+        async def report_vehicle_observations(
+            self, vehicle_id: UUID, observations: list[tuple[UUID, VehicleEvent]]
+        ) -> None:
+            assert vehicle_id == self.claim_response.mission.vehicle_id
+            self.attempts.append(observations)
+            if len(self.attempts) == 1:
+                raise BackendUnavailableError("Resposta perdida")
+
+    backend = ObservationBackend(build_claim())
+    command = backend.queue_command(GatewayCommandType.START)
+    observation = VehicleEvent(
+        event_type="MAVLINK_MISSION_CURRENT",
+        severity="INFO",
+        message="Autopiloto informou waypoint atual 1.",
+        occurred_at=datetime.now(UTC),
+    )
+
+    class ObservationGateway(FakeVehicleGateway):
+        reported = False
+
+        async def drain_events(self) -> list[VehicleEvent]:
+            if self.reported:
+                return []
+            self.reported = True
+            return [observation]
+
+    vehicle = ObservationGateway(settings)
+    await vehicle.connect()
+    executor = MissionExecutor(settings, backend, vehicle)
+    with pytest.raises(BackendUnavailableError):
+        await executor.run_cycle()
+    await executor.run_cycle()
+    await executor.run_cycle()
+    assert len(backend.attempts) == 2
+    assert backend.attempts[0] == backend.attempts[1]
+    assert [event for _, event in backend.attempts[1]] == [observation]
+    assert backend.claim_count == 0
+    assert backend.command_acks == []
+    assert backend.commands == [command]
+    assert backend.upload_statuses == []
+
+
+@pytest.mark.asyncio
 async def test_read_only_default_never_claims_or_uploads_authorized_mission(tmp_path: Path) -> None:
     settings = Settings(_env_file=None, gateway_journal_path=tmp_path / "read-only.json")
     claim = build_claim()
@@ -973,7 +1033,7 @@ async def test_pending_arm_requires_verified_waiting_mission_and_confirms_simula
     settings = enabled_settings(
         tmp_path / "arm-command.json",
         allow_vehicle_arm=True,
-    )
+    ).model_copy(update={"allow_mission_start": False})
     claim = build_claim()
     backend = ArmHealthOrderingBackend(claim)
     vehicle = ArmRecordingGateway(settings)
@@ -1135,7 +1195,7 @@ async def test_arm_is_rejected_outside_verified_waiting_phase_without_vehicle_ac
 
 
 @pytest.mark.asyncio
-async def test_executor_defensively_requires_all_three_arm_gates_before_ack(
+async def test_executor_defensively_requires_flight_gate_before_arm_ack(
     tmp_path: Path,
 ) -> None:
     settings = enabled_settings(
@@ -1148,7 +1208,7 @@ async def test_executor_defensively_requires_all_three_arm_gates_before_ack(
     await vehicle.connect()
     executor = MissionExecutor(settings, backend, vehicle)
     await executor.run_cycle()
-    executor._settings = settings.model_copy(update={"allow_mission_start": False})
+    executor._settings = settings.model_copy(update={"allow_flight_commands": False})
     backend.queue_command(GatewayCommandType.ARM)
 
     await executor.run_cycle()
@@ -1158,7 +1218,7 @@ async def test_executor_defensively_requires_all_three_arm_gates_before_ack(
     assert GatewayCommandStatus.ACKNOWLEDGED not in {
         status for _id, status, _detail in backend.command_acks[-1:]
     }
-    assert "ALLOW_MISSION_START" in (backend.command_acks[-1][2] or "")
+    assert "ALLOW_FLIGHT_COMMANDS" in (backend.command_acks[-1][2] or "")
 
 
 @pytest.mark.asyncio

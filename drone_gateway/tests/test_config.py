@@ -27,9 +27,9 @@ def test_vehicle_arm_gate_uses_canonical_environment_name_and_is_fail_closed(
 
 @pytest.mark.parametrize(
     ("allow_flight_commands", "allow_mission_start"),
-    [(False, False), (True, False), (False, True)],
+    [(False, False), (False, True)],
 )
-def test_vehicle_arm_gate_requires_flight_and_start_gates(
+def test_vehicle_arm_gate_requires_flight_gate(
     allow_flight_commands: bool,
     allow_mission_start: bool,
 ) -> None:
@@ -45,9 +45,10 @@ def test_vehicle_arm_gate_requires_flight_and_start_gates(
         _env_file=None,
         allow_vehicle_arm=True,
         allow_flight_commands=True,
-        allow_mission_start=True,
+        allow_mission_start=False,
     )
     assert settings.allow_vehicle_arm
+    assert not settings.allow_mission_start
 
 
 def test_legacy_mavlink_baud_rate_name_remains_compatible(monkeypatch) -> None:
@@ -87,6 +88,56 @@ def test_mission_planner_forward_uses_dedicated_udp_endpoint() -> None:
     assert settings.effective_mavlink_connection == "udpin:127.0.0.1:14551"
     assert settings.connection_topology == "mission_planner_forward"
     assert settings.mavlink_baud_rate == 57600
+
+
+def test_qgroundcontrol_forward_uses_passive_udp_endpoint() -> None:
+    settings = Settings(
+        _env_file=None,
+        autopilot_system="PX4",
+        mavlink_mode=MavlinkMode.QGROUNDCONTROL_FORWARD,
+        mavlink_connection="udpin:127.0.0.1:14551",
+    )
+    assert settings.effective_mavlink_connection == "udpin:127.0.0.1:14551"
+    assert settings.connection_topology == "qgroundcontrol_forward"
+    assert settings.is_hardware_mode
+
+
+@pytest.mark.parametrize("mode", [MavlinkMode.QGROUNDCONTROL_FORWARD, MavlinkMode.MAVLINK_ROUTER])
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "allow_mission_upload",
+        "allow_flight_commands",
+        "allow_mission_start",
+        "allow_vehicle_arm",
+        "allow_telemetry_requests",
+    ],
+)
+def test_qgroundcontrol_forward_rejects_all_send_gates(flag: str, mode: MavlinkMode) -> None:
+    with pytest.raises(ConfigurationError, match="somente recepção"):
+        Settings(
+            _env_file=None,
+            mavlink_mode=mode,
+            mavlink_connection="udpin:127.0.0.1:14551",
+            **{flag: True},
+        )
+
+
+def test_qgroundcontrol_forward_requires_udp_listener() -> None:
+    with pytest.raises(ConfigurationError, match="exige conexão udpin"):
+        Settings(
+            _env_file=None,
+            mavlink_mode=MavlinkMode.QGROUNDCONTROL_FORWARD,
+            mavlink_connection="COM7",
+        )
+
+
+@pytest.mark.parametrize("endpoint", ["COM7", "udpin:0.0.0.0:14600", "udpout:127.0.0.1:14600"])
+def test_mavlink_router_requires_loopback_udp_listener(endpoint: str) -> None:
+    with pytest.raises(ConfigurationError, match=r"127\.0\.0\.1"):
+        Settings(
+            _env_file=None, mavlink_mode=MavlinkMode.MAVLINK_ROUTER, mavlink_connection=endpoint
+        )
 
 
 def test_forward_requires_serial_upstream_and_udpin_endpoint() -> None:
@@ -132,6 +183,7 @@ def test_hardware_mutation_flags_require_explicit_acknowledgement() -> None:
         (MavlinkMode.REAL, "COM7"),
         (MavlinkMode.DIRECT, "COM7"),
         (MavlinkMode.MISSION_PLANNER_FORWARD, "COM7"),
+        (MavlinkMode.QGROUNDCONTROL_FORWARD, "udpin:127.0.0.1:14551"),
     ],
 )
 def test_container_runtime_rejects_hardware_modes(
@@ -159,3 +211,16 @@ def test_container_runtime_allows_non_hardware_modes(mode: MavlinkMode) -> None:
 
     assert settings.gateway_runtime is GatewayRuntime.CONTAINER
     assert settings.mavlink_mode is mode
+
+
+def test_px4_plan_validation_cannot_enable_upload_on_the_host() -> None:
+    with pytest.raises(ConfigurationError, match="somente loopback"):
+        Settings(
+            _env_file=None,
+            autopilot_system="PX4",
+            mavlink_mode=MavlinkMode.SITL,
+            mavlink_connection="udpin:127.0.0.1:14550",
+            gateway_runtime=GatewayRuntime.HOST,
+            px4_sitl_plan_validation=True,
+            allow_mission_upload=True,
+        )

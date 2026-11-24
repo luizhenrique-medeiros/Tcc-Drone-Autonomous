@@ -26,13 +26,10 @@
 - **RF-ADM-01:** autenticar somente usuário pré-provisionado com papel `ADMIN`.
 - **RF-ADM-02:** listar pedidos, filtrar pendentes e abrir mapa/coordenadas/instruções/validações.
 - **RF-ADM-03:** aprovar pedido ou rejeitar com motivo e auditoria.
-- **RF-ADM-04:** preparar missão apenas de pedido aprovado e exportar arquivo compatível com Mission Planner.
-- **RF-ADM-05:** registrar início e conclusão da revisão da mesma versão da missão.
-- **RF-ADM-06:** visualizar checks automáticos recentes do veículo e da missão como `PASS`, `WARNING` ou `BLOCKING` antes da autorização.
-- **RF-ADM-07:** autorizar voo em endpoint separado, com três confirmações físicas, resumo final e área controlada, sem frase digitada.
-- **RF-ADM-08:** acompanhar telemetria/eventos e solicitar abortamento ou RTL com confirmação.
-- **RF-ADM-09:** solicitar `START`, `PAUSE` ou `CONTINUE` como comandos auditados e idempotentes, sem substituir os gates locais; `START` nunca arma o veículo.
-- **RF-ADM-10:** solicitar ARM normal somente pelo endpoint dedicado de uma missão `VERIFIED` e reivindicada, com motivo e três confirmações presenciais verdadeiras, e distinguir request aceito de armamento confirmado.
+- **RF-ADM-04:** preparar missão apenas de pedido aprovado e exportar o rascunho `.plan` do QGroundControl mesmo sem telemetria.
+- **RF-ADM-05:** registrar e recuperar o `.plan` revisado da mesma versão da missão.
+- **RF-ADM-06:** exibir dados de telemetria e eventos com origem identificada.
+- **RF-ADM-07 a RF-ADM-10:** operações de voo real são feitas no QGroundControl. Os endpoints antigos permanecem para compatibilidade com testes e simulação.
 
 ### Missão, gateway e hardware
 
@@ -44,7 +41,7 @@
   observação, sem comandos MAVLink implícitos.
 - **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
 - **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita; startup, health, upload, autorização, reconexão e progressão automática nunca armam.
-- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL` ou `HARDWARE_REAL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
+- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
 - **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento, preservando valores recebidos e indisponibilidade sem fabricar carga completa.
 - **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
 - **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
@@ -78,8 +75,8 @@
 - **CA-04:** ponto dentro da faixa mundial, confirmado na segunda etapa, cria e submete pedido mesmo distante; somente coordenada fora de faixa retorna erro de domínio claro.
 - **CA-05:** pedido submetido fica pendente; cliente não consegue aprovar.
 - **CA-06:** rejeição sem motivo falha; aprovação cria apenas permissão para preparar missão.
-- **CA-07:** missão exportada abre como QGC WPL 110 e seus waypoints/hash são auditáveis.
-- **CA-08:** autorizar antes da revisão, com saúde vencida ou checklist incompleto falha.
+- **CA-07:** o painel exporta a missão em `.plan` e preserva o conteúdo e o hash da revisão registrada.
+- **CA-08:** a criação e a exportação do plano funcionam sem telemetria. Operações de voo real são realizadas no QGroundControl.
 - **CA-09:** autorização e aprovação têm endpoints, registros e timestamps diferentes.
 - **CA-10:** duas tentativas de claim/upload não executam duas vezes.
 - **CA-11:** telemetria mais antiga não sobrescreve snapshot recente.
@@ -97,7 +94,7 @@
 - **CA-23:** mover o mapa após escolher uma localização salva altera somente o snapshot do novo pedido; atualizar o atalho exige ação explícita na tela de edição, e as duas confirmações atuais são solicitadas novamente depois da revisão.
 - **CA-24:** uma localização com nome e coordenadas válidas pode ser salva sem endereço textual, desde que `map_provider` seja o realmente usado, `map_type` seja `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` sejam verdadeiros; falha no salvamento opcional posterior não muda o resultado do pedido.
 - **CA-25:** `UPLOADED` só evolui para `VERIFIED` após releitura equivalente; `START` exige os gates locais e heartbeat fresco com veículo já armado, `PAUSE` produz `PAUSED` após ACK e `CONTINUE` só sai de `PAUSED`. Nenhuma dessas ações arma o veículo.
-- **CA-26:** `POST /api/v1/admin/missions/{id}/arm` rejeita payload extra/falso, missão não `VERIFIED` ou não reivindicada, origem fora de `SITL|HARDWARE_REAL`, modo diferente de `STABILIZE`, saúde/preflight incompleto e qualquer gate fechado. `202` não significa armado; sucesso exige ACK correlacionado e heartbeat novo com `armed=true`, sem iniciar a missão nem permitir force/rearm automático.
+- **CA-26:** o endpoint legado `POST /api/v1/admin/missions/{id}/arm` atende apenas a ensaios `SITL`. Ele conserva as verificações da simulação e registra o resultado apenas após ACK correlacionado e heartbeat novo com `armed=true`.
 
 ## Matriz de rastreabilidade
 

@@ -1,7 +1,6 @@
 import {
   Activity,
   BatteryCharging,
-  CheckCircle2,
   Clock3,
   Gauge,
   MapPinned,
@@ -9,7 +8,6 @@ import {
   RefreshCw,
   Satellite,
   ShieldCheck,
-  TriangleAlert,
 } from 'lucide-react';
 import { useCallback, useEffect } from 'react';
 import { OperationalAlerts } from '../../components/OperationalAlerts';
@@ -23,6 +21,7 @@ import {
   StatusBadge,
 } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
+import { px4PrearmDetail, px4RtlDetail } from '../missions/vehicle-diagnostics';
 import {
   type StreamStatus,
   useOperationsStream,
@@ -40,10 +39,6 @@ import {
   formatOptionalNumber,
   formatPercent,
 } from '../../utils/format';
-import {
-  getVehicleReadiness,
-  isGpsFixValid,
-} from '../missions/vehicle-readiness';
 
 interface VehicleReading {
   vehicle: Vehicle;
@@ -53,9 +48,6 @@ interface VehicleReading {
 
 const connectionLabel = (value: boolean | null) =>
   value === true ? 'ONLINE' : value === false ? 'OFFLINE' : '--';
-
-const featureFlagLabel = (value: boolean | null) =>
-  value === true ? 'HABILITADO' : value === false ? 'DESABILITADO' : '--';
 
 const websocketLabel = (status: StreamStatus) =>
   status === 'connected'
@@ -158,11 +150,6 @@ export function VehiclesPage() {
       {data ? (
         <div className="vehicles-stack">
           {data.map(({ vehicle, health, healthError }) => {
-            const readiness = getVehicleReadiness(health);
-            const minimumSatellites =
-              health?.authorization_limits?.min_gps_satellites ?? null;
-            const minimumBattery =
-              health?.authorization_limits?.min_battery_percent ?? null;
             return (
               <Card
                 key={vehicle.id}
@@ -198,32 +185,10 @@ export function VehiclesPage() {
                     state="error"
                     compact
                     title="Leitura indisponível"
-                    description={`${healthError || 'A API não retornou uma leitura.'} A autorização de voo está bloqueada para este veículo.`}
+                    description={`${healthError || 'A API não retornou uma leitura.'}`}
                   />
                 ) : (
                   <>
-                    <div
-                      className={`vehicle-readiness ${readiness.ready ? 'vehicle-readiness--ok' : 'vehicle-readiness--blocked'}`}
-                    >
-                      {readiness.ready ? (
-                        <CheckCircle2 size={25} />
-                      ) : (
-                        <TriangleAlert size={25} />
-                      )}
-                      <div>
-                        <strong>
-                          {readiness.ready
-                            ? 'Leitura atual atende aos mínimos técnicos'
-                            : 'Leitura atual possui bloqueios'}
-                        </strong>
-                        <span>
-                          {readiness.ready
-                            ? 'O checklist humano e a validação do backend ainda são obrigatórios.'
-                            : readiness.blockers.join(' ')}
-                        </span>
-                      </div>
-                    </div>
-
                     <div className="diagnostics-grid">
                       <Diagnostic
                         icon={<Radio />}
@@ -249,7 +214,7 @@ export function VehiclesPage() {
                       />
                       <Diagnostic
                         icon={<ShieldCheck />}
-                        label="ArduPilot"
+                        label="Autopiloto"
                         value={formatNullableText(vehicle.autopilot_system)}
                         detail={
                           vehicle.autopilot_version
@@ -304,34 +269,6 @@ export function VehiclesPage() {
                         }
                       />
                       <Diagnostic
-                        icon={<RefreshCw />}
-                        label="Upload de missão"
-                        value={featureFlagLabel(health.mission_upload_enabled)}
-                        detail="Flag publicada pelo gateway"
-                        ok={health.mission_upload_enabled === true}
-                      />
-                      <Diagnostic
-                        icon={<ShieldCheck />}
-                        label="Comandos de voo"
-                        value={featureFlagLabel(health.flight_commands_enabled)}
-                        detail="Flag publicada pelo gateway"
-                        ok={health.flight_commands_enabled === true}
-                      />
-                      <Diagnostic
-                        icon={<ShieldCheck />}
-                        label="Armamento remoto"
-                        value={featureFlagLabel(health.vehicle_arm_enabled)}
-                        detail="Gate dedicado; esta página permanece somente leitura"
-                        ok={health.vehicle_arm_enabled === true}
-                      />
-                      <Diagnostic
-                        icon={<ShieldCheck />}
-                        label="Início de missão"
-                        value={featureFlagLabel(health.mission_start_enabled)}
-                        detail="Flag independente publicada pelo gateway"
-                        ok={health.mission_start_enabled === true}
-                      />
-                      <Diagnostic
                         icon={<Activity />}
                         label="Backend"
                         value="ONLINE"
@@ -362,17 +299,9 @@ export function VehiclesPage() {
                         icon={<Satellite />}
                         label="GPS"
                         value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} satélites`}
-                        detail={
-                          minimumSatellites === null
-                            ? 'Mínimo do backend indisponível'
-                            : `Mínimo do backend: fix 3D e ${minimumSatellites} satélites`
-                        }
-                        ok={
-                          health.satellites !== null &&
-                          minimumSatellites !== null &&
-                          health.satellites >= minimumSatellites &&
-                          isGpsFixValid(health.gps_fix)
-                        }
+                        detail="Leitura do veículo"
+                        informational
+                        ok
                       />
                       <Diagnostic
                         icon={<Activity />}
@@ -381,26 +310,20 @@ export function VehiclesPage() {
                           health.ekf_ok === true
                             ? 'Estimativa válida'
                             : health.ekf_ok === false
-                              ? 'Estimativa inválida'
+                              ? 'Ativo; critérios não confirmados'
                               : '--'
                         }
-                        detail="Não contornar falhas de EKF"
+                        detail="Estado informado pelo veículo"
                         ok={health.ekf_ok === true}
+                        informational
                       />
                       <Diagnostic
                         icon={<BatteryCharging />}
                         label="Bateria"
                         value={`${formatPercent(health.battery_percent)}${health.battery_voltage !== null ? ` · ${formatOptionalNumber(health.battery_voltage, { maximumFractionDigits: 2 })} V` : ''}`}
-                        detail={
-                          minimumBattery === null
-                            ? 'Mínimo do backend indisponível'
-                            : `Mínimo do backend: ${minimumBattery}%`
-                        }
-                        ok={
-                          health.battery_percent !== null &&
-                          minimumBattery !== null &&
-                          health.battery_percent >= minimumBattery
-                        }
+                        detail="Leitura do veículo"
+                        ok
+                        informational
                       />
                       <Diagnostic
                         icon={<MapPinned />}
@@ -412,21 +335,8 @@ export function VehiclesPage() {
                               ? 'Origem desconhecida'
                               : '--'
                         }
-                        detail="Necessária para retorno seguro"
+                        detail="Home recebido pela telemetria"
                         ok={health.origin_known === true}
-                      />
-                      <Diagnostic
-                        icon={<ShieldCheck />}
-                        label="Geofence"
-                        value={
-                          health.geofence_enabled === true
-                            ? 'Habilitada'
-                            : health.geofence_enabled === false
-                              ? 'Desabilitada'
-                              : '--'
-                        }
-                        detail="Nunca desabilitar para contornar operação"
-                        ok={health.geofence_enabled === true}
                       />
                       <Diagnostic
                         icon={<RefreshCw />}
@@ -438,7 +348,12 @@ export function VehiclesPage() {
                               ? 'Não configurado'
                               : '--'
                         }
-                        detail="Área de retorno ainda exige conferência humana"
+                          detail={
+                            px4RtlDetail(health) ??
+                            (vehicle.autopilot_system.trim().toUpperCase() === 'PX4'
+                              ? 'Para atualizar a leitura PX4, use Parameters → Tools → Refresh no QGroundControl.'
+                              : 'Área de retorno ainda exige conferência humana')
+                          }
                         ok={health.rtl_configured === true}
                       />
                       <Diagnostic
@@ -460,6 +375,11 @@ export function VehiclesPage() {
                       </Feedback>
                     ) : null}
 
+                    {px4PrearmDetail(health) ? (
+                      <Feedback tone="info" className="page-feedback">
+                        {px4PrearmDetail(health)}
+                      </Feedback>
+                    ) : null}
                     {health.preflight_messages.length > 0 ? (
                       <div className="preflight-messages">
                         <h3>Mensagens de pré-arm</h3>
@@ -469,16 +389,7 @@ export function VehiclesPage() {
                           </Feedback>
                         ))}
                       </div>
-                    ) : health.preflight_ok === true ? (
-                      <p className="preflight-clear">
-                        <CheckCircle2 size={18} /> Nenhuma mensagem de pré-arm
-                        informada nesta amostra.
-                      </p>
-                    ) : (
-                      <Feedback tone="warning" className="page-feedback">
-                        Mensagens de pré-arm indisponíveis nesta amostra.
-                      </Feedback>
-                    )}
+                    ) : null}
                   </>
                 )}
               </Card>
@@ -496,16 +407,18 @@ function Diagnostic({
   value,
   detail,
   ok,
+  informational = false,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   detail: string;
   ok: boolean;
+  informational?: boolean;
 }) {
   return (
     <article
-      className={`diagnostic ${ok ? 'diagnostic--ok' : 'diagnostic--blocked'}`}
+      className={`diagnostic ${ok ? 'diagnostic--ok' : informational ? 'diagnostic--info' : 'diagnostic--blocked'}`}
     >
       <span className="diagnostic__icon">{icon}</span>
       <div>
@@ -513,7 +426,7 @@ function Diagnostic({
         <strong>{value}</strong>
         <p>{detail}</p>
       </div>
-      <span className="diagnostic__result">{ok ? 'OK' : 'BLOQUEIO'}</span>
+      <span className="diagnostic__result">{ok ? 'OK' : informational ? 'INFO' : 'BLOQUEIO'}</span>
     </article>
   );
 }

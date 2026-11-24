@@ -177,7 +177,12 @@ export function OperationsPage() {
   const latest = telemetry.at(-1);
   const missionEvents = selectedMission
     ? data.events.filter((event) => event.mission_id === selectedMission.id)
-    : data.events;
+    : [];
+  const vehicleObservations = data.vehicle
+    ? data.events.filter(
+        (event) => event.vehicle_id === data.vehicle?.id && !event.mission_id && event.type.startsWith('MAVLINK_'),
+      )
+    : [];
   const alertEvents = data.events.filter(
     (event) =>
       (!selectedMission || event.mission_id === selectedMission.id) ||
@@ -194,7 +199,6 @@ export function OperationsPage() {
     streamStatus,
     vehicle: data.vehicle,
     health: data.health,
-    mission: selectedMission,
     telemetry,
     events: alertEvents,
     expectVehicle: true,
@@ -266,6 +270,48 @@ export function OperationsPage() {
         </Card>
       ) : null}
 
+      {data.vehicle ? (
+        <Card title="Veículo observado" action={<Link to="/vehicles">Diagnóstico do veículo</Link>}>
+          {data.health ? (
+            <>
+              <div className="health-source-note">
+                <strong>{data.vehicle.name}</strong>
+                <OperationalSourceBadge {...data.health} />
+                <small>recebido {formatDateTime(data.health.received_at)}</small>
+              </div>
+              <dl className="data-list telemetry-current">
+                <div><dt>Modo informado</dt><dd>{formatNullableText(data.health.flight_mode)}</dd></div>
+                <div><dt>Armamento informado</dt><dd>{data.health.armed === true ? 'Armado' : data.health.armed === false ? 'Desarmado' : '--'}</dd></div>
+                <div><dt>Posição recebida</dt><dd className="mono">{data.health.current_latitude != null && data.health.current_longitude != null
+                  ? `${formatCoordinate(data.health.current_latitude)}, ${formatCoordinate(data.health.current_longitude)}`
+                  : '--'}</dd></div>
+                <div><dt>Altitude relativa recebida</dt><dd>{data.health.current_altitude_m != null
+                  ? `${formatOptionalNumber(data.health.current_altitude_m, { maximumFractionDigits: 1 })} m`
+                  : '--'}</dd></div>
+              </dl>
+            </>
+          ) : data.healthError ? (
+            <Feedback tone="error">Falha ao carregar a leitura do veículo: {data.healthError}</Feedback>
+          ) : null}
+          <h3>Respostas e progresso recebidos do veículo</h3>
+          {vehicleObservations.length > 0 ? (
+            <>
+              <p>Mensagens associadas ao veículo. O vínculo com o pedido exige identificar a missão em execução.</p>
+              <div className="timeline">
+                {vehicleObservations.slice(0, 12).map((event) => (
+                  <article className={`timeline__item timeline__item--${event.severity.toLowerCase()}`} key={event.id}>
+                    <span className="timeline__marker"><Activity size={15} /></span>
+                    <div><strong>{event.message}</strong><small><Clock3 size={13} /> {formatDateTime(event.created_at)}</small></div>
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : (
+            <StateView state="empty" compact title="Nenhuma resposta ou evento de progresso recebido" />
+          )}
+        </Card>
+      ) : null}
+
       {!selectedMission ? (
         data.missionErrors.length > 0 ? (
           <StateView
@@ -294,16 +340,6 @@ export function OperationsPage() {
               A amostra mais recente foi marcada como vencida pelo backend e não representa o estado atual.
             </Feedback>
           ) : null}
-          {data.health ? (
-            <div className="health-source-note">
-              <span>Snapshot de saúde separado:</span>
-              <OperationalSourceBadge {...data.health} />
-              <small>recebido {formatDateTime(data.health.received_at)}</small>
-            </div>
-          ) : data.healthError ? (
-            <Feedback tone="error" className="page-feedback">Falha no snapshot de saúde: {data.healthError}</Feedback>
-          ) : null}
-
           <section className="live-metrics" aria-label="Telemetria atual">
             <LiveMetric
               icon={<Navigation />}

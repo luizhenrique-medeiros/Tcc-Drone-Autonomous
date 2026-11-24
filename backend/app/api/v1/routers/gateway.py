@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 from sqlalchemy import and_, or_, select
 
 from app.api.dependencies import AppSettings, DatabaseSession, GatewayAuth
-from app.core.enums import GatewayCommandStatus, MissionStatus
+from app.core.enums import GatewayCommandStatus, MissionStatus, OperationalSource
 from app.core.exceptions import AuthorizationError, DomainError, InvalidStateError, NotFoundError
 from app.core.websocket import manager
 from app.modules.missions.models import GatewayCommand, Mission
@@ -26,12 +27,19 @@ from app.modules.missions.service import (
     active_authorization,
     apply_gateway_status,
     claim_mission,
+    correlate_physical_progress,
+    gateway_mission_artifact,
     release_retired_version,
 )
-from app.modules.system_events.schemas import GatewayEventCreate, SystemEventRead
+from app.modules.system_events.schemas import (
+    GatewayEventCreate,
+    GatewayVehicleObservation,
+    SystemEventRead,
+)
 from app.modules.system_events.service import record_event
 from app.modules.telemetry.schemas import TelemetryCreate, TelemetryRead
 from app.modules.telemetry.service import record_telemetry, telemetry_to_read
+from app.modules.vehicles.models import Vehicle
 from app.modules.vehicles.schemas import (
     VehicleHealthInput,
     VehicleHeartbeatResult,
@@ -86,6 +94,51 @@ async def heartbeat(
     return response
 
 
+@router.post(
+    "/vehicles/{vehicle_id}/observations",
+    status_code=204,
+    summary="Registrar observações e correlacionar a missão física por identidade e revisão",
+)
+async def vehicle_observations(
+    vehicle_id: UUID,
+    payload: Annotated[list[GatewayVehicleObservation], Body(min_length=1, max_length=20)],
+    session: DatabaseSession,
+    authenticated_gateway_id: GatewayAuth,
+) -> None:
+    vehicle = session.scalar(select(Vehicle).where(Vehicle.id == vehicle_id).with_for_update())
+    if not vehicle:
+        raise NotFoundError("Veículo não encontrado")
+    _require_gateway_identity(authenticated_gateway_id, vehicle.gateway_id)
+    created_events = []
+    for observation in payload:
+        event, created = record_event(
+            session,
+            event_id=observation.event_id,
+            actor_type="GATEWAY",
+            vehicle_id=vehicle.id,
+            event_type=observation.event_type,
+            severity=observation.severity,
+            message=observation.message,
+            metadata=observation.metadata,
+        )
+        if created:
+            session.flush()
+            created_events.append(event)
+            progress = correlate_physical_progress(session, vehicle, event)
+            if progress is not None:
+                created_events.append(progress)
+    session.commit()
+    for event in created_events:
+        await manager.broadcast_admin(
+            {
+                "type": "system.event",
+                "data": SystemEventRead.model_validate(event).model_dump(
+                    mode="json", by_alias=True
+                ),
+            }
+        )
+
+
 @router.get(
     "/missions/authorized",
     response_model=list[MissionRead],
@@ -93,22 +146,24 @@ async def heartbeat(
 )
 def authorized_missions(
     session: DatabaseSession,
+    settings: AppSettings,
     _authenticated_gateway_id: GatewayAuth,
     limit: int = Query(default=10, ge=1, le=50),
-) -> list[Mission]:
+) -> list[MissionRead]:
     missions = session.scalars(
         select(Mission)
         .where(Mission.status == MissionStatus.AUTHORIZED)
         .order_by(Mission.created_at)
         .limit(limit)
     ).all()
-    available: list[Mission] = []
+    available: list[MissionRead] = []
     for mission in missions:
         try:
-            active_authorization(session, mission)
+            authorization = active_authorization(session, mission)
+            offered, _ = gateway_mission_artifact(session, mission, authorization, settings)
         except DomainError:
             continue
-        available.append(mission)
+        available.append(offered)
     return available
 
 
@@ -129,10 +184,11 @@ async def claim(
     if not mission:
         raise NotFoundError("Missão não encontrada")
     authorization = claim_mission(session, mission, payload.gateway_id, settings)
+    claimed, artifact = gateway_mission_artifact(session, mission, authorization, settings)
     await _broadcast_mission(mission)
     return GatewayClaimResult(
-        mission=MissionRead.model_validate(mission),
-        mission_file=mission.mission_file,
+        mission=claimed,
+        mission_file=artifact,
         authorization_id=authorization.id,
         authorization_expires_at=authorization.expires_at,
     )
@@ -295,8 +351,12 @@ def pending_commands(
         session.scalars(
             select(GatewayCommand)
             .join(Mission, Mission.id == GatewayCommand.mission_id)
+            .join(Vehicle, Vehicle.id == Mission.vehicle_id)
             .where(
                 Mission.claimed_by_gateway == gateway_id,
+                Vehicle.operational_source.in_(
+                    (OperationalSource.SITL, OperationalSource.SIMULATION)
+                ),
                 or_(
                     GatewayCommand.status == GatewayCommandStatus.PENDING,
                     and_(

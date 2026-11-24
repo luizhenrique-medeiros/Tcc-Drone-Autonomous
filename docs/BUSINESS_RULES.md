@@ -43,6 +43,7 @@
 - Escolher uma localização salva apenas centraliza o mesmo mapa do checkout. O cliente revisa e confirma novamente o ponto e a área segura; mover o ponto ou alterar as instruções para aquele pedido usa um novo `DeliveryPoint` manual e modifica somente o snapshot, nunca o atalho.
 - Editar ou excluir `SavedLocation` depois da criação não altera nem invalida o `DeliveryPoint` histórico.
 - Salvar um novo ponto manual como atalho é opcional e ocorre em chamada separada depois de o pedido ser criado. O aplicativo não aguarda essa chamada para concluir o checkout; recusa do cliente, latência, limite, ausência de endereço, offline ou falha não revertem nem bloqueiam o pedido e geram, no máximo, um aviso posterior sobre o atalho.
+- Se a API devolver `401` durante o envio, o checkout pede nova autenticação da mesma conta e preserva o carrinho, o ponto de entrega e a forma de pagamento. O cliente confirma o envio novamente. O reenvio do mesmo checkout reaproveita as chaves de idempotência para evitar pedidos duplicados.
 - Submissão move `DRAFT` para `PENDING_ADMIN_APPROVAL`.
 - O cliente lista e detalha somente pedidos cujo `customer_id` vem da sessão autenticada; a API nunca aceita um `user_id` escolhido pelo cliente.
 - `DRAFT` é interno ao checkout e não aparece em `Meus pedidos`; após a submissão, `COMPLETED`, `CANCELLED`, `REJECTED` e `FAILED` formam o histórico e os demais estados formam o andamento. A interface mantém ativos em destaque e ordena cada grupo do mais recente para o mais antigo.
@@ -54,45 +55,24 @@
 
 ## Missão e revisão
 
-- Apenas pedido `APPROVED` recebe missão; há no máximo uma ativa por pedido.
-- Preparar calcula origem/destino/distância/altitude, cria waypoints e versão/hash do arquivo.
-- `GENERATED` não significa revisada. Exportar e abrir no Mission Planner são eventos registrados.
-- O revisor marca `UNDER_REVIEW` e depois `READY_FOR_AUTHORIZATION` para a mesma versão.
-- Alterar waypoint, altitude ou versão invalida autorizações existentes.
-- Reposicionamento pré-voo possui ação administrativa própria: altera somente
-  origem/decolagem/retorno/pouso, preserva destino/altitude e arquiva o artefato
-  anterior em auditoria. Incrementa versão/hash e volta a GENERATED com nova
-  revisão obrigatória. Não reabre missão terminal nem aceita tentativa de START.
-- A revisão exige veículo desarmado em STABILIZE, saúde atual e quatro gates
-  desligados. O gateway reconhece a substituição auditada em WAITING_OPERATOR_ARM
-  antes de liberar seu journal; falha/resultado incerto preserva o registro.
-  Não envia cancelamento, RTL, upload, ARM ou START como efeito da revisão.
+- Apenas pedido aprovado recebe missão. Há no máximo uma missão ativa por pedido.
+- O painel prepara e baixa o rascunho `.plan`, inclusive sem telemetria.
+- O operador revisa o plano no QGroundControl. O painel registra o arquivo da revisão atual e permite recuperá-lo conferindo seu hash.
+- A aprovação do pedido, a preparação e a exportação dependem dos dados do pedido e da integridade do arquivo.
 
-## Autorização de voo
+## Operação do veículo
 
-- É endpoint, botão, tabela e evento distintos da aprovação do pedido.
-- Requer administrador autenticado, missão revisada, área controlada, três confirmações humanas e snapshot recente/saudável.
-- Conexão, heartbeat, GPS, satélites, EKF, bateria, home, geofence, RTL, armamento, preflight e preparo da missão são checks automáticos. `BLOCKING` impede autorizar; `WARNING` informa sem substituir a validação do servidor.
-- Bateria ausente ou vencida permanece `null` e bloqueia; valor abaixo do mínimo configurado também bloqueia. O padrão de `MIN_BATTERY_PERCENT` é 40. Backend e gateway nunca substituem a leitura por 100%, e restauração/reconexão não concede autorização nem habilita comandos.
-- As confirmações humanas cobrem área/condições/pessoas/retorno, inspeção física do drone/carga e prontidão do operador. Não existe frase digitada.
-- A autorização referencia missão e versão, expira em poucos minutos, é de uso único e não é reutilizada após falha/conclusão.
-- Repetir a mesma tentativa com a mesma chave de idempotência devolve a autorização original; uma nova tentativa após a transição é recusada.
-- Expiração, mudança de versão/hash ou falha técnica atual revoga e audita a autorização; variação de telemetria que continua dentro dos limites seguros não revoga por simples diferença de amostra.
-- O gateway consome a autorização ao reivindicar/enviar; repetição recebe o resultado anterior ou conflito, nunca nova execução.
-- Exceção explícita para espera em bancada: missão `VERIFIED`, desarmada, com
-  autorização consumida vencida pode receber nova autorização pelo mesmo endpoint
-  e checklist. Veículo/gateway, versão/hash e claim são preservados; não pode
-  haver comando pendente ou reconhecido com resultado incerto. O novo registro
-  é consumido pelo claim existente e auditado, sem alterar o anterior ou repetir
-  upload. ARM/START continuam separados e limitados ao novo prazo.
+- O QGroundControl é a interface do operador para upload, ARM, START, cancelamento e RTL do veículo real.
+- O PX4 aplica suas proteções nativas. O site exibe leituras e eventos da Pixhawk e não avalia aptidão para voo.
+- Os endpoints legados de autorização e de comandos permanecem para compatibilidade com testes e simulação.
 
 ## Execução, entrega e retorno
 
-- Heartbeat, GPS, EKF, bateria, origem, distância, geofence e RTL são verificados antes do upload.
+- Heartbeat, GPS, bateria, preflight do veículo, origem, distância e RTL são verificados antes do upload; o EKF é exibido como informação.
 - Startup, health, upload, autorização, reconexão e progressão automática nunca armam. O gateway não corrige pre-arm mudando parâmetros.
 - Upload, ACK, releitura/verificação e início são etapas separadas. `UPLOADED` não equivale a `VERIFIED`; apenas a comparação integral do conteúdo relido permite `VERIFIED`.
 - `VERIFIED` permite uma solicitação humana dedicada de ARM normal somente depois de a missão ter sido reivindicada pelo gateway correspondente ao veículo. O request exige `reason`, `area_clear_confirmed=true`, `operator_present_confirmed=true` e `safety_switch_ready_confirmed=true`, sem campos extras.
-- ARM falha fechado se a origem não for `SITL` ou `HARDWARE_REAL`, se o snapshot estiver vencido/incompleto, se qualquer check de saúde/preflight falhar, se o modo não for `STABILIZE`, se o veículo já estiver armado ou se `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` ou `ALLOW_MISSION_START` não estiver verdadeiro. Os defaults permanecem falsos e aparecem no health como `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled`.
+- O ARM legado é restrito a `SITL` e mantém os critérios técnicos e as chaves de configuração do ensaio. O site recebe telemetria do PX4 real em modo de observação. O armamento no hardware cabe ao operador no QGroundControl.
 - O gateway envia somente `MAV_CMD_COMPONENT_ARM_DISARM` normal, sem force/bypass, mudança de parâmetro ou desativação de safety/pre-arm. `202`/recebimento não prova armamento; a conclusão exige ACK correlacionado e heartbeat novo com `armed=true`.
 - ARM não altera a missão para execução e nunca aciona `START`. O início exige comando administrativo posterior, heartbeat armado ainda fresco, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e preflight válido. Após falha, timeout, restart ou desarmamento, não existe rearmamento automático.
 - `PAUSE` só é aceita durante execução/retorno permitido; `CONTINUE` só é aceita em `PAUSED`. Ambas exigem `ALLOW_FLIGHT_COMMANDS=true`, comando fresco, ACK MAVLink e auditoria.

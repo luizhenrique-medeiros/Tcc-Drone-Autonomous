@@ -30,6 +30,16 @@ class VehicleRead(BaseModel):
     last_communication_at: datetime | None
 
 
+class Px4HealthDiagnostics(BaseModel):
+    current_mode_prearm_ok: bool | None = None
+    rtl_type: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    rtl_return_alt_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rtl_descend_alt_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rtl_land_delay_s: float | None = Field(default=None, ge=-1, allow_inf_nan=False)
+    rtl_cone_angle_deg: int | None = Field(default=None, ge=0, le=90)
+    rtl_min_distance_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
 class VehicleHealthInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -50,6 +60,7 @@ class VehicleHealthInput(BaseModel):
     armed: bool | None = None
     preflight_ok: bool | None = None
     rtl_configured: bool | None = None
+    px4_diagnostics: Px4HealthDiagnostics | None = None
     geofence_enabled: bool | None = None
     origin_latitude: float | None = Field(default=None, ge=-90, le=90)
     origin_longitude: float | None = Field(default=None, ge=-180, le=180)
@@ -94,6 +105,7 @@ class VehicleHealthInput(BaseModel):
         le=100_000,
         validation_alias=AliasChoices("current_altitude_m", "relative_altitude_m"),
     )
+    current_amsl_m: float | None = Field(default=None, ge=-1000, le=100_000)
     mission_upload_enabled: bool | None = None
     flight_commands_enabled: bool | None = None
     mission_start_enabled: bool | None = None
@@ -145,6 +157,7 @@ class VehicleHealthRead(BaseModel):
     armed: bool | None
     preflight_ok: bool | None
     rtl_configured: bool | None
+    px4_diagnostics: Px4HealthDiagnostics | None = None
     geofence_enabled: bool | None
     origin_latitude: Decimal | None
     origin_longitude: Decimal | None
@@ -161,6 +174,7 @@ class VehicleHealthRead(BaseModel):
     current_latitude: Decimal | None
     current_longitude: Decimal | None
     current_altitude_m: float | None
+    current_amsl_m: float | None
     mission_upload_enabled: bool | None
     flight_commands_enabled: bool | None
     mission_start_enabled: bool | None

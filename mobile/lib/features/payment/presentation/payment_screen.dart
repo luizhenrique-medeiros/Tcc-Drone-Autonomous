@@ -14,6 +14,7 @@ import '../../../design_system/tokens/app_colors.dart';
 import '../../../design_system/tokens/app_icon_sizes.dart';
 import '../../../design_system/tokens/app_spacing.dart';
 import '../../../design_system/tokens/app_typography.dart';
+import '../../auth/presentation/login_screen.dart';
 import '../../orders/presentation/order_details_screen.dart';
 
 class PaymentScreen extends StatefulWidget {
@@ -26,6 +27,7 @@ class PaymentScreen extends StatefulWidget {
 class _PaymentScreenState extends State<PaymentScreen> {
   final TextEditingController _savedLocationName = TextEditingController();
   bool _saveLocation = false;
+  bool? _showingLogin;
 
   @override
   void dispose() {
@@ -35,10 +37,19 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   Future<void> _submit() async {
     final AppController controller = AppScope.of(context);
+    if (_showingLogin == true || controller.isSubmittingOrder) return;
+    if (controller.checkoutSessionExpired) {
+      await _showCheckoutLogin(controller);
+      return;
+    }
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
     final String? error = await controller.submitOrder();
     if (!mounted) return;
     if (error != null) {
+      if (controller.checkoutSessionExpired) {
+        await _showCheckoutLogin(controller);
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error), backgroundColor: AppColors.danger),
       );
@@ -77,6 +88,29 @@ class _PaymentScreenState extends State<PaymentScreen> {
       ),
       (Route<Object?> route) => route.isFirst,
     );
+  }
+
+  Future<void> _showCheckoutLogin(AppController controller) async {
+    final String? email = controller.session?.email;
+    if (email == null) return;
+    _showingLogin = true;
+    try {
+      final bool? recovered = await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => LoginScreen.forCheckout(email: email),
+          fullscreenDialog: true,
+        ),
+      );
+      if (recovered == true && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sessão renovada. Confirme seu pedido.'),
+          ),
+        );
+      }
+    } finally {
+      _showingLogin = false;
+    }
   }
 
   @override
@@ -195,7 +229,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
               const SizedBox(height: AppSpacing.lg),
               AppButton(
                 key: const Key('submit-simulated-order'),
-                label: 'Confirmar e enviar pedido',
+                label: controller.checkoutSessionExpired
+                    ? 'Entrar para continuar'
+                    : 'Confirmar e enviar pedido',
                 variant: AppButtonVariant.accent,
                 icon: Icons.send_outlined,
                 loading: controller.isSubmittingOrder,

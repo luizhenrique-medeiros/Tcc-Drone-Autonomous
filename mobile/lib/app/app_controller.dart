@@ -75,6 +75,8 @@ class AppController extends ChangeNotifier {
   bool isSavingLocationAfterOrder = false;
   Future<void>? pendingSavedLocationSave;
   String? checkoutError;
+  bool? _checkoutSessionExpired;
+  bool get checkoutSessionExpired => _checkoutSessionExpired == true;
   bool mapViewReady = false;
   Future<void>? _initialization;
   bool _disposed = false;
@@ -161,6 +163,7 @@ class AppController extends ChangeNotifier {
       );
       _sessionGeneration++;
       session = authenticated;
+      _checkoutSessionExpired = false;
       initializationError = null;
       await Future.wait<void>(<Future<void>>[
         loadProducts(),
@@ -189,6 +192,7 @@ class AppController extends ChangeNotifier {
       );
       _sessionGeneration++;
       session = authenticated;
+      _checkoutSessionExpired = false;
       initializationError = null;
       await Future.wait<void>(<Future<void>>[
         loadProducts(),
@@ -228,6 +232,7 @@ class AppController extends ChangeNotifier {
       paymentMethod = SimulatedPaymentMethod.pix;
       order = null;
       checkoutError = null;
+      _checkoutSessionExpired = false;
       await orders.reset();
       await savedLocations.reset(clearSessionData: isDemoMode);
       notifyListeners();
@@ -329,7 +334,32 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> renewCheckoutSession({required String password}) async {
+    final UserSession? existing = session;
+    if (!checkoutSessionExpired || existing == null) {
+      return 'A sessão do checkout não está disponível.';
+    }
+    try {
+      final UserSession refreshed = await _authRepository.login(
+        email: existing.email,
+        password: password,
+      );
+      if (refreshed.email.toLowerCase() != existing.email.toLowerCase()) {
+        await _authRepository.clearSession();
+        return 'Entre com a mesma conta para continuar com este pedido.';
+      }
+      session = refreshed;
+      _checkoutSessionExpired = false;
+      checkoutError = null;
+      if (!_disposed) notifyListeners();
+      return null;
+    } on Object catch (error) {
+      return error.toString();
+    }
+  }
+
   Future<String?> submitOrder() async {
+    if (checkoutSessionExpired) return 'Sua sessão expirou. Entre novamente.';
     final PlaceSuggestion? place = approximatePlace;
     final GeoCoordinate? coordinate = exactCoordinate;
     if (cartLines.isEmpty || place == null || coordinate == null) {
@@ -381,6 +411,11 @@ class AppController extends ChangeNotifier {
       _startLocationSaveAfterOrder(coordinate);
       return null;
     } on Object catch (error) {
+      if (error is ApiException && error.statusCode == 401) {
+        _checkoutSessionExpired = true;
+        checkoutError = 'Sua sessão expirou. Entre novamente.';
+        return checkoutError;
+      }
       checkoutError = error.toString();
       return checkoutError;
     } finally {

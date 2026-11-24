@@ -119,6 +119,8 @@ export interface RawMission {
   updated_at: string;
   waypoints: RawWaypoint[];
   authorization?: RawMissionAuthorization | null;
+  qgroundcontrol_review_status?: Mission['qgroundcontrol_review_status'] | null;
+  qgroundcontrol_sitl_review_event_id?: string | null;
 }
 
 interface RawAuthorizationResult {
@@ -175,12 +177,14 @@ export interface BackendVehicleHealth {
   armed: boolean | null;
   preflight_ok: boolean | null;
   rtl_configured: boolean | null;
+  px4_diagnostics?: VehicleHealth['px4_diagnostics'];
   geofence_enabled: boolean | null;
   origin_latitude?: string | number | null;
   origin_longitude?: string | number | null;
   current_latitude?: string | number | null;
   current_longitude?: string | number | null;
   current_altitude_m?: number | null;
+  current_amsl_m?: number | null;
   connection_state?: string | null;
   connection_mode?: string | null;
   connection_topology?: string | null;
@@ -328,6 +332,8 @@ export const adaptMission = (raw: RawMission): Mission => ({
   authorization: raw.authorization
     ? adaptMissionAuthorization(raw.authorization)
     : undefined,
+  qgroundcontrol_review_status: raw.qgroundcontrol_review_status ?? undefined,
+  qgroundcontrol_sitl_review_event_id: raw.qgroundcontrol_sitl_review_event_id ?? undefined,
   created_at: raw.created_at,
   updated_at: raw.updated_at,
 });
@@ -439,11 +445,15 @@ export const adaptVehicleHealth = (
     raw.origin_longitude !== undefined
       ? true
       : null,
+  origin_latitude: nullableNumberFromApi(raw.origin_latitude),
+  origin_longitude: nullableNumberFromApi(raw.origin_longitude),
   current_latitude: nullableNumberFromApi(raw.current_latitude),
   current_longitude: nullableNumberFromApi(raw.current_longitude),
   current_altitude_m: raw.current_altitude_m ?? null,
+  current_amsl_m: nullableNumberFromApi(raw.current_amsl_m),
   geofence_enabled: raw.geofence_enabled,
   rtl_configured: raw.rtl_configured,
+  px4_diagnostics: raw.is_stale ? null : raw.px4_diagnostics ?? null,
   preflight_ok: raw.preflight_ok,
   preflight_messages:
     raw.preflight_messages ??
@@ -553,6 +563,30 @@ const postCritical = <T>(
 };
 
 const flightAuthorizationRequestIds = new Map<string, string>();
+const sitlRequestIds = new Map<string, string>();
+
+const postSitl = async <T>(path: string, body: object): Promise<T> => {
+  const fingerprint = JSON.stringify([path, body]);
+  const requestId = sitlRequestIds.get(fingerprint) ?? createRequestId();
+  sitlRequestIds.set(fingerprint, requestId);
+  const response = await postCritical<T>(path, body, requestId);
+  sitlRequestIds.delete(fingerprint);
+  return response;
+};
+
+export const px4SitlApi = {
+  upload: (id: string, vehicleId: string, reviewId: string) =>
+    postSitl<RawMission>(`/admin/missions/${id}/px4-sitl/upload`, {
+      vehicle_id: vehicleId,
+      qgroundcontrol_review_event_id: reviewId,
+      confirmed: true,
+    }),
+  request: (id: string, action: 'ARM' | 'START' | 'RTL') =>
+    postSitl<RawGatewayCommand>(`/admin/missions/${id}/px4-sitl/commands/${action}`, { confirmed: true }),
+  commands: (id: string) =>
+    apiRequest<RawGatewayCommand[]>(`/admin/missions/${id}/px4-sitl/commands`),
+};
+
 const originRevisionRequestIds = new Map<string, string>();
 const armMissionRequestIds = new Map<
   string,
@@ -571,6 +605,15 @@ const armMissionRequestId = (id: string, input: ArmMissionInput) => {
   const requestId = createRequestId();
   armMissionRequestIds.set(id, { fingerprint, requestId });
   return requestId;
+};
+
+const downloadMissionFile = async (response: Response, filename: string) => {
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(blobUrl);
 };
 
 export const realApi: AdminApi = {
@@ -611,6 +654,12 @@ export const realApi: AdminApi = {
         notes: 'Rota revisada visualmente no Mission Planner pelo painel administrativo.',
       }),
     ),
+  recordQgcReview: (id, version, hash, plan) => post<{
+    plan_sha256: string; candidate_sha256: string; ignored_camera_item: boolean;
+  }>(
+    `/admin/missions/${id}/qgroundcontrol-review`,
+    { expected_version: version, expected_sha256: hash, plan, confirmed: true },
+  ),
   authorizeFlight: async (id: string, input: FlightAuthorizationInput) => {
     const requestId =
       flightAuthorizationRequestIds.get(id) ?? createRequestId();
@@ -622,6 +671,7 @@ export const realApi: AdminApi = {
         operator_name: input.operator_name,
         controlled_area_confirmed: input.controlled_area_confirmed,
         checklist: input.checklist,
+        qgroundcontrol_review_event_id: input.qgroundcontrol_review_event_id,
       },
       requestId,
     );
@@ -682,6 +732,35 @@ export const realApi: AdminApi = {
         { reason },
       ),
     ),
+  downloadReviewedQgcPlan: async (id) => {
+    const token = sessionToken.get();
+    const response = await fetch(`${appConfig.apiBaseUrl}/admin/missions/${id}/qgroundcontrol-review`, {
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as ApiErrorBody | null;
+      throw new ApiError(body?.detail || 'Não foi possível baixar o plano revisado.', response.status);
+    }
+    const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]
+      ?? `missao-${id}-revisada.plan`;
+    await downloadMissionFile(response, filename);
+    return filename;
+  },
+  exportQgcDraft: async (id, vehicleId, homeAmsl) => {
+    const token = sessionToken.get();
+    const response = await fetch(`${appConfig.apiBaseUrl}/admin/missions/${id}/qgroundcontrol-draft`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ vehicle_id: vehicleId, home_amsl_m: homeAmsl }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as ApiErrorBody | null;
+      throw new ApiError(body?.detail || 'Não foi possível gerar o rascunho.', response.status);
+    }
+    await downloadMissionFile(response, `rascunho-${id}.plan`);
+  },
   exportMission: async (id: string) => {
     const token = sessionToken.get();
     const response = await fetch(
@@ -694,12 +773,7 @@ export const realApi: AdminApi = {
     if (!response.ok) {
       throw new ApiError('Não foi possível exportar a missão.', response.status);
     }
-    const blobUrl = URL.createObjectURL(await response.blob());
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = `missao-${id}.waypoints`;
-    link.click();
-    URL.revokeObjectURL(blobUrl);
+    await downloadMissionFile(response, `missao-${id}.waypoints`);
   },
   listVehicles: async () =>
     (await apiRequest<RawVehicle[]>('/admin/vehicles')).map(adaptVehicle),

@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Enum,
@@ -68,6 +69,7 @@ class VehicleHealthSnapshot(Base):
     armed: Mapped[bool | None] = mapped_column(Boolean)
     preflight_ok: Mapped[bool | None] = mapped_column(Boolean)
     rtl_configured: Mapped[bool | None] = mapped_column(Boolean)
+    px4_diagnostics: Mapped[dict[str, bool | int | float] | None] = mapped_column(JSON)
     geofence_enabled: Mapped[bool | None] = mapped_column(Boolean)
     origin_latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     origin_longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
@@ -84,6 +86,7 @@ class VehicleHealthSnapshot(Base):
     current_latitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     current_longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
     current_altitude_m: Mapped[float | None] = mapped_column(Float)
+    current_amsl_m: Mapped[float | None] = mapped_column(Float)
     mission_upload_enabled: Mapped[bool | None] = mapped_column(Boolean)
     flight_commands_enabled: Mapped[bool | None] = mapped_column(Boolean)
     mission_start_enabled: Mapped[bool | None] = mapped_column(Boolean)

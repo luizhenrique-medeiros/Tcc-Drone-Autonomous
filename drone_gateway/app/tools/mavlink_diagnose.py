@@ -41,8 +41,8 @@ def _base_report(settings: Settings) -> dict[str, Any]:
         "status": "unavailable",
         "guidance": (
             "Por padrão nenhuma porta é aberta. Use --connect para apenas receber heartbeat "
-            "e telemetria. Se a COM estiver ocupada ou com acesso negado, feche o Mission "
-            "Planner para direct ou use mission_planner_forward com forwarding UDP."
+            "e telemetria. Não abra a mesma porta serial em dois processos; use "
+            "encaminhamento UDP de QGroundControl ou roteador MAVLink para observação passiva."
         ),
     }
 

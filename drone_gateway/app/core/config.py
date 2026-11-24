@@ -13,12 +13,20 @@ class MavlinkMode(StrEnum):
     SITL = "sitl"
     REAL = "real"
     DIRECT = "direct"
+    QGROUNDCONTROL_FORWARD = "qgroundcontrol_forward"
+    MAVLINK_ROUTER = "mavlink_router"
     MISSION_PLANNER_FORWARD = "mission_planner_forward"
 
 
 class GatewayRuntime(StrEnum):
     HOST = "host"
     CONTAINER = "container"
+
+
+class ForwardSource(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    HARDWARE_REAL = "HARDWARE_REAL"
+    SITL = "SITL"
 
 
 class Settings(BaseSettings):
@@ -40,6 +48,7 @@ class Settings(BaseSettings):
     mavlink_mode: MavlinkMode = MavlinkMode.SIMULATION
     mavlink_connection: str = "udp:127.0.0.1:14550"
     mavlink_forward_connection: str = "udpin:127.0.0.1:14551"
+    mavlink_forward_source: ForwardSource = ForwardSource.UNKNOWN
     mavlink_baud_rate: int = Field(
         default=57600,
         ge=1200,
@@ -57,6 +66,8 @@ class Settings(BaseSettings):
     # Opt-in for a fixed read-only whitelist; never grants actuation or stream control.
     allow_telemetry_requests: bool = False
     allow_mission_upload: bool = False
+    px4_sitl_plan_validation: bool = False
+    px4_bench_readback_dir: Path | None = None
     allow_flight_commands: bool = False
     allow_mission_start: bool = False
     allow_vehicle_arm: bool = False
@@ -96,6 +107,8 @@ class Settings(BaseSettings):
             MavlinkMode.REAL,
             MavlinkMode.DIRECT,
             MavlinkMode.MISSION_PLANNER_FORWARD,
+            MavlinkMode.QGROUNDCONTROL_FORWARD,
+            MavlinkMode.MAVLINK_ROUTER,
         }
 
     @property
@@ -104,6 +117,10 @@ class Settings(BaseSettings):
             return MavlinkMode.DIRECT.value
         if self.mavlink_mode is MavlinkMode.MISSION_PLANNER_FORWARD:
             return MavlinkMode.MISSION_PLANNER_FORWARD.value
+        if self.mavlink_mode is MavlinkMode.QGROUNDCONTROL_FORWARD:
+            return MavlinkMode.QGROUNDCONTROL_FORWARD.value
+        if self.mavlink_mode is MavlinkMode.MAVLINK_ROUTER:
+            return MavlinkMode.MAVLINK_ROUTER.value
         if self.mavlink_mode is MavlinkMode.SITL:
             return MavlinkMode.SITL.value
         if self.mavlink_mode is MavlinkMode.SIMULATION:
@@ -148,17 +165,59 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_mavlink_safety(self) -> "Settings":
+        if self.autopilot_system.strip().upper() not in {"ARDUPILOT", "PX4"}:
+            raise ConfigurationError("AUTOPILOT_SYSTEM deve ser ARDUPILOT ou PX4.")
+        if self.px4_bench_readback_dir is not None and (
+            self.autopilot_system.strip().upper() != "PX4"
+            or self.gateway_runtime is not GatewayRuntime.HOST
+            or self.mavlink_mode is not MavlinkMode.MAVLINK_ROUTER
+            or self.mavlink_forward_source is not ForwardSource.HARDWARE_REAL
+            or self.px4_sitl_plan_validation
+            or not self.px4_bench_readback_dir.is_absolute()
+        ):
+            raise ConfigurationError("Releitura de bancada exige o roteador PX4 real no host.")
+        if self.px4_sitl_plan_validation and (
+            self.autopilot_system.strip().upper() != "PX4"
+            or self.mavlink_mode is not MavlinkMode.SITL
+            or self.gateway_runtime is not GatewayRuntime.CONTAINER
+            or not self.mavlink_connection.startswith("udpin:127.0.0.1:")
+            or self.allow_telemetry_requests
+            or not Path("/.dockerenv").is_file()
+            or {entry.name for entry in Path("/sys/class/net").iterdir()} != {"lo"}
+        ):
+            raise ConfigurationError("O ensaio PX4 exige SITL em container com somente loopback.")
+        if self.mavlink_mode in {
+            MavlinkMode.QGROUNDCONTROL_FORWARD,
+            MavlinkMode.MAVLINK_ROUTER,
+        } and (
+            self.allow_mission_upload
+            or self.allow_flight_commands
+            or self.allow_mission_start
+            or self.allow_vehicle_arm
+            or self.allow_telemetry_requests
+        ):
+            raise ConfigurationError("Este modo de observação é somente recepção.")
+        if (
+            self.autopilot_system.strip().upper() == "PX4"
+            and not self.px4_sitl_plan_validation
+            and (
+                self.allow_mission_upload
+                or self.allow_flight_commands
+                or self.allow_mission_start
+                or self.allow_vehicle_arm
+                or self.allow_telemetry_requests
+            )
+        ):
+            raise ConfigurationError(
+                "PX4 ainda permite apenas diagnóstico passivo; upload, comandos e "
+                "solicitações de telemetria devem permanecer desabilitados."
+            )
         if self.mavlink_reconnect_initial_seconds > self.mavlink_reconnect_max_seconds:
             raise ConfigurationError(
                 "MAVLINK_RECONNECT_INITIAL_SECONDS não pode exceder MAVLINK_RECONNECT_MAX_SECONDS."
             )
-        if self.allow_vehicle_arm and (
-            not self.allow_flight_commands or not self.allow_mission_start
-        ):
-            raise ConfigurationError(
-                "ALLOW_VEHICLE_ARM=true exige ALLOW_FLIGHT_COMMANDS=true "
-                "e ALLOW_MISSION_START=true."
-            )
+        if self.allow_vehicle_arm and not self.allow_flight_commands:
+            raise ConfigurationError("ALLOW_VEHICLE_ARM=true exige ALLOW_FLIGHT_COMMANDS=true.")
         if self.allow_mission_start and not self.allow_flight_commands:
             raise ConfigurationError("ALLOW_MISSION_START=true exige ALLOW_FLIGHT_COMMANDS=true.")
         if self.gateway_runtime is GatewayRuntime.CONTAINER and self.is_hardware_mode:
@@ -169,6 +228,14 @@ class Settings(BaseSettings):
             )
         connection = self.effective_mavlink_connection.lower().strip()
         network_prefixes = ("udp:", "udpin:", "udpout:", "tcp:", "tcpin:")
+        if self.mavlink_mode is MavlinkMode.QGROUNDCONTROL_FORWARD and not connection.startswith(
+            "udpin:"
+        ):
+            raise ConfigurationError("MAVLINK_MODE=qgroundcontrol_forward exige conexão udpin.")
+        if self.mavlink_mode is MavlinkMode.MAVLINK_ROUTER and not connection.startswith(
+            "udpin:127.0.0.1:"
+        ):
+            raise ConfigurationError("MAVLINK_MODE=mavlink_router exige udpin em 127.0.0.1.")
         if self.mavlink_mode is MavlinkMode.DIRECT and connection.startswith(network_prefixes):
             raise ConfigurationError("MAVLINK_MODE=direct exige uma porta serial.")
         if self.mavlink_mode is MavlinkMode.MISSION_PLANNER_FORWARD and not connection.startswith(

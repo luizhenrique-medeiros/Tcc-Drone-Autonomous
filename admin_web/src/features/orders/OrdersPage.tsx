@@ -18,7 +18,7 @@ const filterLabels: Record<Filter, string> = {
   ALL: 'Todos',
   PENDING: 'Aguardando análise',
   APPROVED: 'Aprovados',
-  MISSION: 'Revisão e autorização',
+  MISSION: 'Plano da missão',
   ACTIVE: 'Em operação',
   CLOSED: 'Encerrados',
 };
@@ -74,7 +74,7 @@ export function OrdersPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Primeira autorização"
+        eyebrow="Aprovação de pedidos"
         title="Fila de pedidos"
         description="Analise o pedido e o ponto final escolhido pelo cliente. Aprovar o pedido apenas permite preparar a missão; não autoriza o voo."
       />

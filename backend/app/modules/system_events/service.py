@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import UUID
 
+from pydantic import JsonValue
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,7 +24,7 @@ def record_event(
     mission_id: UUID | None = None,
     vehicle_id: UUID | None = None,
     event_id: str | None = None,
-    metadata: dict[str, str | int | float | bool | None] | None = None,
+    metadata: Mapping[str, JsonValue] | None = None,
 ) -> tuple[SystemEvent, bool]:
     if event_id:
         existing = session.scalar(select(SystemEvent).where(SystemEvent.event_id == event_id))
@@ -54,7 +56,7 @@ def record_event(
         event_type=event_type,
         severity=severity,
         message=message,
-        event_metadata=metadata or {},
+        event_metadata=dict(metadata or {}),
     )
     session.add(event)
     return event, True

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.enums import VehicleStatus
+from app.core.enums import OperationalSource, VehicleStatus
 from app.core.exceptions import ConflictError, NotFoundError
 from app.modules.vehicles.models import Vehicle, VehicleHealthSnapshot
 from app.modules.vehicles.schemas import (
@@ -26,15 +26,10 @@ def _critical_hash(payload: VehicleHealthInput) -> str:
         "heartbeat": payload.heartbeat,
         "gps_fix_type": payload.gps_fix_type,
         "satellites": payload.satellites,
-        "ekf_ok": payload.ekf_ok,
-        "battery_percent": (
-            round(payload.battery_percent, 1) if payload.battery_percent is not None else None
-        ),
         "flight_mode": payload.flight_mode,
         "armed": payload.armed,
         "preflight_ok": payload.preflight_ok,
         "rtl_configured": payload.rtl_configured,
-        "geofence_enabled": payload.geofence_enabled,
         "origin_latitude": payload.origin_latitude,
         "origin_longitude": payload.origin_longitude,
         "connection_state": payload.connection_state,
@@ -66,14 +61,6 @@ def health_failures(snapshot: VehicleHealthSnapshot, settings: Settings) -> list
         failures.append("GPS_NOT_RECEIVED")
     elif snapshot.gps_fix_type < 3 or snapshot.satellites < settings.min_gps_satellites:
         failures.append("GPS_INSUFFICIENT")
-    if snapshot.ekf_ok is None:
-        failures.append("EKF_NOT_RECEIVED")
-    elif not snapshot.ekf_ok:
-        failures.append("EKF_NOT_OK")
-    if snapshot.battery_percent is None:
-        failures.append("BATTERY_NOT_RECEIVED")
-    elif snapshot.battery_percent < settings.min_battery_percent:
-        failures.append("BATTERY_LOW")
     if snapshot.flight_mode is None:
         failures.append("FLIGHT_MODE_UNKNOWN")
     if snapshot.armed is None:
@@ -88,10 +75,6 @@ def health_failures(snapshot: VehicleHealthSnapshot, settings: Settings) -> list
         failures.append("RTL_STATE_UNKNOWN")
     elif not snapshot.rtl_configured:
         failures.append("RTL_NOT_CONFIGURED")
-    if snapshot.geofence_enabled is None:
-        failures.append("GEOFENCE_STATE_UNKNOWN")
-    elif not snapshot.geofence_enabled:
-        failures.append("GEOFENCE_NOT_ENABLED")
     if snapshot.origin_latitude is None or snapshot.origin_longitude is None:
         failures.append("ORIGIN_UNKNOWN")
     return failures
@@ -141,6 +124,7 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         armed=snapshot.armed,
         preflight_ok=snapshot.preflight_ok,
         rtl_configured=snapshot.rtl_configured,
+        px4_diagnostics=None if health_is_stale(snapshot, settings) else snapshot.px4_diagnostics,
         geofence_enabled=snapshot.geofence_enabled,
         origin_latitude=snapshot.origin_latitude,
         origin_longitude=snapshot.origin_longitude,
@@ -157,6 +141,7 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         current_latitude=snapshot.current_latitude,
         current_longitude=snapshot.current_longitude,
         current_altitude_m=snapshot.current_altitude_m,
+        current_amsl_m=snapshot.current_amsl_m,
         mission_upload_enabled=snapshot.mission_upload_enabled,
         flight_commands_enabled=snapshot.flight_commands_enabled,
         mission_start_enabled=snapshot.mission_start_enabled,
@@ -211,6 +196,11 @@ def record_heartbeat(
         armed=payload.armed,
         preflight_ok=payload.preflight_ok,
         rtl_configured=payload.rtl_configured,
+        px4_diagnostics=(
+            payload.px4_diagnostics.model_dump(exclude_none=True)
+            if payload.autopilot_system.upper() == "PX4" and payload.px4_diagnostics
+            else None
+        ),
         geofence_enabled=payload.geofence_enabled,
         origin_latitude=payload.origin_latitude,
         origin_longitude=payload.origin_longitude,
@@ -227,6 +217,7 @@ def record_heartbeat(
         current_latitude=payload.current_latitude,
         current_longitude=payload.current_longitude,
         current_altitude_m=payload.current_altitude_m,
+        current_amsl_m=payload.current_amsl_m,
         mission_upload_enabled=payload.mission_upload_enabled,
         flight_commands_enabled=payload.flight_commands_enabled,
         mission_start_enabled=payload.mission_start_enabled,
@@ -245,7 +236,12 @@ def record_heartbeat(
     session.commit()
     session.refresh(vehicle)
     session.refresh(snapshot)
-    return vehicle, snapshot, health_failures(snapshot, settings)
+    failures = (
+        ["HARDWARE_OBSERVATION_ONLY"]
+        if snapshot.source == OperationalSource.HARDWARE_REAL
+        else health_failures(snapshot, settings)
+    )
+    return vehicle, snapshot, failures
 
 
 def latest_health(session: Session, vehicle_id: object) -> VehicleHealthSnapshot:

@@ -86,7 +86,8 @@ class MissionWaypoint(BaseModel):
     param1: float = 0
     param2: float = 0
     param3: float = 0
-    param4: float = 0
+    # JSON null represents unspecified yaw; MAVLink uses NaN for PX4 yaw.
+    param4: float | None = Field(default=0, allow_inf_nan=False)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     altitude_m: float = Field(ge=0, le=500)
@@ -142,6 +143,16 @@ class HeartbeatResponse(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class Px4HealthDiagnostics(BaseModel):
+    current_mode_prearm_ok: bool | None = None
+    rtl_type: int | None = Field(default=None, ge=0, le=2**31 - 1)
+    rtl_return_alt_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rtl_descend_alt_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    rtl_land_delay_s: float | None = Field(default=None, ge=-1, allow_inf_nan=False)
+    rtl_cone_angle_deg: int | None = Field(default=None, ge=0, le=90)
+    rtl_min_distance_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
 class VehicleHealth(BaseModel):
     source: OperationalSource = OperationalSource.UNKNOWN
     autopilot_version: str | None = Field(default=None, max_length=120)
@@ -156,6 +167,7 @@ class VehicleHealth(BaseModel):
     armed: bool | None = None
     preflight_ok: bool | None = None
     rtl_configured: bool | None = None
+    px4_diagnostics: Px4HealthDiagnostics | None = None
     geofence_enabled: bool | None = None
     origin_latitude: float | None = Field(default=None, ge=-90, le=90)
     origin_longitude: float | None = Field(default=None, ge=-180, le=180)
@@ -172,6 +184,7 @@ class VehicleHealth(BaseModel):
     current_latitude: float | None = Field(default=None, ge=-90, le=90)
     current_longitude: float | None = Field(default=None, ge=-180, le=180)
     current_altitude_m: float | None = Field(default=None, ge=-100, le=1000)
+    current_amsl_m: float | None = Field(default=None, ge=-1000, le=100_000)
     mission_upload_enabled: bool = False
     flight_commands_enabled: bool = False
     mission_start_enabled: bool = False

@@ -86,17 +86,14 @@ extension OrderStatusX on OrderStatus {
     OrderStatus.draft => 'Finalize as informações para enviar o pedido.',
     OrderStatus.pendingAdminApproval =>
       'A equipe confere o produto e o ponto exato escolhido.',
-    OrderStatus.approved => 'O pedido foi aprovado sem iniciar o voo.',
+    OrderStatus.approved => 'A equipe aprovou o pedido.',
     OrderStatus.rejected =>
       'A operação não foi aprovada. Consulte o motivo informado.',
-    OrderStatus.missionPreparing =>
-      'A rota está sendo preparada para revisão no Mission Planner.',
-    OrderStatus.missionReady =>
-      'A rota foi revisada e ainda não possui autorização de voo.',
-    OrderStatus.waitingFlightAuthorization =>
-      'Um operador precisa concluir o checklist e autorizar o voo.',
+    OrderStatus.missionPreparing => 'A equipe está preparando a rota.',
+    OrderStatus.missionReady || OrderStatus.waitingFlightAuthorization =>
+      'A equipe está preparando a entrega.',
     OrderStatus.missionUploading =>
-      'O gateway está validando e carregando a missão autorizada.',
+      'A preparação da entrega está em andamento.',
     OrderStatus.inTransit => 'Acompanhe o progresso recebido do sistema.',
     OrderStatus.atDestination => 'O drone chegou ao ponto confirmado.',
     OrderStatus.delivered =>

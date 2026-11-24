@@ -1,4 +1,6 @@
+import json
 import math
+import re
 
 from app.core.config import Settings
 from app.core.exceptions import MissionValidationError
@@ -12,7 +14,9 @@ POSITION_TOLERANCE_M = 2.0
 CANONICAL_COMMANDS = (16, 22, 16, 19, 211, 16, 21)
 
 
-def _close(left: float, right: float, *, absolute_tolerance: float) -> bool:
+def _close(left: float | None, right: float | None, *, absolute_tolerance: float) -> bool:
+    if left is None or right is None:
+        return False
     return math.isclose(left, right, rel_tol=1e-7, abs_tol=absolute_tolerance)
 
 
@@ -51,6 +55,80 @@ def _near(
     return distance_m(waypoint.latitude, waypoint.longitude, latitude, longitude) <= tolerance_m
 
 
+def _validate_px4_review(mission: AuthorizedMission, mission_file: str, settings: Settings) -> None:
+    if mission_sha256(mission_file) != mission.mission_sha256:
+        raise MissionValidationError("SHA-256 do artefato PX4 não corresponde ao claim.")
+    try:
+        artifact = json.loads(mission_file)
+    except ValueError as exc:
+        raise MissionValidationError("Artefato PX4 inválido.") from exc
+    if (
+        not isinstance(artifact, dict)
+        or artifact.get("format") != "devcore-px4-mission-candidate-v1"
+        or artifact.get("mission_version") != mission.version
+        or not all(
+            isinstance(artifact.get(key), str) and re.fullmatch(r"[0-9a-f]{64}", artifact[key])
+            for key in ("plan_sha256", "mission_sha256")
+        )
+    ):
+        raise MissionValidationError("Artefato PX4 não corresponde à versão revisada.")
+    points = mission.waypoints
+    commands = [point.command for point in points]
+    if (
+        len(points) < 3
+        or commands[0] != 22
+        or commands[-1] != 20
+        or any(command != 16 for command in commands[1:-1])
+    ):
+        raise MissionValidationError("Rota PX4 deve conter Takeoff, waypoints e RTL.")
+    expected = []
+    for sequence, point in enumerate(points):
+        params = [
+            point.param1,
+            point.param2,
+            point.param3,
+            point.param4,
+            point.latitude,
+            point.longitude,
+            point.altitude_m,
+        ]
+        if (
+            point.sequence != sequence
+            or point.current != int(sequence == 0)
+            or point.autocontinue != 1
+            or point.frame != (2 if point.command == 20 else 3)
+            or any(value is not None and not math.isfinite(value) for value in params)
+        ):
+            raise MissionValidationError(
+                "Item PX4 contém sequência, frame ou parâmetros inválidos."
+            )
+        if point.command == 20:
+            if params != [0] * 7:
+                raise MissionValidationError("RTL PX4 exige parâmetros reservados zerados.")
+        elif not 0 < point.altitude_m <= settings.default_takeoff_altitude_m or not _near(
+            point,
+            mission.origin_latitude,
+            mission.origin_longitude,
+            tolerance_m=settings.max_mission_distance_m,
+        ):
+            raise MissionValidationError("Waypoint PX4 excede os limites de altitude ou alcance.")
+        expected.append(
+            {
+                "sequence": sequence,
+                "command": point.command,
+                "frame": point.frame,
+                "autocontinue": True,
+                "params": params,
+            }
+        )
+    if artifact.get("items") != expected:
+        raise MissionValidationError("Os waypoints do claim divergem do artefato PX4 revisado.")
+    if not _near(points[0], mission.origin_latitude, mission.origin_longitude) or not _near(
+        points[-2], mission.destination_latitude, mission.destination_longitude
+    ):
+        raise MissionValidationError("A decolagem ou o destino diverge da missão autorizada.")
+
+
 def validate_claimed_mission(
     mission: AuthorizedMission, mission_file: str, settings: Settings
 ) -> None:
@@ -73,6 +151,9 @@ def validate_claimed_mission(
         raise MissionValidationError("Distância declarada diverge das coordenadas da missão.")
     if mission.takeoff_altitude_m > settings.default_takeoff_altitude_m:
         raise MissionValidationError("Altitude excede o limite configurado no gateway.")
+    if settings.px4_sitl_plan_validation:
+        _validate_px4_review(mission, mission_file, settings)
+        return
     parsed = parse_qgc_wpl(mission_file)
     supplied = sorted(mission.waypoints, key=lambda item: item.sequence)
     if len(parsed) != len(supplied):

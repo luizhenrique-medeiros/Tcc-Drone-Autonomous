@@ -403,7 +403,6 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     for gate, blocker in (
         ("vehicle_arm_enabled", "VEHICLE_ARM_DISABLED"),
         ("flight_commands_enabled", "FLIGHT_COMMANDS_DISABLED"),
-        ("mission_start_enabled", "MISSION_START_DISABLED"),
     ):
         disabled_arm_heartbeat = client.post(
             "/api/v1/gateway/heartbeat",
@@ -436,7 +435,7 @@ def test_two_approvals_mission_claim_and_gateway_idempotency(
     arm_ready_heartbeat = client.post(
         "/api/v1/gateway/heartbeat",
         headers=gateway_headers,
-        json=arm_health_payload,
+        json={**arm_health_payload, "mission_start_enabled": False},
     )
     assert arm_ready_heartbeat.status_code == 200, arm_ready_heartbeat.text
     assert arm_ready_heartbeat.json()["health"]["vehicle_arm_enabled"] is True
