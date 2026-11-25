@@ -40,6 +40,17 @@ class Px4HealthDiagnostics(BaseModel):
     rtl_min_distance_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
+class Px4FlightObservation(BaseModel):
+    landed_state: int | None = Field(default=None, ge=1, le=4)
+    position_at: datetime | None = None
+    sequence: int | None = Field(default=None, ge=0, lt=65535)
+    mission_total: int | None = Field(default=None, ge=1, lt=65535)
+    mission_state: int | None = Field(default=None, ge=1, le=5)
+    mission_mode: int | None = Field(default=None, ge=1, le=2)
+    native_plan_id: int | None = Field(default=None, ge=1, le=0xFFFFFFFF)
+    mission_at: datetime | None = None
+
+
 class VehicleHealthInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -93,7 +104,7 @@ class VehicleHealthInput(BaseModel):
         default=None,
         ge=0,
         le=255,
-        validation_alias=AliasChoices("mavlink_system_id", "component_id", "compid"),
+        validation_alias=AliasChoices("mavlink_component_id", "component_id", "compid"),
     )
     heartbeat_age_seconds: float | None = Field(default=None, ge=0)
     last_heartbeat_at: datetime | None = None
@@ -106,10 +117,13 @@ class VehicleHealthInput(BaseModel):
         validation_alias=AliasChoices("current_altitude_m", "relative_altitude_m"),
     )
     current_amsl_m: float | None = Field(default=None, ge=-1000, le=100_000)
+    current_ground_speed_m_s: float | None = Field(default=None, ge=0, le=1000)
+    px4_flight: Px4FlightObservation | None = None
     mission_upload_enabled: bool | None = None
     flight_commands_enabled: bool | None = None
     mission_start_enabled: bool | None = None
     vehicle_arm_enabled: bool | None = None
+    bench_arm_session_id: UUID | None = None
     connection_error: str | None = Field(default=None, max_length=2000)
 
     @field_validator("connection_endpoint", "serial_port", mode="before")
@@ -175,6 +189,8 @@ class VehicleHealthRead(BaseModel):
     current_longitude: Decimal | None
     current_altitude_m: float | None
     current_amsl_m: float | None
+    current_ground_speed_m_s: float | None
+    px4_flight: Px4FlightObservation | None = None
     mission_upload_enabled: bool | None
     flight_commands_enabled: bool | None
     mission_start_enabled: bool | None

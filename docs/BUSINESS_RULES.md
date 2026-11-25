@@ -56,33 +56,24 @@
 ## Missão e revisão
 
 - Apenas pedido aprovado recebe missão. Há no máximo uma missão ativa por pedido.
-- O painel prepara e baixa o rascunho `.plan`, inclusive sem telemetria.
-- O operador revisa o plano no QGroundControl. O painel registra o arquivo da revisão atual e permite recuperá-lo conferindo seu hash.
-- A aprovação do pedido, a preparação e a exportação dependem dos dados do pedido e da integridade do arquivo.
+- A exportação usa a origem planejada, o destino confirmado e a altitude relativa da revisão. O Home planejado admite altitude AMSL opcional para revisão no QGroundControl.
+- Aprovação, geração e exportação são fatos distintos. O download grava evento com administrador, pedido, missão, versão, hashes e arquivo. A exportação independe da telemetria.
+- O painel pode registrar e recuperar o arquivo revisado da versão atual conferindo seu hash.
 
 ## Operação do veículo
 
-- O QGroundControl é a interface do operador para upload, ARM, START, cancelamento e RTL do veículo real.
-- O PX4 aplica suas proteções nativas. O site exibe leituras e eventos da Pixhawk e não avalia aptidão para voo.
-- Os endpoints legados de autorização e de comandos permanecem para compatibilidade com testes e simulação.
+- O operador importa e revisa o plano e controla a aeronave pelo QGroundControl. O PX4 aplica suas proteções nativas.
+- O gateway real recebe mensagens passivamente. Consultas ativas, comandos, transferências e reprodução de solicitações anteriores ficam fora do fluxo operacional.
 
 ## Execução, entrega e retorno
 
-- Heartbeat, GPS, bateria, preflight do veículo, origem, distância e RTL são verificados antes do upload; o EKF é exibido como informação.
-- Startup, health, upload, autorização, reconexão e progressão automática nunca armam. O gateway não corrige pre-arm mudando parâmetros.
-- Upload, ACK, releitura/verificação e início são etapas separadas. `UPLOADED` não equivale a `VERIFIED`; apenas a comparação integral do conteúdo relido permite `VERIFIED`.
-- `VERIFIED` permite uma solicitação humana dedicada de ARM normal somente depois de a missão ter sido reivindicada pelo gateway correspondente ao veículo. O request exige `reason`, `area_clear_confirmed=true`, `operator_present_confirmed=true` e `safety_switch_ready_confirmed=true`, sem campos extras.
-- O ARM legado é restrito a `SITL` e mantém os critérios técnicos e as chaves de configuração do ensaio. O site recebe telemetria do PX4 real em modo de observação. O armamento no hardware cabe ao operador no QGroundControl.
-- O gateway envia somente `MAV_CMD_COMPONENT_ARM_DISARM` normal, sem force/bypass, mudança de parâmetro ou desativação de safety/pre-arm. `202`/recebimento não prova armamento; a conclusão exige ACK correlacionado e heartbeat novo com `armed=true`.
-- ARM não altera a missão para execução e nunca aciona `START`. O início exige comando administrativo posterior, heartbeat armado ainda fresco, `ALLOW_FLIGHT_COMMANDS=true`, `ALLOW_MISSION_START=true` e preflight válido. Após falha, timeout, restart ou desarmamento, não existe rearmamento automático.
-- `PAUSE` só é aceita durante execução/retorno permitido; `CONTINUE` só é aceita em `PAUSED`. Ambas exigem `ALLOW_FLIGHT_COMMANDS=true`, comando fresco, ACK MAVLink e auditoria.
-- Após início, ArduPilot/telemetria comandam o estado físico; cliente e painel não inventam progresso por relógio local.
-- `DELIVERY_CONFIRMED` registra que a etapa/comando do mecanismo foi alcançada; não prova saída, recebimento ou integridade física do pacote. Missão conclui somente após retorno/pouso conforme evidência, e a entrega real continua exigindo registro operacional.
-- Abortamento/RTL registram ator, motivo, resultado e estado do veículo. Uma falha continua visível.
+- Leituras ausentes são indisponíveis. Telemetria antiga não substitui snapshot atual.
+- O download ou registro do plano não comprova upload ou execução. Telemetria geral do veículo não é associada ao último pedido exportado.
+- Uma missão é vinculada automaticamente quando as evidências identificam o veículo e uma revisão atual única. O administrador também pode selecionar veículo e revisão exportada para acompanhar o voo. Nessa associação os índices são mostrados como sequências do protocolo até existir verificação do plano. Uma divergência posterior suspende o vínculo dos itens.
+- Observação de waypoint, pouso, retorno ou desarmamento não conclui entrega. Informar todos os itens concluídos, pousar e desarmar são evidências separadas do recebimento físico.
+- Um administrador confirma a entrega física com evidência. O pedido concluído mantém ator, data e evento de confirmação. A revisão da missão conserva seu próprio estado.
 
 ## Auditoria e idempotência
 
-- Operações críticas recebem idempotency/event ID. ARM conserva a mesma chave durante retries ambíguos e registra solicitante, motivo, confirmações, missão/veículo/gateway, snapshot, ACK, heartbeat e resultado sem dados MAVLink brutos.
-- Eventos guardam metadados mínimos; senha, JWT, chave, dados bancários e MAVLink bruto não são persistidos.
-- Telemetria com timestamp antigo não substitui snapshot atual.
-- Toda divergência operacional é registrada; nunca se converte erro em sucesso para a apresentação.
+- Eventos guardam metadados mínimos, sem segredos ou mensagens MAVLink brutas.
+- Confirmações repetidas não geram novas conclusões ou eventos. Resultados de ensaios legados continuam identificados pela origem.

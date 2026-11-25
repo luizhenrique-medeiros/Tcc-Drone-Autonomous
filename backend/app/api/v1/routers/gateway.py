@@ -3,13 +3,19 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import and_, or_, select
 
-from app.api.dependencies import AppSettings, DatabaseSession, GatewayAuth
+from app.api.dependencies import (
+    AppSettings,
+    DatabaseSession,
+    GatewayAuth,
+    require_simulation_commands,
+)
 from app.core.enums import GatewayCommandStatus, MissionStatus, OperationalSource
 from app.core.exceptions import AuthorizationError, DomainError, InvalidStateError, NotFoundError
 from app.core.websocket import manager
+from app.modules.missions.flight_observations import observe_heartbeat, observe_reached
 from app.modules.missions.models import GatewayCommand, Mission
 from app.modules.missions.schemas import (
     GatewayClaim,
@@ -82,6 +88,8 @@ async def heartbeat(
 ) -> VehicleHeartbeatResult:
     _require_gateway_identity(authenticated_gateway_id, payload.gateway_id)
     vehicle, health, failures = record_heartbeat(session, payload, settings)
+    observe_heartbeat(session, vehicle, health, payload, settings)
+    session.commit()
     response = VehicleHeartbeatResult(
         vehicle=VehicleRead.model_validate(vehicle),
         health=health_to_read(health, settings),
@@ -103,6 +111,7 @@ async def vehicle_observations(
     vehicle_id: UUID,
     payload: Annotated[list[GatewayVehicleObservation], Body(min_length=1, max_length=20)],
     session: DatabaseSession,
+    settings: AppSettings,
     authenticated_gateway_id: GatewayAuth,
 ) -> None:
     vehicle = session.scalar(select(Vehicle).where(Vehicle.id == vehicle_id).with_for_update())
@@ -124,6 +133,7 @@ async def vehicle_observations(
         if created:
             session.flush()
             created_events.append(event)
+            observe_reached(session, vehicle, event, settings)
             progress = correlate_physical_progress(session, vehicle, event)
             if progress is not None:
                 created_events.append(progress)
@@ -150,6 +160,8 @@ def authorized_missions(
     _authenticated_gateway_id: GatewayAuth,
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[MissionRead]:
+    if settings.app_env != "test":
+        return []
     missions = session.scalars(
         select(Mission)
         .where(Mission.status == MissionStatus.AUTHORIZED)
@@ -169,6 +181,7 @@ def authorized_missions(
 
 @router.post(
     "/missions/{mission_id}/claim",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=GatewayClaimResult,
     summary="Consumir autorização e assumir missão idempotentemente",
 )
@@ -219,6 +232,7 @@ def release_revision(
 
 @router.post(
     "/missions/{mission_id}/upload-status",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=MissionRead,
     summary="Registrar resultado idempotente do upload MAVLink",
 )
@@ -248,6 +262,7 @@ async def upload_status(
 
 @router.post(
     "/missions/{mission_id}/status",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=MissionRead,
     summary="Aplicar transição reportada por telemetria real",
 )
@@ -342,11 +357,14 @@ async def gateway_event(
 )
 def pending_commands(
     session: DatabaseSession,
+    settings: AppSettings,
     authenticated_gateway_id: GatewayAuth,
     gateway_id: str = Query(min_length=2, max_length=120),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[GatewayCommand]:
     _require_gateway_identity(authenticated_gateway_id, gateway_id)
+    if settings.app_env != "test":
+        return []
     return list(
         session.scalars(
             select(GatewayCommand)
@@ -373,6 +391,7 @@ def pending_commands(
 
 @router.post(
     "/commands/{command_id}/ack",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=GatewayCommandRead,
     summary="Reconhecer ou concluir comando idempotentemente",
 )

@@ -1,0 +1,66 @@
+{
+    "started_at":  "2026-11-25T00:43:58.903658+00:00",
+    "sampled_at":  "2026-11-25T00:50:36.632225+00:00",
+    "pid":  41428,
+    "endpoint":  [
+                     "127.0.0.1",
+                     14445
+                 ],
+    "socket_observations":  {
+                                "udp_receive_calls":  155520,
+                                "udp_received_bytes":  9395770,
+                                "mavlink_send_attempts":  0
+                            },
+    "source_endpoints":  {
+                             "127.0.0.1:62088":  155520
+                         },
+    "receive_message_ids":  {
+                                "105":  19673,
+                                "31":  19673,
+                                "33":  19673,
+                                "30":  39342,
+                                "32":  11802,
+                                "331":  11802,
+                                "111":  3934,
+                                "141":  3934,
+                                "83":  3934,
+                                "245":  1968,
+                                "85":  3934,
+                                "1":  1968,
+                                "74":  3934,
+                                "24":  3935,
+                                "230":  394,
+                                "12901":  394,
+                                "29":  394,
+                                "2":  394,
+                                "0":  788,
+                                "109":  787,
+                                "8":  393,
+                                "12904":  393,
+                                "42":  391,
+                                "4":  393,
+                                "147":  197,
+                                "436":  197,
+                                "242":  197,
+                                "241":  197,
+                                "380":  193,
+                                "411":  131,
+                                "253":  17,
+                                "410":  164
+                            },
+    "gateway_id":  "dev-gateway-01",
+    "vehicle_identifier":  "academic-vehicle-01",
+    "httpx_success_log_counts":  {
+                                     "observations_204":  18,
+                                     "heartbeat_200":  191
+                                 },
+    "physical_link_evidence":  {
+                                   "bus_reported_product":  "PX4 FMU v6C.x",
+                                   "qgc_udp_source":  62088,
+                                   "pnp_port":  "Dispositivo Serial USB (COM4)",
+                                   "board_uid_verified":  false,
+                                   "qgc_version":  "5.1.5.0",
+                                   "qgc_pid":  2244
+                               },
+    "method":  "Python UDP socket recvfrom/send methods instrumented on the gateway process. HTTP results counted in httpx application logs. No host-wide packet capture."
+}

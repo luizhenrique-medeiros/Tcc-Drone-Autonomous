@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import AdminDecisionType, OrderStatus
 
@@ -15,6 +15,12 @@ class ApproveOrderRequest(BaseModel):
 
 class RejectOrderRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=1000)
+
+
+class ConfirmDeliveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    evidence: str = Field(min_length=10, max_length=1000)
 
 
 class AdminCustomerSummary(BaseModel):

@@ -12,4 +12,6 @@ andamento: consulte `docs/MIGRACAO_PX4_QGROUNDCONTROL.md`, preserve os
 bloqueios de segurança existentes e não trate funcionalidades ainda não
 validadas como implementadas.
 
-O painel administrativo pode solicitar upload, armamento normal e início de missão por ações explícitas e separadas do operador autenticado, via gateway. O site não realiza checks de aptidão de voo. O PX4 decide se aceita os comandos, com proteções nativas preservadas; o QGroundControl permanece disponível. Valide SITL e hardware antes de habilitar comandos reais.
+O painel aprova o pedido, gera a missão e disponibiliza o arquivo `.plan` por pedido e revisão. O operador abre e revisa o plano no QGroundControl e usa esse aplicativo para todas as ações na Pixhawk. O PX4 mantém suas proteções nativas.
+
+Site e gateway acompanham passivamente a telemetria. Não habilite envio de comandos, consultas ativas, transferências de missão ou alteração de parâmetros pelo gateway real. Exportação independe da aeronave e não confirma upload, voo ou entrega. Comandos legados ficam isolados em testes.

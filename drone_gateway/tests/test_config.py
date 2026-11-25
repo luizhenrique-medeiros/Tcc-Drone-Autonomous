@@ -102,6 +102,24 @@ def test_qgroundcontrol_forward_uses_passive_udp_endpoint() -> None:
     assert settings.is_hardware_mode
 
 
+def test_container_qgroundcontrol_forward_only_accepts_loopback_sitl() -> None:
+    options = {
+        "_env_file": None,
+        "autopilot_system": "PX4",
+        "gateway_runtime": "container",
+        "mavlink_mode": "qgroundcontrol_forward",
+        "mavlink_forward_source": "SITL",
+        "mavlink_connection": "udpin:127.0.0.1:14558",
+    }
+    assert Settings(**options).effective_mavlink_connection == "udpin:127.0.0.1:14558"
+    with pytest.raises(ConfigurationError, match="hardware"):
+        Settings(**{**options, "mavlink_forward_source": "HARDWARE_REAL"})
+    with pytest.raises(ConfigurationError, match="hardware"):
+        Settings(**{**options, "mavlink_connection": "udpin:0.0.0.0:14558"})
+    with pytest.raises(ConfigurationError, match="somente recepção"):
+        Settings(**options, allow_telemetry_requests=True)
+
+
 @pytest.mark.parametrize("mode", [MavlinkMode.QGROUNDCONTROL_FORWARD, MavlinkMode.MAVLINK_ROUTER])
 @pytest.mark.parametrize(
     "flag",

@@ -2,12 +2,7 @@
 
 ## Fluxo PX4 vigente
 
-O painel aprova pedidos, exporta o rascunho `.plan`, guarda a revisão e
-exibe telemetria. Os dados atuais do veículo podem preencher a origem do
-rascunho. Sem telemetria, o arquivo usa a origem planejada da missão.
-O operador revisa, grava e opera a Pixhawk pelo QGroundControl, com as
-proteções nativas do PX4. Os contratos de autorização, claim e comandos
-descritos nas seções legadas permanecem para testes e simulação.
+Flutter registra o pedido e o React permite aprovar, gerar e exportar a revisão `.plan`. A origem, o destino e a altitude relativa vêm da missão persistida. O operador revisa o arquivo e opera a Pixhawk pelo QGroundControl. A Pixhawk com PX4 aplica suas proteções. O gateway escuta o encaminhamento MAVLink e publica observações autenticadas na API.
 
 ## Visão geral
 
@@ -17,13 +12,12 @@ O sistema mantém um monólito modular como fonte de verdade e separa apenas os 
 Aplicativo Flutter ─┐
                     ├─ REST/WebSocket ─ FastAPI ─ PostgreSQL/PostGIS
 Painel React ───────┘                      │
-                                          │ contrato autenticado
-                                          ▼
+                                          ▲ snapshots e eventos autenticados
                                 Drone Gateway Python
-                                          │ MAVLink
-                           Mission Planner/SITL/Pixhawk 6C
-                                          │
-                                      Drone real
+                                          ▲ UDP de recepção
+                                    QGroundControl
+                                          ↕ MAVLink
+                                      Pixhawk / PX4
 ```
 
 O painel não é um módulo visual do backend e o gateway não é um microsserviço de domínio: ele é um adaptador operacional isolado que não acessa o banco. Redis, Celery, MQTT e Kubernetes não fazem parte desta arquitetura.
@@ -36,7 +30,7 @@ O Flutter roda em Android e Web, autentica clientes, apresenta o catálogo acad�
 
 ### Painel administrativo
 
-O React autentica `ADMIN`, mostra fila e detalhes, mapa satélite, coordenadas finais, decisões, missão, waypoints, saúde do veículo, checks automáticos, três confirmações humanas, autorização de voo, telemetria e eventos. Checks usam `PASS`, `WARNING` e `BLOCKING`; a frase digitada não faz parte da autorização. Toda evidência operacional conserva origem (`SIMULATION`, `SITL`, `HARDWARE_REAL` ou `UNKNOWN`), horário de recebimento e estado de frescor. A interface pode solicitar armamento normal, `START`, `PAUSE`, `CONTINUE`, RTL ou abortamento, mas cada ação passa novamente por estado, idade, identidade, saúde e gates no backend e no gateway. O armamento usa endpoint e confirmação próprios, nunca é consequência de upload, health, autorização ou `START`.
+O React autentica `ADMIN`, mostra fila, detalhes, mapa e coordenadas finais, permite gerar e baixar a revisão e registrar a conclusão da entrega com evidência. Telemetria e eventos preservam origem, horário e atualidade. A área de telemetria mostra observações do veículo e associa progresso à revisão somente com evidência inequívoca.
 
 ### Backend
 
@@ -59,59 +53,22 @@ Order histórico
 
 O cliente pode manter de zero a três atalhos, mas continua livre para usar qualquer quantidade de destinos manuais válidos em pedidos. Cada atalho conserva `map_provider`, `map_type` (`hybrid` ou `satellite`) e as quatro flags verdadeiras produzidas em sua criação. Editar ou excluir `SavedLocation` não percorre nem altera `DeliveryPoint` existente. O valor interno `SAVED_POINT` registra a origem da seleção no snapshot sem transformar o atalho na autoridade do destino histórico.
 
-### Gateway e Mission Planner
+### Gateway e QGroundControl
 
-O gateway é o único código que abre MAVLink. Uma implementação fake permite teste rápido; SITL valida o protocolo; o adaptador real exige configuração explícita. O profile Docker usa configuração `GATEWAY_CONTAINER_*` separada e recusa modos de hardware; `direct` e `mission_planner_forward` executam somente no host Windows pelo launcher, que identifica `GATEWAY_RUNTIME=host`. `ALLOW_VEHICLE_ARM=false` é um gate independente e conservador: só uma solicitação administrativa dedicada, já persistida e auditada, pode chegar ao comando MAVLink normal de armamento. O Mission Planner revisa o arquivo `QGC WPL 110`, monitora, calibra e fornece evidência operacional. Não há automação de cliques na sua interface.
+O gateway recebe MAVLink por UDP do QGroundControl e publica snapshots e eventos na API. O gateway operacional força o transporte passivo e recusa configurações de escrita, inclusive o perfil experimental de bancada. Seu ciclo não consome filas nem retoma o journal de comandos. O QGroundControl usa o enlace configurado do operador. A API não oferece filas legadas fora de `APP_ENV=test`. Em testes, o fake e um perfil PX4 SITL isolado cobrem os contratos históricos.
 
 ### Pixhawk 6C e drone
 
-A Pixhawk/ArduPilot é a fonte de verdade física durante execução. O software prepara conexão, leitura, upload e telemetria, mas não comprova integração nem voo sem hardware e evidência manual. Pinagem, parâmetros e mecanismo de carga só são definidos depois da montagem confirmada.
+O PX4 é a fonte do estado físico e decide se aceita ações operadas no QGroundControl. Leituras ausentes permanecem nulas. O gateway marca amostras antigas e a API preserva o horário da observação.
 
 ## Fluxo de dados e controle
 
-1. O cliente escolhe uma localização salva ou pesquisa/abre manualmente uma região; nenhum desses atos confirma sozinho o destino.
-2. Uma localização salva centraliza o mesmo mapa satélite/híbrido. O cliente revisa, pode ajustar o ponto ou as instruções somente para o pedido e confirma novamente as coordenadas finais e a área segura; só então o app produz `saved_location_review_confirmed=true` e `saved_location_safe_area_confirmed=true`. Qualquer ajuste de ponto ou instrução segue o caminho manual de `DeliveryPoint`, sem mutar o atalho nem perder o valor revisado.
-3. No caminho manual, o resultado de busca apenas move a câmera; a etapa satélite exige a seleção final.
-4. `OrderCreate` recebe exatamente um de `delivery_point_id` ou `saved_location_id`. No segundo caminho, também exige as duas confirmações atuais, valida propriedade e copia a localização para um novo `DeliveryPoint` na mesma transação do pedido, preservando provider/tipo salvos e sem sintetizar flags de confirmação.
-5. Se o cliente optar por salvar um novo ponto manual, o aplicativo dispara `POST /saved-locations` somente depois da criação do pedido e não aguarda essa chamada para devolver o pedido à interface. Recusa, latência, limite, offline ou falha não desfazem nem bloqueiam o pedido; o resultado tardio aparece apenas como aviso do atalho.
-6. O pedido submetido entra em `PENDING_ADMIN_APPROVAL`.
-7. Um administrador aprova ou rejeita. Rejeição exige motivo.
-8. Para pedido aprovado, uma ação separada gera a missão e seu arquivo versionado.
-9. O administrador registra abertura/revisão no Mission Planner.
-10. Um snapshot recente, não nulo e com origem conhecida alimenta checks automáticos; o operador confirma somente área/condições, inspeção física do drone/carga e sua prontidão.
-11. A autorização fica ligada à versão, expira e é de uso único.
-12. O gateway reivindica a missão de forma idempotente, valida novamente, envia, recebe o ACK e relê o conteúdo. Só a comparação completa publica `VERIFIED`.
-13. Em `VERIFIED`, com a missão já reivindicada pelo gateway do mesmo veículo, o administrador pode solicitar o armamento normal por `POST /api/v1/admin/missions/{id}/arm`. Backend e gateway exigem origem `SITL` ou `HARDWARE_REAL`, snapshot fresco e completo, preflight aprovado, modo `STABILIZE` e os gates `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros. O aceite do request não comprova armamento: a conclusão exige `COMMAND_ACK` correlacionado e um heartbeat novo com `armed=true`.
-14. O armamento não inicia a missão. Uma ação administrativa posterior e separada solicita `START`; `PAUSE` e `CONTINUE` também são comandos auditados e ACK-aware. O sistema nunca usa force/bypass, nunca rearma automaticamente e não altera parâmetros para contornar pre-arm.
-15. Telemetria e eventos atualizam backend, painel e `Meus pedidos`; uma desconexão conserva o último snapshot e aciona reconexão/refetch.
-16. Após o comando do mecanismo ser registrado — sem presumir entrega física — a missão retorna à origem e só conclui com a evidência operacional prevista; falhas permanecem falhas.
-
-## Autoridade em duas etapas
-
-Autorização consumida vencida durante espera em `VERIFIED` pode ser renovada
-pelo fluxo humano auditado existente, sem nova tabela ou máquina de estados.
-O novo registro pertence ao mesmo claim e artefato. O gateway atualiza o journal
-ao revalidar um novo comando administrativo; renovação nunca dispara ARM/START.
-A leitura passiva de telemetria também é publicada em `WAITING_OPERATOR_ARM`,
-independentemente dos gates de mutação, sem avaliar progresso da missão.
-
-```text
-PENDING_ADMIN_APPROVAL --aprovar--> APPROVED --preparar--> MISSION_READY
-       └--rejeitar(motivo)--> REJECTED
-
-UNDER_REVIEW --revisar--> READY_FOR_AUTHORIZATION
-READY_FOR_AUTHORIZATION --autorizar(3 confirmações + checks sem BLOCKING)--> AUTHORIZED
-```
-
-Nenhuma transação, botão ou endpoint reúne as duas setas. Alterar a missão invalida autorização anterior.
-
-Revisão administrativa de origem em pré-voo mantém a mesma missão/pedido e
-incrementa sua versão. `SystemEvent` conserva o JSON serializado e o arquivo
-anterior, incluindo hash, waypoints e revisão. Não há nova tabela ou acesso
-direto do gateway ao banco. Um reconhecimento autenticado da versão substituída,
-com gates fechados e veículo desarmado, permite ao executor liberar somente seu
-journal de espera. A missão física antiga continua armazenada até um upload
-posterior autorizado e verificado; a revisão não altera Home/RTL na Pixhawk.
+1. O cliente seleciona a região e confirma o ponto final no mapa. Se partir de um atalho, os dados revisados são copiados para o snapshot do pedido.
+2. Um administrador aprova o pedido ou rejeita com motivo. Em ação separada, gera a missão versionada.
+3. O painel baixa o `.plan` da revisão. O backend confere versão e hash, usa a origem planejada e o destino da revisão e registra a exportação.
+4. O operador abre e revisa o plano no QGroundControl. As ações do veículo acontecem no QGroundControl.
+5. O gateway publica telemetria. O backend mantém um registro de voo observado por sessão de armamento. A missão se vincula por evidência de identidade ou por seleção explícita do administrador. Só a verificação do plano a bordo identifica os itens da revisão. O andamento observado é exibido separadamente do estado comercial do pedido.
+6. A entrega é concluída administrativamente, com evidência e ator registrados.
 
 ## Estados
 
@@ -123,25 +80,19 @@ As transições válidas ficam no domínio, não nos routers ou componentes visu
 
 ## Segurança e falhas
 
-- JWT de cliente/admin e chave própria do gateway; propriedade do recurso é verificada.
-- Rotas de `saved-locations` derivam `user_id` exclusivamente do JWT e devolvem a resposta não enumerável do projeto para recurso alheio.
-- Antes de contar e inserir uma localização, a transação bloqueia a linha do cliente com `FOR NO KEY UPDATE`; duas criações concorrentes não ultrapassam três.
-- Segredos vêm do ambiente; CORS é restrito; logs removem token, senha e chaves.
-- Heartbeat, GPS, preflight do veículo, RTL, origem, distância e área controlada são pré-condições; bateria e EKF são informativos no site. O gateway mantém sua verificação independente de bateria. Geofence não é exigida pelo sistema e qualquer proteção ativa permanece sob controle do PX4.
-- Timeouts e reconexão têm limite; upload/claim/eventos possuem chaves de idempotência.
-- O ARM normal possui endpoint, chave de idempotência, confirmações presenciais, auditoria, ACK e heartbeat próprios; campo ausente, nulo, vencido ou divergente falha fechado.
-- Perda do backend não muda a autoridade do ArduPilot sobre um voo em execução.
-- Abortamento e RTL são decisões registradas; o sistema não altera parâmetros para esconder pre-arm.
-- Falha de mapa preserva o pedido e permite tentar novamente; sem mapa real não há confirmação operacional.
-- Falha ao criar o atalho opcional depois do pedido preserva o `DeliveryPoint` e o pedido já criados; não há substituição automática ao atingir o limite.
+- JWT de cliente/admin, propriedade do recurso, autenticação própria do gateway e segredos no ambiente.
+- Transações de criação e de revisão preservam integridade, versão e dados históricos. Localizações salvas continuam limitadas a três por conta.
+- Disponibilidade de telemetria não condiciona aprovação, geração ou exportação. Nenhuma regra do site substitui proteções ou decisões operacionais do PX4.
+- A observação passiva não atualiza parâmetros, transmite consultas, transfere missão ou reage a falhas com comandos. Falhas e dados antigos permanecem visíveis.
+- A confirmação idempotente de entrega usa lock do pedido e registra a evidência no mesmo commit.
 
 ## Ambientes e evidência
 
 | Ambiente | MAVLink | Objetivo | Evidência permitida |
 |---|---|---|---|
-| `test` | fake | testes determinísticos | código testado |
-| `development` | fake ou SITL | integração local | simulação/SITL |
-| `demo` | SITL ou real explícito | apresentação controlada | registrar qual modo foi usado |
+| `test` | fake ou SITL isolado | testes determinísticos | código testado |
+| `development` | fake ou recepção passiva | integração local | simulação ou telemetria observada |
+| `demo` | recepção passiva | apresentação controlada | registrar origem e atualidade |
 | `production` | não habilitado no MVP | evolução futura | nenhuma alegação comercial |
 
 Uma passagem em fake não prova SITL; SITL não prova Pixhawk; bancada sem hélices não prova voo; um voo manual não prova missão autônoma completa.

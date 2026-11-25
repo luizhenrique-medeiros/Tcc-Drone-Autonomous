@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     gateway_api_key: str = "development-gateway-key"
     gateway_id: str = Field(default="dev-gateway-01", min_length=2, max_length=120)
     px4_sitl_plan_validation: bool = False
+    px4_bench_arm_enabled: bool = False
+    px4_bench_arm_vehicle_identifier: str = ""
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,"
         "http://localhost:5173,http://127.0.0.1:5173,"
@@ -100,6 +102,15 @@ class Settings(BaseSettings):
     def reject_development_secrets_in_production(self) -> Settings:
         if self.px4_sitl_plan_validation and self.app_env != "test":
             raise ValueError("PX4_SITL_PLAN_VALIDATION exige APP_ENV=test")
+        if self.px4_bench_arm_enabled and (
+            self.app_env != "test"
+            or self.px4_sitl_plan_validation
+            or not self.px4_bench_arm_vehicle_identifier.strip()
+            or self.gateway_api_key in {"development-gateway-key", "change_me_gateway_key"}
+        ):
+            raise ValueError(
+                "ARM físico de bancada exige ambiente de teste, alvo e credencial próprios"
+            )
         if self.app_env in {"demo", "production"}:
             if self.jwt_secret == "development-only-change-me":
                 raise ValueError("JWT_SECRET deve ser configurado em demo/production")

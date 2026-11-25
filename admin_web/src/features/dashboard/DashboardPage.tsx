@@ -10,7 +10,7 @@ import {
   Satellite,
   ShieldAlert,
 } from 'lucide-react';
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { OperationalAlerts } from '../../components/OperationalAlerts';
 import { OperationalSourceBadge } from '../../components/OperationalSourceBadge';
@@ -34,6 +34,8 @@ import {
   type Vehicle,
   type VehicleHealth,
 } from '../../services';
+import { isBenchObservation } from '../../services/bench-mode';
+import { benchModePreference } from '../../services/session';
 import {
   formatDateTime,
   formatNullableText,
@@ -53,6 +55,7 @@ interface DashboardData {
 }
 
 export function DashboardPage() {
+  const benchMode = benchModePreference.get();
   const loader = useCallback(async (): Promise<DashboardData> => {
     const [orders, vehicles, events] = await Promise.all([
       adminApi.listOrders(),
@@ -95,6 +98,12 @@ export function DashboardPage() {
   const { data, isLoading, error, reload } = useAsyncData(loader);
   useOperationsStream(() => void reload());
 
+  useEffect(() => {
+    if (!benchMode) return;
+    const timer = window.setInterval(() => void reload(), 10_000);
+    return () => window.clearInterval(timer);
+  }, [benchMode, reload]);
+
   if (isLoading && !data) return <StateView state="loading" />;
   if (error && !data) {
     return (
@@ -122,6 +131,7 @@ export function DashboardPage() {
   ).length;
   const active = data.missions.filter((mission) => mission.status === 'EXECUTING');
   const vehicle = data.vehicles[0];
+  const benchModeRequested = benchMode && !error && !data.healthError;
   const operationalAlerts = generateOperationalAlerts({
     backendError:
       data.healthError ||
@@ -131,6 +141,7 @@ export function DashboardPage() {
     vehicle,
     health: data.health,
     events: data.events,
+    benchMode: benchModeRequested,
     expectVehicle: true,
   });
 
@@ -147,6 +158,11 @@ export function DashboardPage() {
         }
       />
       {error ? <Feedback tone="warning">{error}</Feedback> : null}
+      {isBenchObservation(benchModeRequested, data.health) ? (
+        <Feedback tone="info" className="page-feedback">
+          Modo bancada ativo. Avisos esperados de GPS ficam na trilha de eventos.
+        </Feedback>
+      ) : null}
 
       <section className="metrics-grid" aria-label="Indicadores operacionais">
         <Link className="metric-card metric-card--orange" to="/orders?status=pending">

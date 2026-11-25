@@ -1,29 +1,15 @@
-# Diagnóstico passivo PX4
+# Conexão e acompanhamento passivo PX4
 
-Esta etapa não prepara nem envia missões. Descubra a versão PX4, a conexão e o
-baud rate com o operador. Uma porta serial deve pertencer a apenas um processo;
-o QGroundControl pode encaminhar telemetria recebida a um destino UDP. Esse
-encaminhamento é unidirecional e não transmite comandos ao veículo. Para
-consultas bidirecionais de bancada, use a rota serial dedicada do MAVProxy
-descrita abaixo.
-Não suponha que dois aplicativos possam abrir a mesma COM simultaneamente.
+O QGroundControl opera a aeronave e pode encaminhar os dados recebidos em uma
+direção por UDP. O gateway ouve nesse destino e publica observações na API.
+Na conexão direta do QGroundControl, somente ele abre a porta física. Se a
+instalação usa um roteador, somente o roteador abre a porta física. Nenhuma
+segunda COM é exigida para o acompanhamento.
 
-No ambiente do gateway, configure `AUTOPILOT_SYSTEM=PX4`, a conexão real e os
-cinco controles `ALLOW_MISSION_UPLOAD`, `ALLOW_FLIGHT_COMMANDS`,
-`ALLOW_MISSION_START`, `ALLOW_VEHICLE_ARM` e `ALLOW_TELEMETRY_REQUESTS` como
-`false`. Confira também os valores existentes no `.env`, pois valores ativos
-impedem a inicialização. Para listar portas sem abrir a conexão:
-
-```powershell
-cd drone_gateway
-.\.venv\Scripts\python.exe -m app.tools.list_ports
-```
-
-Após confirmar a topologia, `scripts/start_gateway.ps1 -DiagnoseOnly` executa
-diagnóstico de recepção passiva. Não se pode inferir o estado de segurança nem
-uma missão válida pela ausência de mensagens. Consulte `docs/BUILD_AND_RUN.md`
-para iniciar banco, backend, painel e aplicação cliente; essas instruções ainda
-contêm aspectos legados que precisam ser revisados para a migração.
+Mantenha `ALLOW_MISSION_UPLOAD`, `ALLOW_FLIGHT_COMMANDS`,
+`ALLOW_MISSION_START`, `ALLOW_VEHICLE_ARM` e `ALLOW_TELEMETRY_REQUESTS`
+em `false`. Use `scripts/start_gateway.ps1 -ObserveOnly` para o serviço
+contínuo. `-DiagnoseOnly` recebe por um intervalo limitado e termina.
 
 ## Recepção passiva do QGroundControl
 
@@ -37,14 +23,47 @@ contêm aspectos legados que precisam ser revisados para a migração.
    `MAVLINK_FORWARD_SOURCE` é `UNKNOWN` por padrão. Configure `HARDWARE_REAL`
    ou `SITL` somente após o operador confirmar a origem; isso é declaração
    operacional, não detecção automática do equipamento.
-3. Mantenha todos os cinco controles `ALLOW_*` listados acima em `false` e
-   execute `scripts/start_gateway.ps1 -DiagnoseOnly`. O modo é exclusivamente
-   passivo mesmo que a confirmação de hardware esteja habilitada.
-4. Confira se o diagnóstico recebeu heartbeat PX4 e identifique system/component
-   ID. Leituras não transmitidas permanecem indisponíveis. A recepção do
-   heartbeat não valida GPS, bateria ou segurança do voo.
+3. Execute `scripts/start_gateway.ps1 -ObserveOnly`. Para a instalação local
+   com encaminhamento QGroundControl, use `udpin:127.0.0.1:14445` quando esse
+   for o destino configurado no QGroundControl.
+4. Em **Telemetria**, confira a origem, os IDs do veículo e o horário da
+   atualização. Leituras ausentes continuam indisponíveis. O gateway não
+   solicita posição, taxas de mensagens, parâmetros nem lista de missões.
+
+O snapshot de saúde usa o mesmo intervalo no gateway e no backend para
+altitude relativa, de -1000 a 100000 m. Ele mantém a altitude relativa e a
+altitude AMSL em campos distintos, conforme as referências reportadas pelo PX4.
+
+Na amostragem de bancada de 24/11/2026, 22 snapshots do encaminhamento UDP
+14445 trouxeram `HEARTBEAT`, `GLOBAL_POSITION_INT`, `EXTENDED_SYS_STATE`
+e `MISSION_CURRENT`. O PX4 informou veículo desarmado, em solo, sem missão
+e fora do modo de missão. Nessa amostra ficaram sem evidência o identificador
+nativo do plano, a sequência e a quantidade de itens válidas, além de
+`MISSION_ITEM_REACHED`. As transições de voo foram testadas por reprodução
+de mensagens. Nenhum voo foi realizado para obter a amostra de bancada.
 
 Fonte: [configuração MAVLink do QGroundControl](https://docs.qgroundcontrol.com/Stable_V5.0/en/qgc-user-guide/settings_view/mavlink.html).
+
+## Modo bancada no painel
+
+Em **Configurações → Ativar modo bancada**, a opção vale para a sessão do
+navegador e inicia desativada. Quando a leitura atual confirma hardware
+desarmado, heartbeat e conexão passiva, posição, GPS, Home e RTL aparecem como
+informativos. Avisos conhecidos de fix e PDOP do GPS desse veículo ficam na
+trilha de eventos. As proteções do PX4 e os controles do gateway continuam
+em vigor.
+
+## Operação no QGroundControl
+
+No painel, baixe o `.plan` da revisão e abra o arquivo em **Plan → Open**.
+Revise o plano antes de qualquer ação operacional. O QGroundControl é a única
+interface do fluxo vigente para upload, armamento, início, retorno e
+desarmamento. Veja o [fluxo administrativo](ADMIN_FLOW.md).
+
+O perfil experimental `px4_bench_arm` foi retirado da inicialização e da API
+operacionais. O código e os testes com transporte substituído foram
+preservados como histórico do ensaio. Uma segunda conexão serial usada naquele
+experimento deixou de fazer parte da operação.
 
 ## Supervisão local da conexão PX4
 
@@ -82,34 +101,14 @@ O log do roteador também exibiu `fence breach`; isso não comprova por si só a
 situação do geofence e deve ser esclarecido no QGroundControl antes de qualquer
 teste físico. Nenhum ARM ou início de missão foi enviado.
 
-## Conferência da missão na bancada
+## Integridade da missão observada
 
-O supervisor Windows disponibiliza um diretório local de solicitações em
-`%LOCALAPPDATA%\DevCoreMavlinkRouter\bench`. A ferramenta entrega uma
-solicitação ao gateway de observação já conectado. Ela não abre COM7 nem
-uma segunda escuta UDP. A consulta usa somente o protocolo de leitura da
-missão, com timeout e identificação explícita do sistema/componente PX4.
-O ACK transmitido pelo gateway encerra a leitura.
+Registre a revisão salva no QGroundControl quando precisar de trilha de
+auditoria. O download e o registro do arquivo são independentes do estado
+da Pixhawk. Se faltarem evidências de que a observação se refere àquela
+revisão, o painel mantém somente a observação geral do veículo.
 
-1. Com o operador presente e as hélices removidas, confira no QGroundControl
-   que o veículo está desarmado e anote seus IDs MAVLink.
-2. Salve em disco o `.plan` revisado que deseja comparar. Durante a leitura,
-   aguarde para iniciar outra transferência de missão no QGroundControl.
-3. Na raiz do repositório, execute a ferramenta, substituindo os argumentos
-   pelo arquivo e pelos IDs confirmados no passo 1.
-
-```powershell
-.\drone_gateway\.venv\Scripts\python.exe -m app.tools.px4_bench_readback `
-  'C:\caminho\missao-revisada.plan' --system-id 1 --component-id 1
-```
-
-`verified: true` significa que a contagem, as sequências, os comandos,
-os frames, os parâmetros e as coordenadas recebidas foram conferidos com
-o arquivo identificado pelo `plan_sha256`. Uma divergência sai com código
-1 e preserva o plano da controladora. A leitura inclui identidade e integridade
-do plano, com escopo distinto da verificação operacional de voo.
-
-O perfil de leitura exige PX4 no host, origem física e enlace
-`mavlink_router`. As permissões de transmissão operacional do backend e
-do gateway continuam bloqueadas. O QGroundControl segue disponível para
-diagnóstico e operação manual. Consulte o [protocolo de missões MAVLink](https://mavlink.io/en/services/mission.html).
+A releitura ativa pela ferramenta experimental `px4_bench_readback` pertence
+ao histórico da migração. A inicialização operacional não atende solicitações
+dessa ferramenta. A conferência da missão armazenada na Pixhawk é realizada
+pelo operador no QGroundControl.

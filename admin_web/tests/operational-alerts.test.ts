@@ -3,10 +3,77 @@ import {
   generateOperationalAlerts,
   type SystemEvent,
   type TelemetryPoint,
+  type VehicleHealth,
 } from '../src/services';
 import { readyHealth, readyMission, readyVehicle } from './fixtures';
 
 const now = new Date('2026-08-06T12:10:00Z');
+
+describe('modo bancada nos alertas operacionais', () => {
+  const health: VehicleHealth = {
+    ...readyHealth,
+    source: 'HARDWARE_REAL',
+    connection_mode: 'qgroundcontrol_forward',
+    mission_upload_enabled: false,
+  };
+  const warning: SystemEvent = {
+    id: 'gps-warning',
+    vehicle_id: health.vehicle_id,
+    type: 'MAVLINK_STATUSTEXT',
+    severity: 'WARNING',
+    message: 'Preflight: GPS PDOP too high',
+    created_at: now.toISOString(),
+  };
+
+  it('oculta o aviso esperado somente quando o operador ativa o modo', () => {
+    const events = [warning];
+    expect(generateOperationalAlerts({ health, events, now })[0]?.what).toBe(warning.message);
+    expect(generateOperationalAlerts({ benchMode: true, health, events, now })).toEqual([]);
+    expect(events).toEqual([warning]);
+  });
+
+  it.each<Partial<VehicleHealth>>([
+    { source: 'SITL' },
+    { armed: true },
+    { armed: null },
+    { connected: false },
+    { heartbeat_ok: false },
+    { is_stale: true },
+    { connection_mode: 'real' },
+    { mission_upload_enabled: true },
+    { flight_commands_enabled: true },
+    { vehicle_arm_enabled: null },
+    { mission_start_enabled: true },
+  ])('mantém o aviso quando a recepção passiva não está confirmada: %o', (changes) => {
+    const alerts = generateOperationalAlerts({
+      benchMode: true,
+      health: { ...health, ...changes },
+      events: [warning],
+      now,
+    });
+    expect(alerts.map((alert) => alert.what)).toContain(warning.message);
+  });
+
+  it.each<Partial<SystemEvent>>([
+    { severity: 'ERROR' },
+    { severity: 'CRITICAL' },
+    { type: 'GATEWAY_WARNING' },
+    { vehicle_id: undefined },
+    { vehicle_id: 'outro-veiculo' },
+    { mission_id: 'missao-1' },
+    { message: 'Preflight: battery low' },
+    { message: 'GPS failure in flight' },
+  ])('preserva avisos fora dos testes de GPS desse veículo: %o', (changes) => {
+    const event = { ...warning, ...changes };
+    const alerts = generateOperationalAlerts({
+      benchMode: true,
+      health,
+      events: [event],
+      now,
+    });
+    expect(alerts[0]?.what).toBe(event.message);
+  });
+});
 
 describe('gerador puro de alertas operacionais', () => {
   it('relata a disponibilidade da telemetria sem avaliar aptidão para voo', () => {

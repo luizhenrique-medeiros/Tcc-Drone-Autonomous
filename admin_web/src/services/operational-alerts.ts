@@ -1,3 +1,4 @@
+import { isBenchGpsWarning, isBenchObservation } from './bench-mode';
 import type {
   EventSeverity,
   SystemEvent,
@@ -33,6 +34,7 @@ export interface OperationalAlertInput {
   health?: VehicleHealth | null;
   telemetry?: TelemetryPoint[];
   events?: SystemEvent[];
+  benchMode?: boolean;
   expectVehicle?: boolean;
   now?: Date;
   cooldownMs?: number;
@@ -207,6 +209,7 @@ export const generateOperationalAlerts = ({
   health,
   telemetry = [],
   events = [],
+  benchMode = false,
   expectVehicle = false,
   now = new Date(),
   cooldownMs = 30_000,
@@ -315,7 +318,16 @@ export const generateOperationalAlerts = ({
     });
   }
 
+  const benchObservation = isBenchObservation(benchMode, health);
   for (const event of events) {
+    if (
+      benchObservation &&
+      event.vehicle_id === health?.vehicle_id &&
+      !event.mission_id &&
+      event.type === 'MAVLINK_STATUSTEXT' &&
+      event.severity === 'WARNING' &&
+      isBenchGpsWarning(event.message)
+    ) continue;
     const candidate = eventCandidate(event);
     if (candidate) add(candidate);
   }

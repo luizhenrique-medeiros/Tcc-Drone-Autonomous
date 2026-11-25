@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Button, Card, Feedback, Modal, StatusBadge } from '../../design-system/components';
 import { useAsyncData } from '../../hooks/useAsyncData';
 import { getErrorMessage, type GatewayCommandStatus, type Mission, type Vehicle } from '../../services';
@@ -32,7 +32,15 @@ export function Px4SitlControls({
   mission,
   vehicle,
   onChange,
-}: { mission: Mission; vehicle: Vehicle; onChange: () => void }) {
+  armOnly = false,
+  children,
+}: {
+  mission: Mission;
+  vehicle: Vehicle;
+  onChange: () => void;
+  armOnly?: boolean;
+  children?: ReactNode;
+}) {
   const load = useCallback(() => px4SitlApi.commands(mission.id), [mission.id]);
   const { data: commands, reload, error: queryError } = useAsyncData(load);
   const [pending, setPending] = useState<Action | null>(null);
@@ -53,9 +61,13 @@ export function Px4SitlControls({
     START: mission.status === 'VERIFIED',
     RTL: mayReturn,
   };
+  const shownActions: Action[] = armOnly ? ['ARM'] : Object.keys(actions) as Action[];
+  const shownCommands = armOnly ? commands?.filter(({ command }) => command === 'ARM') : commands;
+  const maySend = (action: Action) =>
+    available[action] && Boolean(commands) && !conflicting && !queryError;
 
   const confirm = async () => {
-    if (!pending || sending || !mission.qgroundcontrol_sitl_review_event_id) return;
+    if (!pending || sending || !maySend(pending) || !mission.qgroundcontrol_sitl_review_event_id) return;
     setSending(true);
     setError('');
     try {
@@ -64,8 +76,8 @@ export function Px4SitlControls({
       } else {
         await px4SitlApi.request(mission.id, pending);
       }
-      setPending(null);
       await reload();
+      setPending(null);
       onChange();
     } catch (requestError) {
       setError(getErrorMessage(requestError));
@@ -75,25 +87,26 @@ export function Px4SitlControls({
   };
 
   return (
-    <Card title="Comandos · PX4 SITL">
+    <Card title={armOnly ? 'Teste de armamento · PX4 SITL' : 'Comandos · PX4 SITL'}>
       <div className="stack">
+        {children}
         <strong>{vehicle.name}</strong>
         {uploadStates[mission.status]
           ? <strong>{uploadStates[mission.status]}</strong>
           : <StatusBadge status={mission.status} />}
         {queryError ? <Feedback tone="error">{queryError}</Feedback> : null}
         <div className="decision-actions">
-          {(Object.keys(actions) as Action[]).map((action) => (
+          {shownActions.map((action) => (
             <Button key={action} variant="secondary"
-              disabled={!available[action] || conflicting || !commands || Boolean(queryError)}
+              disabled={!maySend(action)}
               onClick={() => { setError(''); setPending(action); }}>
               {actions[action]}
             </Button>
           ))}
         </div>
-        {commands?.length ? (
+        {shownCommands?.length ? (
           <div className="timeline">
-            {commands.map((command) => (
+            {shownCommands.map((command) => (
               <article className="timeline__item" key={command.id}>
                 <div>
                   <strong>{command.command} · {commandStates[command.status]}</strong>
@@ -108,8 +121,8 @@ export function Px4SitlControls({
       <Modal open={pending !== null} title={pending ? actions[pending] : ''} closeDisabled={sending}
         onClose={() => setPending(null)}
         footer={<><Button variant="secondary" disabled={sending} onClick={() => setPending(null)}>Cancelar</Button>
-          <Button loading={sending} onClick={() => void confirm()}>Confirmar no SITL</Button></>}>
-        <p>Confirmar esta ação para {vehicle.name} com a versão {mission.version} da missão?</p>
+          <Button loading={sending} disabled={pending === null || !maySend(pending)} onClick={() => void confirm()}>Confirmar no SITL</Button></>}>
+        <p>Confirmar {pending === 'ARM' ? 'o armamento normal' : 'esta ação'} para {vehicle.name} com a versão {mission.version} da missão?</p>
         {error ? <Feedback tone="error">{error}</Feedback> : null}
       </Modal>
     </Card>

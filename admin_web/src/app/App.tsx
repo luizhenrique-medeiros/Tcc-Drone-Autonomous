@@ -8,6 +8,7 @@ import { HistoryPage } from '../features/history/HistoryPage';
 import { MissionPage } from '../features/missions/MissionPage';
 import { OrderDetailPage } from '../features/orders/OrderDetailPage';
 import { OrdersPage } from '../features/orders/OrdersPage';
+import { SettingsPage } from '../features/settings/SettingsPage';
 import { OperationsPage } from '../features/telemetry/OperationsPage';
 import { VehiclesPage } from '../features/vehicles/VehiclesPage';
 import { NotFoundPage } from '../routes/NotFoundPage';
@@ -28,6 +29,7 @@ export function App() {
               <Route path="vehicles" element={<VehiclesPage />} />
               <Route path="operations" element={<OperationsPage />} />
               <Route path="history" element={<HistoryPage />} />
+              <Route path="settings" element={<SettingsPage />} />
               {import.meta.env.DEV ? (
                 <Route path="design-system" element={<DesignSystemPage />} />
               ) : null}

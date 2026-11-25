@@ -1,0 +1,148 @@
+{
+    "pcap_sha256":  "0d403f718ce840cfd5a5ba882d347f194b777cf76799aec59228407678894333",
+    "window_utc":  [
+                       "2026-11-25T00:16:56+00:00",
+                       "2026-11-25T00:20:36+00:00"
+                   ],
+    "source_system_component":  [
+                                    1,
+                                    1
+                                ],
+    "native_mission_id":  4256334088,
+    "wire":  {
+                 "px4_to_qgc":  {
+                                    "current":  {
+                                                    "0":  {
+                                                              "count":  142,
+                                                              "first":  "2026-11-25T00:16:56.814615+00:00",
+                                                              "last":  "2026-11-25T00:19:21.550462+00:00"
+                                                          },
+                                                    "1":  {
+                                                              "count":  16,
+                                                              "first":  "2026-11-25T00:19:22.126217+00:00",
+                                                              "last":  "2026-11-25T00:19:36.953306+00:00"
+                                                          },
+                                                    "2":  {
+                                                              "count":  58,
+                                                              "first":  "2026-11-25T00:19:36.963424+00:00",
+                                                              "last":  "2026-11-25T00:20:35.489254+00:00"
+                                                          }
+                                                },
+                                    "reached":  {
+                                                    "0":  {
+                                                              "count":  11,
+                                                              "first":  "2026-11-25T00:19:22.126251+00:00",
+                                                              "last":  "2026-11-25T00:19:31.802895+00:00"
+                                                          },
+                                                    "2":  {
+                                                              "count":  11,
+                                                              "first":  "2026-11-25T00:19:36.963451+00:00",
+                                                              "last":  "2026-11-25T00:19:47.246327+00:00"
+                                                          }
+                                                }
+                                },
+                 "qgc_to_gateway":  {
+                                        "current":  {
+                                                        "0":  {
+                                                                  "count":  142,
+                                                                  "first":  "2026-11-25T00:16:56.814733+00:00",
+                                                                  "last":  "2026-11-25T00:19:21.557487+00:00"
+                                                              },
+                                                        "1":  {
+                                                                  "count":  16,
+                                                                  "first":  "2026-11-25T00:19:22.127460+00:00",
+                                                                  "last":  "2026-11-25T00:19:36.953594+00:00"
+                                                              },
+                                                        "2":  {
+                                                                  "count":  58,
+                                                                  "first":  "2026-11-25T00:19:36.963554+00:00",
+                                                                  "last":  "2026-11-25T00:20:35.489363+00:00"
+                                                              }
+                                                    },
+                                        "reached":  {
+                                                        "0":  {
+                                                                  "count":  11,
+                                                                  "first":  "2026-11-25T00:19:22.127771+00:00",
+                                                                  "last":  "2026-11-25T00:19:31.803058+00:00"
+                                                              },
+                                                        "2":  {
+                                                                  "count":  11,
+                                                                  "first":  "2026-11-25T00:19:36.963947+00:00",
+                                                                  "last":  "2026-11-25T00:19:47.246535+00:00"
+                                                              }
+                                                    }
+                                    }
+             },
+    "ulog_sha256":  "66ad25a2fcf306a0daf64bf5a27bb1c26f7de316138a1e5bf28f0f9402707316",
+    "ulog_firmware":  "6d1773f4c1ca7d218074ea71a26f05abd46e2bf1",
+    "ulog_topics":  [
+                        "mission_result",
+                        "vehicle_land_detected",
+                        "vehicle_status"
+                    ],
+    "ulog_mission_result_changes":  [
+                                        {
+                                            "boot_seconds":  2.468,
+                                            "aligned_utc":  "2026-11-25T00:13:21.104002+00:00",
+                                            "seq_current":  0,
+                                            "seq_reached":  -1,
+                                            "seq_total":  0,
+                                            "finished":  0,
+                                            "valid":  0,
+                                            "failure":  0
+                                        },
+                                        {
+                                            "boot_seconds":  222.476,
+                                            "aligned_utc":  "2026-11-25T00:17:01.112002+00:00",
+                                            "seq_current":  0,
+                                            "seq_reached":  -1,
+                                            "seq_total":  3,
+                                            "finished":  0,
+                                            "valid":  1,
+                                            "failure":  0
+                                        },
+                                        {
+                                            "boot_seconds":  362.732,
+                                            "aligned_utc":  "2026-11-25T00:19:21.368002+00:00",
+                                            "seq_current":  1,
+                                            "seq_reached":  0,
+                                            "seq_total":  3,
+                                            "finished":  0,
+                                            "valid":  1,
+                                            "failure":  0
+                                        },
+                                        {
+                                            "boot_seconds":  377.252,
+                                            "aligned_utc":  "2026-11-25T00:19:35.888002+00:00",
+                                            "seq_current":  2,
+                                            "seq_reached":  2,
+                                            "seq_total":  3,
+                                            "finished":  1,
+                                            "valid":  1,
+                                            "failure":  0
+                                        }
+                                    ],
+    "ulog_time_alignment":  "median of pcap GLOBAL_POSITION_INT capture time minus time_boot_ms",
+    "application":  {
+                        "persisted_mission_current":  {
+                                                          "2":  1,
+                                                          "1":  1,
+                                                          "0":  2
+                                                      },
+                        "persisted_mission_item_reached":  {
+                                                               "2":  11,
+                                                               "1":  0,
+                                                               "0":  11
+                                                           },
+                        "destination_estimated":  1,
+                        "destination_confirmed":  0,
+                        "flight_item_reached":  {
+                                                    "2":  1,
+                                                    "1":  0,
+                                                    "0":  1
+                                                }
+                    },
+    "mission_id":  "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+    "vehicle_id":  "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+    "exported_plan_sha256":  "591e741160bea4c7380b8222027a21a3696b2e2b1d6d83310ef9f0a6c965a1e8"
+}

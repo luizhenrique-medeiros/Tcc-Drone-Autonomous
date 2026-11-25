@@ -1,5 +1,9 @@
 # Plano de demonstração
 
+O [ensaio de acompanhamento passivo em PX4 SITL](DEMO_SITL_PASSIVO.md)
+contém o roteiro executado pelo QGroundControl, horários, mapeamento dos
+itens e evidências do painel.
+
 ## Objetivo
 
 Demonstrar fluxo integrado até entrega e retorno. O plano principal prevê drone real apenas depois de todas as portas de segurança; SITL e vídeo são contingências transparentes.

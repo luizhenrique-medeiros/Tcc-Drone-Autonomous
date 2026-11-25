@@ -9,6 +9,8 @@ from app.core.config import Settings
 from app.core.exceptions import BackendContractError, BackendUnavailableError
 from app.models import (
     AuthorizedMission,
+    BenchArmClaim,
+    BenchArmReport,
     ClaimResponse,
     GatewayCommand,
     GatewayCommandStatus,
@@ -90,6 +92,23 @@ class BackendClient:
         }
         response = await self._request("POST", "/api/v1/gateway/heartbeat", json=body)
         return self._model(HeartbeatResponse, response)
+
+    async def claim_bench_arm(self, vehicle_id: UUID, session_id: UUID) -> BenchArmClaim | None:
+        response = await self._request(
+            "POST",
+            "/api/v1/gateway/bench-arm/claim",
+            json={"vehicle_id": str(vehicle_id), "session_id": str(session_id)},
+        )
+        if self._json(response) is None:
+            return None
+        return self._model(BenchArmClaim, response)
+
+    async def report_bench_arm(self, command_id: UUID, report: BenchArmReport) -> None:
+        await self._request(
+            "POST",
+            f"/api/v1/gateway/bench-arm/{command_id}/result",
+            json=report.model_dump(mode="json"),
+        )
 
     async def report_vehicle_observations(
         self, vehicle_id: UUID, observations: list[tuple[UUID, VehicleEvent]]

@@ -320,6 +320,48 @@ def approve_order(session: Session, order: Order, admin: User, reason: str | Non
     return order
 
 
+def confirm_delivery(session: Session, order_id: UUID, admin: User, evidence: str) -> Order:
+    order = session.scalar(
+        select(Order)
+        .where(Order.id == order_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not order:
+        raise NotFoundError("Pedido não encontrado")
+    if order.status == OrderStatus.COMPLETED:
+        return order
+    if order.status not in {
+        OrderStatus.MISSION_READY,
+        OrderStatus.WAITING_FLIGHT_AUTHORIZATION,
+        OrderStatus.MISSION_UPLOADING,
+        OrderStatus.IN_TRANSIT,
+        OrderStatus.AT_DESTINATION,
+        OrderStatus.DELIVERED,
+        OrderStatus.RETURNING,
+    }:
+        raise InvalidStateError(
+            "O pedido precisa ter uma missão preparada para registrar a entrega"
+        )
+    mission = session.scalar(select(Mission).where(Mission.order_id == order_id))
+    if not mission:
+        raise InvalidStateError("O pedido não possui missão preparada")
+    order.status = OrderStatus.COMPLETED
+    order.completed_at = datetime.now(UTC)
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=order.id,
+        mission_id=mission.id,
+        event_type="ORDER_DELIVERY_CONFIRMED",
+        message="Entrega confirmada administrativamente",
+        metadata={"evidence": evidence},
+    )
+    session.commit()
+    return order
+
+
 def reject_order(session: Session, order: Order, admin: User, reason: str) -> Order:
     if order.status != OrderStatus.PENDING_ADMIN_APPROVAL:
         raise InvalidStateError("Somente pedidos pendentes podem ser rejeitados")

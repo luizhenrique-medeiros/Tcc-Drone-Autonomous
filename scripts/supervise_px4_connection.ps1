@@ -22,8 +22,6 @@ try {
     if (-not $owned) { return }
     $logDir = Join-Path $env:LOCALAPPDATA 'DevCoreMavlinkRouter\logs'
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-    $benchDir = Join-Path $env:LOCALAPPDATA 'DevCoreMavlinkRouter\bench'
-    New-Item -ItemType Directory -Path $benchDir -Force | Out-Null
     $routerChild = $null
     $gatewayChild = $null
     while ($true) {
@@ -53,7 +51,6 @@ try {
             # This supervisor owns the dedicated COM7 radio route, not QGC UDP forwarding.
             $env:MAVLINK_FORWARD_SOURCE = 'HARDWARE_REAL'
             $env:API_BASE_URL = 'http://127.0.0.1:8000'
-            $env:PX4_BENCH_READBACK_DIR = $benchDir
             foreach ($name in @('REAL_HARDWARE_ACKNOWLEDGED', 'ALLOW_TELEMETRY_REQUESTS',
                 'ALLOW_MISSION_UPLOAD', 'ALLOW_FLIGHT_COMMANDS', 'ALLOW_MISSION_START', 'ALLOW_VEHICLE_ARM')) {
                 [Environment]::SetEnvironmentVariable($name, 'false', 'Process')

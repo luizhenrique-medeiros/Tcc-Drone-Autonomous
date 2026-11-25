@@ -1,0 +1,63 @@
+{
+  "id": "60c0c4d2-256e-4871-9e02-d3fadc90cde0",
+  "vehicle_id": "8543d035-cd69-4860-840b-74fd7925c18c",
+  "vehicle_name": "Drone acadêmico",
+  "source": "HARDWARE_REAL",
+  "mission_id": "657c05a9-c523-44d2-a899-1591f3598abf",
+  "ended_at": null,
+  "stale": false,
+  "phase": "WAITING",
+  "estimated": false,
+  "link": "OPERATOR",
+  "revision": 1,
+  "associated_at": "2026-11-25T00:49:46.657973Z",
+  "associated_by": "Administrador",
+  "last_seen_at": "2026-11-25T00:49:49.339217Z",
+  "armed": false,
+  "mode": "LOITER",
+  "landed_state": 1,
+  "mission_state": 1,
+  "sequence": null,
+  "mapping_current": false,
+  "destination_sequence": null,
+  "return_sequence": null,
+  "reached_sequences": [],
+  "destination": null,
+  "early_return": false,
+  "mission_finished_reported": false,
+  "normal_completion": false,
+  "point": {
+    "latitude": -23.1357987,
+    "longitude": -46.4741695,
+    "recorded_at": "2026-11-25T00:49:49.346084Z"
+  },
+  "altitude_m": 22.116,
+  "speed_m_s": 1.9228364465029262,
+  "distance_m": 8033.89,
+  "track": [],
+  "events": [
+    {
+      "id": "c6f5b820-707e-4248-acd6-c15c5eb27986",
+      "event_id": null,
+      "actor_user_id": "d3ef65d0-6825-417e-99ae-5ca71d55a927",
+      "actor_type": "ADMIN",
+      "order_id": "62c5041a-b985-425a-bb6a-4d7c5d30762e",
+      "mission_id": "657c05a9-c523-44d2-a899-1591f3598abf",
+      "vehicle_id": "8543d035-cd69-4860-840b-74fd7925c18c",
+      "event_type": "FLIGHT_ASSOCIATED",
+      "severity": "INFO",
+      "message": "Acompanhamento associado pelo administrador.",
+      "metadata": {
+        "flight_id": "60c0c4d2-256e-4871-9e02-d3fadc90cde0",
+        "observed_at": "2026-11-25T00:49:46.657973+00:00",
+        "mission_version": 1,
+        "mission_sha256": "527bbd2badbe4abc7d84315fd72433c2e3682b0ead5b76714cf1541d088bd8cb",
+        "exported_plan_sha256": "39089c765f443cc21bb8ad66f7a032458ffdb5a608cbc593cf53eb759522a5ff",
+        "export_event_id": "2f261a8e-041c-40da-8e5b-95127ed38635",
+        "system_id": 1,
+        "component_id": 1
+      },
+      "created_at": "2026-11-25T00:49:46.661899Z"
+    }
+  ]
+}

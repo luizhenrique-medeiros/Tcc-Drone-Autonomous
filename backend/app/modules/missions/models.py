@@ -4,7 +4,9 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from pydantic import JsonValue
 from sqlalchemy import (
+    JSON,
     DateTime,
     Enum,
     Float,
@@ -88,6 +90,21 @@ class MissionWaypoint(Base):
     label: Mapped[str] = mapped_column(String(80), nullable=False)
 
     mission: Mapped[Mission] = relationship(back_populates="waypoints")
+
+
+class ObservedFlight(Base):
+    __tablename__ = "observed_flights"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    vehicle_id: Mapped[UUID] = mapped_column(
+        ForeignKey("vehicles.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    mission_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("missions.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    evidence: Mapped[dict[str, JsonValue]] = mapped_column(JSON, nullable=False)
 
 
 class GatewayCommand(Base):

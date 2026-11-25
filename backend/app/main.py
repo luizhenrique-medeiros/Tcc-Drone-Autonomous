@@ -52,7 +52,12 @@ app.add_middleware(
         "X-Gateway-ID",
         "X-Request-ID",
     ],
-    expose_headers=["Idempotency-Replayed", "X-Mission-SHA256", "Content-Disposition"],
+    expose_headers=[
+        "Idempotency-Replayed",
+        "X-Mission-SHA256",
+        "X-Plan-SHA256",
+        "Content-Disposition",
+    ],
 )
 app.include_router(api_router)
 

@@ -41,6 +41,14 @@ class QGroundControlDraftRequest(BaseModel):
     )
 
 
+class QGroundControlExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=1)
+    expected_sha256: str = Field(min_length=64, max_length=64)
+    home_amsl_m: float | None = Field(default=None, ge=-1000, le=100_000)
+
+
 class QGroundControlReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -118,6 +126,7 @@ class AdminMissionRead(MissionRead):
     authorization: MissionAuthorizationRead | None = None
     qgroundcontrol_review_status: Literal["CURRENT", "OUTDATED"] | None = None
     qgroundcontrol_sitl_review_event_id: UUID | None = None
+    qgroundcontrol_plan_exported_at: datetime | None = None
 
 
 class MissionReview(BaseModel):

@@ -36,6 +36,7 @@ def get_db() -> Generator[Session]:
 def import_models() -> None:
     # Imports register every modular mapping in Base.metadata.
     from app.modules.approvals import models as _approvals  # noqa: F401
+    from app.modules.bench_arm import models as _bench_arm  # noqa: F401
     from app.modules.delivery_points import models as _delivery_points  # noqa: F401
     from app.modules.idempotency import models as _idempotency  # noqa: F401
     from app.modules.missions import models as _missions  # noqa: F401

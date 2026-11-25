@@ -34,6 +34,7 @@ import {
   formatDistance,
   shortId,
 } from '../../utils/format';
+import { OrderFlightSummary } from '../telemetry/FlightTrackingPanel';
 
 export function OrderDetailPage() {
   const { orderId = '' } = useParams();
@@ -41,11 +42,12 @@ export function OrderDetailPage() {
   const loader = useCallback(() => adminApi.getOrder(orderId), [orderId]);
   const { data: order, isLoading, error, reload, setData } = useAsyncData(loader);
   useOperationsStream(() => void reload());
-  const [decisionModal, setDecisionModal] = useState<'approve' | 'reject' | null>(
+  const [decisionModal, setDecisionModal] = useState<'approve' | 'reject' | 'delivery' | null>(
     null,
   );
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [deliveryEvidence, setDeliveryEvidence] = useState('');
   const [isActing, setIsActing] = useState(false);
   const [actionError, setActionError] = useState('');
   const [success, setSuccess] = useState('');
@@ -65,6 +67,10 @@ export function OrderDetailPage() {
 
   const canDecide = order.status === 'PENDING_ADMIN_APPROVAL';
   const canPrepare = order.status === 'APPROVED';
+  const canConfirmDelivery = Boolean(order.mission_id) && [
+    'MISSION_READY', 'WAITING_FLIGHT_AUTHORIZATION', 'MISSION_UPLOADING',
+    'IN_TRANSIT', 'AT_DESTINATION', 'DELIVERED', 'RETURNING',
+  ].includes(order.status);
   const exactPoint = {
     latitude: order.delivery_point.latitude,
     longitude: order.delivery_point.longitude,
@@ -109,6 +115,20 @@ export function OrderDetailPage() {
       navigate(`/missions/${mission.id}`);
     } catch (prepareError) {
       setActionError(getErrorMessage(prepareError));
+    } finally {
+      setIsActing(false);
+    }
+  };
+
+  const handleConfirmDelivery = async () => {
+    setIsActing(true);
+    setActionError('');
+    try {
+      setData(await adminApi.confirmDelivery(order.id, deliveryEvidence.trim()));
+      setDecisionModal(null);
+      setSuccess('Entrega confirmada e registrada na trilha de auditoria.');
+    } catch (deliveryError) {
+      setActionError(getErrorMessage(deliveryError));
     } finally {
       setIsActing(false);
     }
@@ -212,6 +232,14 @@ export function OrderDetailPage() {
             </Card>
           ) : null}
 
+          {order.mission_id ? (
+            <OrderFlightSummary
+              key={order.mission_id}
+              missionId={order.mission_id}
+              deliveryLabel={canConfirmDelivery ? 'Entrega aguardando confirmação' : order.status === 'COMPLETED' ? 'Pedido concluído' : 'Ver situação do pedido'}
+            />
+          ) : null}
+
           <Card title="Próxima ação">
             {canDecide ? (
               <div className="decision-actions">
@@ -236,6 +264,15 @@ export function OrderDetailPage() {
               <div className="decision-actions">
                 <Feedback>Abra a missão para baixar o plano e revisar no QGroundControl.</Feedback>
                 <Link className="button" to={`/missions/${order.mission_id}`}><Route size={18} /> Abrir missão</Link>
+                {canConfirmDelivery ? (
+                  <Button variant="secondary" onClick={() => {
+                    setActionError('');
+                    setDeliveryEvidence('');
+                    setDecisionModal('delivery');
+                  }}>
+                    <PackageCheck size={18} /> Confirmar entrega
+                  </Button>
+                ) : null}
               </div>
             ) : (
               <p className="muted">Este pedido não possui ação administrativa disponível no estado atual.</p>
@@ -243,6 +280,29 @@ export function OrderDetailPage() {
           </Card>
         </aside>
       </div>
+
+      <Modal
+        open={decisionModal === 'delivery'}
+        title="Confirmar entrega do pedido"
+        onClose={() => setDecisionModal(null)}
+        closeDisabled={isActing}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDecisionModal(null)} disabled={isActing}>Cancelar</Button>
+            <Button loading={isActing} disabled={deliveryEvidence.trim().length < 10} onClick={() => void handleConfirmDelivery()}>
+              Registrar entrega confirmada
+            </Button>
+          </>
+        }
+      >
+        <div className="field">
+          <label htmlFor="delivery-evidence">Como a entrega foi confirmada?</label>
+          <textarea id="delivery-evidence" className="textarea" minLength={10} maxLength={1000}
+            value={deliveryEvidence} onChange={(event) => setDeliveryEvidence(event.target.value)} disabled={isActing} />
+          <small>Registre a evidência de recebimento deste pedido.</small>
+        </div>
+        {actionError ? <Feedback tone="error">{actionError}</Feedback> : null}
+      </Modal>
 
       <Modal
         open={decisionModal === 'approve'}

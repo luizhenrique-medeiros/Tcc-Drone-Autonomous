@@ -1,8 +1,9 @@
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class MissionStatus(StrEnum):
@@ -135,12 +136,41 @@ class HeartbeatVehicle(BaseModel):
     gateway_id: str
 
 
+class HeartbeatSnapshot(BaseModel):
+    id: UUID
+
+
 class HeartbeatResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     vehicle: HeartbeatVehicle
     authorization_eligible: bool
     failures: list[str] = Field(default_factory=list)
+    health: HeartbeatSnapshot | None = None
+
+
+class BenchArmClaim(BaseModel):
+    id: UUID
+    vehicle_id: UUID
+    session_id: UUID
+    target_system: int = Field(ge=1, le=255)
+    target_component: int = Field(ge=1, le=255)
+    expires_at: AwareDatetime
+
+
+@dataclass
+class BenchArmEvidence:
+    transmitted: bool | None = False
+    ack_result: int | None = None
+    armed_confirmed: bool = False
+    detail: str = ""
+
+
+class BenchArmReport(BaseModel):
+    transmitted: bool | None
+    ack_result: int | None
+    confirmed_snapshot_id: UUID | None = None
+    detail: str
 
 
 class Px4HealthDiagnostics(BaseModel):
@@ -151,6 +181,17 @@ class Px4HealthDiagnostics(BaseModel):
     rtl_land_delay_s: float | None = Field(default=None, ge=-1, allow_inf_nan=False)
     rtl_cone_angle_deg: int | None = Field(default=None, ge=0, le=90)
     rtl_min_distance_m: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class Px4FlightObservation(BaseModel):
+    landed_state: int | None = None
+    position_at: datetime | None = None
+    sequence: int | None = None
+    mission_total: int | None = None
+    mission_state: int | None = None
+    mission_mode: int | None = None
+    native_plan_id: int | None = None
+    mission_at: datetime | None = None
 
 
 class VehicleHealth(BaseModel):
@@ -183,12 +224,15 @@ class VehicleHealth(BaseModel):
     last_heartbeat_at: datetime | None = None
     current_latitude: float | None = Field(default=None, ge=-90, le=90)
     current_longitude: float | None = Field(default=None, ge=-180, le=180)
-    current_altitude_m: float | None = Field(default=None, ge=-100, le=1000)
+    current_altitude_m: float | None = Field(default=None, ge=-1000, le=100_000)
     current_amsl_m: float | None = Field(default=None, ge=-1000, le=100_000)
+    current_ground_speed_m_s: float | None = Field(default=None, ge=0, le=1000)
+    px4_flight: Px4FlightObservation | None = None
     mission_upload_enabled: bool = False
     flight_commands_enabled: bool = False
     mission_start_enabled: bool = False
     vehicle_arm_enabled: bool = False
+    bench_arm_session_id: UUID | None = None
     connection_error: str | None = Field(default=None, max_length=1000)
 
 

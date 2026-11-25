@@ -1,0 +1,76 @@
+{
+  "orderId": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+  "missionId": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+  "plan": "pedido-d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf-v1-591e7411.plan",
+  "hash": "591e741160bea4c7380b8222027a21a3696b2e2b1d6d83310ef9f0a6c965a1e8",
+  "mission": {
+    "version": 2,
+    "firmwareType": 12,
+    "vehicleType": 2,
+    "globalPlanAltitudeMode": 1,
+    "cruiseSpeed": 15,
+    "hoverSpeed": 5,
+    "plannedHomePosition": [
+      47.397742,
+      8.545594,
+      489.42
+    ],
+    "items": [
+      {
+        "type": "SimpleItem",
+        "command": 22,
+        "doJumpId": 1,
+        "frame": 3,
+        "autoContinue": true,
+        "params": [
+          0,
+          0,
+          0,
+          null,
+          47.397742,
+          8.545594,
+          10
+        ],
+        "AMSLAltAboveTerrain": null,
+        "Altitude": 10,
+        "AltitudeMode": 1
+      },
+      {
+        "type": "SimpleItem",
+        "command": 16,
+        "doJumpId": 2,
+        "frame": 3,
+        "autoContinue": true,
+        "params": [
+          5,
+          0,
+          0,
+          null,
+          47.3981,
+          8.54575,
+          10
+        ],
+        "AMSLAltAboveTerrain": null,
+        "Altitude": 10,
+        "AltitudeMode": 1
+      },
+      {
+        "type": "SimpleItem",
+        "command": 20,
+        "doJumpId": 3,
+        "frame": 2,
+        "autoContinue": true,
+        "params": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ]
+  },
+  "missionUrl": "http://127.0.0.1:15173/missions/a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd"
+}

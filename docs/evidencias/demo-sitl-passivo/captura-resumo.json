@@ -1,0 +1,302 @@
+{
+  "traffic": {
+    "18570->14550": 118661,
+    "14550->18570": 408,
+    "38459->14558": 105465
+  },
+  "forwarded_message_counts": {
+    "GLOBAL_POSITION_INT": 13991,
+    "HEARTBEAT": 280,
+    "EXTENDED_SYS_STATE": 280,
+    "MISSION_CURRENT": 280,
+    "COMMAND_ACK": 38,
+    "MISSION_COUNT": 3,
+    "MISSION_ACK": 3,
+    "MISSION_ITEM_REACHED": 22,
+    "COMMAND_LONG": 18
+  },
+  "gateway_udp_outgoing": 0,
+  "strace_udp_reads_14558": 103625,
+  "strace_udp_sends_14558": 0,
+  "strace_http_send_calls": 1084,
+  "strace_udp_sends_non_dns": 0,
+  "upload_items": [
+    {
+      "at": "2026-11-25T00:16:58.846845+00:00",
+      "seq": 0,
+      "command": 22,
+      "frame": 3,
+      "params": [
+        0.0,
+        0.0,
+        0.0,
+        null
+      ],
+      "coords": [
+        47.397742,
+        8.545594
+      ],
+      "altitude": 10.0
+    },
+    {
+      "at": "2026-11-25T00:16:58.852510+00:00",
+      "seq": 1,
+      "command": 16,
+      "frame": 3,
+      "params": [
+        5.0,
+        0.0,
+        0.0,
+        null
+      ],
+      "coords": [
+        47.3981,
+        8.54575
+      ],
+      "altitude": 10.0
+    },
+    {
+      "at": "2026-11-25T00:16:58.856362+00:00",
+      "seq": 2,
+      "command": 20,
+      "frame": 2,
+      "params": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "coords": [
+        0.0,
+        0.0
+      ],
+      "altitude": 0.0
+    }
+  ],
+  "upload_ack": [
+    {
+      "at": "2026-11-25T00:16:58.864061+00:00",
+      "result": 0,
+      "opaque_id": 4256334088
+    }
+  ],
+  "commands_from_qgc": [
+    {
+      "at": "2026-11-25T00:19:05.258941+00:00",
+      "message": "COMMAND_LONG",
+      "command": 400,
+      "param1": 1.0
+    },
+    {
+      "at": "2026-11-25T00:19:11.137603+00:00",
+      "message": "SET_MODE",
+      "target": 1,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 4
+    }
+  ],
+  "state_changes": [
+    {
+      "at": "2026-11-25T00:16:10.526167+00:00",
+      "kind": "HEARTBEAT",
+      "armed": false,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 3
+    },
+    {
+      "at": "2026-11-25T00:16:10.644919+00:00",
+      "kind": "EXTENDED_SYS_STATE",
+      "landed_state": 1
+    },
+    {
+      "at": "2026-11-25T00:16:10.645261+00:00",
+      "kind": "MISSION_CURRENT",
+      "seq": 0,
+      "total": 65535,
+      "mission_state": 1,
+      "mission_mode": 2,
+      "mission_id": 0
+    },
+    {
+      "at": "2026-11-25T00:16:58.892692+00:00",
+      "kind": "MISSION_CURRENT",
+      "seq": 0,
+      "total": 3,
+      "mission_state": 2,
+      "mission_mode": 2,
+      "mission_id": 4256334088
+    },
+    {
+      "at": "2026-11-25T00:19:06.210655+00:00",
+      "kind": "HEARTBEAT",
+      "armed": true,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 3
+    },
+    {
+      "at": "2026-11-25T00:19:11.345279+00:00",
+      "kind": "MISSION_CURRENT",
+      "seq": 0,
+      "total": 3,
+      "mission_state": 3,
+      "mission_mode": 1,
+      "mission_id": 4256334088
+    },
+    {
+      "at": "2026-11-25T00:19:11.345587+00:00",
+      "kind": "HEARTBEAT",
+      "armed": true,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 4
+    },
+    {
+      "at": "2026-11-25T00:19:12.340154+00:00",
+      "kind": "EXTENDED_SYS_STATE",
+      "landed_state": 3
+    },
+    {
+      "at": "2026-11-25T00:19:22.127460+00:00",
+      "kind": "MISSION_CURRENT",
+      "seq": 1,
+      "total": 3,
+      "mission_state": 3,
+      "mission_mode": 1,
+      "mission_id": 4256334088
+    },
+    {
+      "at": "2026-11-25T00:19:22.558326+00:00",
+      "kind": "EXTENDED_SYS_STATE",
+      "landed_state": 2
+    },
+    {
+      "at": "2026-11-25T00:19:36.963554+00:00",
+      "kind": "MISSION_CURRENT",
+      "seq": 2,
+      "total": 3,
+      "mission_state": 5,
+      "mission_mode": 2,
+      "mission_id": 4256334088
+    },
+    {
+      "at": "2026-11-25T00:19:37.884934+00:00",
+      "kind": "HEARTBEAT",
+      "armed": true,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 5
+    },
+    {
+      "at": "2026-11-25T00:19:57.297554+00:00",
+      "kind": "EXTENDED_SYS_STATE",
+      "landed_state": 4
+    },
+    {
+      "at": "2026-11-25T00:20:27.941815+00:00",
+      "kind": "EXTENDED_SYS_STATE",
+      "landed_state": 1
+    },
+    {
+      "at": "2026-11-25T00:20:29.992061+00:00",
+      "kind": "HEARTBEAT",
+      "armed": false,
+      "px4_main_mode": 4,
+      "px4_sub_mode": 3
+    }
+  ],
+  "reached": [
+    {
+      "at": "2026-11-25T00:19:22.127771+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:22.570850+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:23.601503+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:24.622160+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:25.650608+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:26.682184+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:27.710364+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:28.731119+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:29.755668+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:30.781174+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:31.803058+00:00",
+      "seq": 0
+    },
+    {
+      "at": "2026-11-25T00:19:36.963947+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:37.973459+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:38.994903+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:40.034232+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:41.065750+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:42.098343+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:43.126601+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:44.146479+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:45.176203+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:46.216628+00:00",
+      "seq": 2
+    },
+    {
+      "at": "2026-11-25T00:19:47.246535+00:00",
+      "seq": 2
+    }
+  ],
+  "max_relative_altitude": 30.16,
+  "within_eight_meters_during_current_item_one": {
+    "first": "2026-11-25T00:19:32.293718+00:00",
+    "last": "2026-11-25T00:19:36.957663+00:00",
+    "seconds": 4.66,
+    "samples": 229
+  }
+}

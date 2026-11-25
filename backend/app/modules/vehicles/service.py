@@ -142,6 +142,8 @@ def health_to_read(snapshot: VehicleHealthSnapshot, settings: Settings) -> Vehic
         current_longitude=snapshot.current_longitude,
         current_altitude_m=snapshot.current_altitude_m,
         current_amsl_m=snapshot.current_amsl_m,
+        current_ground_speed_m_s=snapshot.current_ground_speed_m_s,
+        px4_flight=None if health_is_stale(snapshot, settings) else snapshot.px4_flight,
         mission_upload_enabled=snapshot.mission_upload_enabled,
         flight_commands_enabled=snapshot.flight_commands_enabled,
         mission_start_enabled=snapshot.mission_start_enabled,
@@ -163,7 +165,7 @@ def record_heartbeat(
     session: Session, payload: VehicleHealthInput, settings: Settings
 ) -> tuple[Vehicle, VehicleHealthSnapshot, list[str]]:
     vehicle = session.scalar(
-        select(Vehicle).where(Vehicle.identifier == payload.vehicle_identifier)
+        select(Vehicle).where(Vehicle.identifier == payload.vehicle_identifier).with_for_update()
     )
     now = datetime.now(UTC)
     if vehicle and vehicle.gateway_id != payload.gateway_id:
@@ -218,10 +220,17 @@ def record_heartbeat(
         current_longitude=payload.current_longitude,
         current_altitude_m=payload.current_altitude_m,
         current_amsl_m=payload.current_amsl_m,
+        current_ground_speed_m_s=payload.current_ground_speed_m_s,
+        px4_flight=(
+            payload.px4_flight.model_dump(mode="json", exclude_none=True)
+            if payload.px4_flight is not None
+            else None
+        ),
         mission_upload_enabled=payload.mission_upload_enabled,
         flight_commands_enabled=payload.flight_commands_enabled,
         mission_start_enabled=payload.mission_start_enabled,
         vehicle_arm_enabled=payload.vehicle_arm_enabled,
+        bench_arm_session_id=payload.bench_arm_session_id,
         connection_error=payload.connection_error,
         critical_state_hash=_critical_hash(payload),
         captured_at=now,
@@ -233,9 +242,7 @@ def record_heartbeat(
         else VehicleStatus.OFFLINE
     )
     session.add(snapshot)
-    session.commit()
-    session.refresh(vehicle)
-    session.refresh(snapshot)
+    session.flush()
     failures = (
         ["HARDWARE_OBSERVATION_ONLY"]
         if snapshot.source == OperationalSource.HARDWARE_REAL

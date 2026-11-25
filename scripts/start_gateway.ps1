@@ -14,7 +14,7 @@ $previousGatewayRuntime = $env:GATEWAY_RUNTIME
 $env:GATEWAY_RUNTIME = 'host'
 $savedGates = @{}
 if ($ObserveOnly) {
-    foreach ($gate in @('ALLOW_MISSION_UPLOAD', 'ALLOW_FLIGHT_COMMANDS', 'ALLOW_MISSION_START', 'ALLOW_VEHICLE_ARM')) {
+    foreach ($gate in @('ALLOW_MISSION_UPLOAD', 'ALLOW_FLIGHT_COMMANDS', 'ALLOW_MISSION_START', 'ALLOW_VEHICLE_ARM', 'ALLOW_TELEMETRY_REQUESTS')) {
         $savedGates[$gate] = [Environment]::GetEnvironmentVariable($gate, 'Process')
         [Environment]::SetEnvironmentVariable($gate, 'false', 'Process')
     }

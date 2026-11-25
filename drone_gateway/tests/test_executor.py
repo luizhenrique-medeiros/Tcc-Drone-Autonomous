@@ -590,7 +590,8 @@ async def test_qgc_forward_publishes_health_without_consuming_commands(
 
     vehicle = ObservationGateway(settings)
     await vehicle.connect()
-    executor = MissionExecutor(settings, backend, vehicle)
+    settings.gateway_journal_path.write_bytes(b"previous runtime journal")
+    executor = MissionExecutor(settings, backend, vehicle, observation_only=True)
     with pytest.raises(BackendUnavailableError):
         await executor.run_cycle()
     await executor.run_cycle()
@@ -602,6 +603,8 @@ async def test_qgc_forward_publishes_health_without_consuming_commands(
     assert backend.command_acks == []
     assert backend.commands == [command]
     assert backend.upload_statuses == []
+    assert executor.active_mission_id is None
+    assert settings.gateway_journal_path.read_bytes() == b"previous runtime journal"
 
 
 @pytest.mark.asyncio

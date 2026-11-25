@@ -179,10 +179,12 @@ class MissionExecutor:
         *,
         journal: MissionJournal | None = None,
         now: Callable[[], datetime] | None = None,
+        observation_only: bool = False,
     ) -> None:
         self._settings = settings
         self._backend = backend
         self._vehicle = vehicle
+        self._observation_only = observation_only
         self._journal = journal or MissionJournal(settings.gateway_journal_path)
         self._now = now or (lambda: datetime.now(UTC))
         self._backend_vehicle_id: UUID | None = None
@@ -190,7 +192,7 @@ class MissionExecutor:
         self._observations: deque[tuple[UUID, VehicleEvent]] = deque(maxlen=200)
         self._last_telemetry_report_at: datetime | None = None
         self._pending_claim: AuthorizedMission | None = None
-        self._active = self._restore_active()
+        self._active = None if observation_only else self._restore_active()
 
     @property
     def active_mission_id(self) -> UUID | None:
@@ -293,12 +295,17 @@ class MissionExecutor:
             )
         self._backend_vehicle_id = heartbeat.vehicle.id
         self._backend_health_failures = heartbeat.failures
-        if self._settings.mavlink_mode in {
-            MavlinkMode.QGROUNDCONTROL_FORWARD,
-            MavlinkMode.MAVLINK_ROUTER,
-        } or (
-            self._settings.autopilot_system.strip().upper() == "PX4"
-            and not self._settings.px4_sitl_plan_validation
+        if (
+            self._observation_only
+            or self._settings.mavlink_mode
+            in {
+                MavlinkMode.QGROUNDCONTROL_FORWARD,
+                MavlinkMode.MAVLINK_ROUTER,
+            }
+            or (
+                self._settings.autopilot_system.strip().upper() == "PX4"
+                and not self._settings.px4_sitl_plan_validation
+            )
         ):
             await self._publish_observations(heartbeat.vehicle.id)
             return

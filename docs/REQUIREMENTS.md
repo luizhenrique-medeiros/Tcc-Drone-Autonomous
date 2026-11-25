@@ -24,46 +24,45 @@
 ### Administração
 
 - **RF-ADM-01:** autenticar somente usuário pré-provisionado com papel `ADMIN`.
-- **RF-ADM-02:** listar pedidos, filtrar pendentes e abrir mapa/coordenadas/instruções/validações.
-- **RF-ADM-03:** aprovar pedido ou rejeitar com motivo e auditoria.
-- **RF-ADM-04:** preparar missão apenas de pedido aprovado e exportar o rascunho `.plan` do QGroundControl mesmo sem telemetria.
-- **RF-ADM-05:** registrar e recuperar o `.plan` revisado da mesma versão da missão.
-- **RF-ADM-06:** exibir dados de telemetria e eventos com origem identificada.
-- **RF-ADM-07 a RF-ADM-10:** operações de voo real são feitas no QGroundControl. Os endpoints antigos permanecem para compatibilidade com testes e simulação.
+- **RF-ADM-02:** listar pedidos com mapa, coordenadas, instruções e validações.
+- **RF-ADM-03:** aprovar ou rejeitar pedido, com motivo na rejeição e auditoria.
+- **RF-ADM-04:** gerar missão de pedido aprovado e exportar o `.plan` da revisão sem depender de telemetria.
+- **RF-ADM-05:** registrar e recuperar opcionalmente o `.plan` revisado da versão atual.
+- **RF-ADM-06:** exibir telemetria e eventos com origem e atualidade identificadas.
+- **RF-ADM-07 a RF-ADM-10:** referências históricas aos comandos administrativos de simulação. Operações reais são feitas no QGroundControl.
+- **RF-ADM-11:** confirmar entrega física com evidência e registro de quem atualizou.
+- **RF-ADM-12:** acompanhar automaticamente estado de voo, posição e eventos observados, com associação por evidência ou seleção auditada da revisão e do veículo. Preservar última leitura na interrupção e separar pouso, conclusão do voo e confirmação de entrega.
 
 ### Missão, gateway e hardware
 
-- **RF-MIS-01:** criar no máximo uma missão ativa por pedido, com origem, decolagem, destino, espera, retorno e pouso.
+- **RF-MIS-01:** criar no máximo uma missão ativa por pedido. Exportar Takeoff, Waypoint no destino confirmado e RTL com a referência de altitude usada pelo projeto.
 - **RF-MIS-02:** versionar missão, arquivo, hash, waypoints, autor da preparação e revisão.
-- **RF-MIS-03:** invalidar autorização se versão ou estado crítico mudar; expirar e consumir uma única vez.
-- **RF-MIS-04:** revisar origem em pré-voo preservando destino e histórico, com
-  nova versão/revisão/autorização e liberação auditada do journal anterior em
-  observação, sem comandos MAVLink implícitos.
-- **RF-GTW-01:** autenticar gateway, registrar heartbeat e reivindicar missão autorizada idempotentemente.
-- **RF-GTW-02:** conectar fake, SITL ou Pixhawk conforme configuração explícita; startup, health, upload, autorização, reconexão e progressão automática nunca armam.
-- **RF-GTW-03:** validar preflight, enviar missão, confirmar ACK, reler/verificar o conteúdo e só então aceitar um ARM normal administrativo separado; a operação exige missão `VERIFIED`/reivindicada, origem `SITL`, modo `STABILIZE`, saúde completa e `vehicle_arm_enabled`, `flight_commands_enabled` e `mission_start_enabled` verdadeiros, e só conclui após ACK correlacionado e heartbeat novo com `armed=true`.
-- **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento, preservando valores recebidos e indisponibilidade sem fabricar carga completa.
-- **RF-GTW-05:** tratar timeout, reconexão, duplicidade, falha, abortamento e RTL sem desativar failsafes.
-- **RF-OPS-01:** permitir execução real apenas em área controlada, com operador e checklist documentado.
-- **RF-OPS-02:** concluir somente após entrega e retorno confirmados por eventos válidos.
+- **RF-MIS-03 e RF-MIS-04:** contratos históricos de autorização e revisão em pré-voo preservados para testes.
+- **RF-GTW-01:** autenticar o gateway e registrar heartbeat e observações.
+- **RF-GTW-02:** receber telemetria física passivamente, sem emitir MAVLink na conexão ou reconexão.
+- **RF-GTW-03:** contrato histórico de transferência e verificação restrito a ensaio isolado.
+- **RF-GTW-04:** normalizar posição, altitude, velocidade, bateria, GPS, modo e armamento, preservando leituras ausentes e antigas.
+- **RF-GTW-05:** tratar timeout, reconexão, duplicidade e falha no monitoramento.
+- **RF-OPS-01:** reservar ao operador no QGroundControl toda intervenção no veículo e preservar proteções nativas do PX4.
+- **RF-OPS-02:** vincular progresso somente com evidência de identidade da missão. Manter a conclusão do pedido como confirmação administrativa auditada.
 
 ### Auditoria
 
 - **RF-AUD-01:** registrar ator, pedido, missão, veículo, evento, severidade, timestamp e metadados não sensíveis.
-- **RF-AUD-02:** registrar decisão, rejeição, preparação, revisão, autorização, claim, upload, solicitação/ACK/resultado do armamento, início, chegada, entrega, retorno, abortamento e falha.
+- **RF-AUD-02:** registrar decisão, geração, exportação, revisão e confirmação de entrega. Preservar eventos associados a observações e aos ensaios anteriores.
 
 ## Requisitos não funcionais
 
 - **RNF-01 Segurança:** hash de senha robusto, JWT expirável, autorização por papel/propriedade e segredo externo.
 - **RNF-02 Integridade:** UUID, UTC, `Decimal/NUMERIC`, constraints e transações atômicas.
-- **RNF-03 Geografia:** ponto final `geography(Point,4326)` e faixa mundial válida; checkout aceita qualquer coordenada válida, enquanto a distância máxima configurável continua sendo uma proteção operacional da missão/gateway.
+- **RNF-03 Geografia:** ponto final `geography(Point,4326)` e faixa mundial válida; checkout aceita qualquer coordenada válida, e a equipe avalia alcance e limites operacionais no QGroundControl.
 - **RNF-04 Disponibilidade:** `/health` mede processo e `/ready` dependências; falhas possuem retry controlado.
 - **RNF-05 Observabilidade:** logs estruturados e correlação sem credenciais ou localização desnecessária.
 - **RNF-06 Usabilidade:** mobile responsivo, alvos de toque, estados loading/vazio/erro e texto escalável.
 - **RNF-07 Acessibilidade:** foco visível, labels, contraste WCAG AA e estado não comunicado apenas por cor.
 - **RNF-08 Manutenibilidade:** monólito modular, tokens centrais, componentes reutilizáveis e contratos tipados.
 - **RNF-09 Testabilidade:** unitários sem rede/hardware; integração, SITL e hardware em camadas separadas.
-- **RNF-10 Segurança operacional:** nenhuma ação automática de armamento, alteração de parâmetro ou supressão de pre-arm; o único armamento por software é uma ação humana explícita, normal e fail-closed, sem force/bypass e sem rearmamento automático.
+- **RNF-10 Segurança operacional:** o gateway real funciona em recepção. Todas as ações na aeronave passam pelo QGroundControl e pelas proteções do PX4.
 - **RNF-11 Concorrência:** a criação de localização salva bloqueia a linha do usuário com `FOR NO KEY UPDATE`, conta e insere na mesma transação, impedindo que requisições paralelas excedam três.
 - **RNF-12 Histórico e evidência:** cada pedido referencia seu próprio `DeliveryPoint`; uma `SavedLocation` é somente fonte para cópia transacional e nunca a fonte mutável do destino histórico. Provedor, tipo de mapa e confirmações vêm do fluxo realmente executado e não podem ser preenchidos por constantes para aparentar uma revisão inexistente.
 
@@ -77,15 +76,15 @@
 - **CA-06:** rejeição sem motivo falha; aprovação cria apenas permissão para preparar missão.
 - **CA-07:** o painel exporta a missão em `.plan` e preserva o conteúdo e o hash da revisão registrada.
 - **CA-08:** a criação e a exportação do plano funcionam sem telemetria. Operações de voo real são realizadas no QGroundControl.
-- **CA-09:** autorização e aprovação têm endpoints, registros e timestamps diferentes.
-- **CA-10:** duas tentativas de claim/upload não executam duas vezes.
+- **CA-09:** aprovação, geração e exportação possuem eventos distintos. O download não registra upload ou execução.
+- **CA-10:** a API operacional não fornece comandos antigos. O gateway receptor não percorre fila nem journal na reconexão.
 - **CA-11:** telemetria mais antiga não sobrescreve snapshot recente.
 - **CA-12:** app e painel exibem atualização; desconexão mostra dado como vencido, não saudável.
 - **CA-13:** testes rápidos não abrem MAVLink real.
 - **CA-14:** nenhuma documentação marca Pixhawk/SITL/voo como testado sem comando ou evidência correspondente.
 - **CA-15:** a listagem paginada e o detalhe do cliente nunca expõem pedido de outro usuário; tentativa direta usa a resposta não enumerável do projeto.
 - **CA-16:** pedidos ativos atualizam por WebSocket; queda conserva o último estado, indica degradação, tenta reconectar e permite atualização manual.
-- **CA-17:** autorização não possui campo de frase, exige exatamente três confirmações humanas e continua bloqueada por qualquer check técnico `BLOCKING`; `WARNING` permanece visível sem impedir a ação.
+- **CA-17:** telemetria ausente não impede preparar ou exportar uma missão.
 - **CA-18:** a tela `Minhas localizações` mostra exatamente zero, uma, duas ou três localizações reais, contador correspondente e ação de adicionar indisponível no limite, sem cards fictícios.
 - **CA-19:** a quarta criação, inclusive sob concorrência, retorna `409/SAVED_LOCATION_LIMIT_REACHED`; criações simultâneas para o mesmo cliente nunca deixam mais de três registros.
 - **CA-20:** rotas de localização usam o cliente do JWT, nunca um `user_id` escolhido no corpo, e leitura/edição/exclusão de recurso alheio usam a resposta não enumerável do projeto.
@@ -93,17 +92,13 @@
 - **CA-22:** editar ou excluir uma localização salva depois de criar um pedido não altera coordenadas, endereço, instruções nem disponibilidade do destino histórico.
 - **CA-23:** mover o mapa após escolher uma localização salva altera somente o snapshot do novo pedido; atualizar o atalho exige ação explícita na tela de edição, e as duas confirmações atuais são solicitadas novamente depois da revisão.
 - **CA-24:** uma localização com nome e coordenadas válidas pode ser salva sem endereço textual, desde que `map_provider` seja o realmente usado, `map_type` seja `hybrid` ou `satellite` e `region_confirmed`, `exact_point_selected`, `user_confirmed` e `user_confirmed_safe_area` sejam verdadeiros; falha no salvamento opcional posterior não muda o resultado do pedido.
-- **CA-25:** `UPLOADED` só evolui para `VERIFIED` após releitura equivalente; `START` exige os gates locais e heartbeat fresco com veículo já armado, `PAUSE` produz `PAUSED` após ACK e `CONTINUE` só sai de `PAUSED`. Nenhuma dessas ações arma o veículo.
-- **CA-26:** o endpoint legado `POST /api/v1/admin/missions/{id}/arm` atende apenas a ensaios `SITL`. Ele conserva as verificações da simulação e registra o resultado apenas após ACK correlacionado e heartbeat novo com `armed=true`.
+- **CA-25:** progresso sem identidade de missão permanece desvinculado. Waypoint, pouso e desarmamento não concluem entrega.
+- **CA-26:** controle administrativo de voo fica fora da interface operacional. Os testes legados de ARM permanecem isolados.
 
 ## Matriz de rastreabilidade
 
-- **CA-27:** renovar autorização consumida vencida em `VERIFIED` exige nova
-  confirmação humana, saúde atual desarmada, mesma identidade/versão/hash e
-  nenhum comando em andamento. Não altera histórico nem causa upload/ARM/START.
-- **CA-28:** inicialização supervisionada reaproveita processos, impede supervisor
-  duplicado e recupera cliente/gateway sem liberar gates; telemetria passiva da
-  missão verificada conserva origem e horário da amostra.
+- **CA-27:** somente administrador pode confirmar entrega. Evidência, ator e horário ficam auditados e repetição não duplica a conclusão.
+- **CA-28:** executar monitoramento com telemetria real ou simulada sem emitir MAVLink no enlace de observação.
 
 | Requisito | Componentes | Contrato principal | Teste esperado |
 |---|---|---|---|
@@ -114,10 +109,10 @@
 | RF-CLI-11/12 | mobile, saved_locations, delivery_points, orders | `/orders`, `/saved-locations` | picker/mapa + confirmação atual + snapshot fiel + salvamento posterior não bloqueante |
 | RF-ADM-03 | orders, approvals, admin | `/admin/orders/{id}/approve|reject` | RBAC/transição/auditoria |
 | RF-ADM-04/05 | missions, admin | prepare/review/download | exportador e componente |
-| RF-ADM-06/07 | vehicles, approvals, admin | health/authorize-flight | checks automáticos, três confirmações, TTL e idempotência |
-| RF-ADM-08/09/10 | missions, gateway_commands, admin | `/admin/missions/{id}/arm`, commands/ACK | estados válidos, payload estrito, idade, identidade, gates locais, ACK + heartbeat e ausência de armamento automático |
-| RF-GTW-01/03 | gateway, missions | authorized/claim/status | idempotência e timeout |
+| RF-ADM-06/11 | vehicles, orders, admin | health/confirm-delivery | atualidade, indisponibilidade, RBAC e auditoria |
+| RF-ADM-07 a 10 | missions, gateway_commands | contratos históricos | cobertura em ambiente isolado |
+| RF-GTW-01/02 | gateway, vehicles | heartbeat/observations | recepção UDP, zero transmissão e proteção contra fila antiga |
 | RF-GTW-04 | telemetry, WebSocket | telemetry/events/ws | normalização e ordenação |
-| RF-OPS-01 | gateway, documentação | configuração real/checklist | ensaio manual, nunca CI |
+| RF-OPS-01/02 | QGroundControl, PX4, painel | arquivo `.plan` e eventos | abertura, correlação e conclusão independente |
 
 Os detalhes executáveis estão em [API](API.md), [Banco](DATABASE.md), [Plano de testes](TEST_PLAN.md) e [Protocolo](DRONE_PROTOCOL.md).

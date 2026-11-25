@@ -283,10 +283,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\start_gateway.ps1 `
   -DiagnoseOnly
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\start_gateway.ps1
+  -File .\scripts\start_gateway.ps1 `
+  -ObserveOnly
 ```
 
-O primeiro comando é diagnóstico passivo e termina; o segundo mantém o processo integrado ao backend. O padrão versionado é `simulation`, enquanto o `.env` local pode escolher `direct` ou `mission_planner_forward`. Em hardware, mantenha `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false` até concluir cada gate. Siga [MISSION_PLANNER_SETUP.md](MISSION_PLANNER_SETUP.md); mudar apenas o modo não configura a topologia nem substitui checklist.
+O diagnóstico passivo termina após observar a conexão. Para acompanhar o PX4 continuamente, siga [Conexão PX4](CONEXAO_DRONE_PX4.md) e inicie com `scripts/start_gateway.ps1 -ObserveOnly`. Mantenha as cinco permissões `ALLOW_*` de escrita e consultas desativadas.
 
 O launcher identifica `GATEWAY_RUNTIME=host`; esse é o único runtime permitido para serial direta
 ou forwarding do Mission Planner.

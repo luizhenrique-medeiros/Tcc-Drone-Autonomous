@@ -8,12 +8,14 @@ from collections import deque
 from datetime import UTC, datetime
 from types import ModuleType
 from typing import Any
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 from serial import SerialException
 
 from app.core.config import MavlinkMode, Settings
 from app.core.exceptions import (
+    GatewayError,
     MissionUploadError,
     UnsafeOperationError,
     VehicleConnectionError,
@@ -26,11 +28,14 @@ from app.core.geo import distance_m
 from app.mavlink.ports import list_serial_ports
 from app.models import (
     AuthorizedMission,
+    BenchArmClaim,
+    BenchArmEvidence,
     ConnectionState,
     MissionStatus,
     MissionVerificationResult,
     MissionWaypoint,
     OperationalSource,
+    Px4FlightObservation,
     Px4HealthDiagnostics,
     TelemetrySnapshot,
     UploadResult,
@@ -94,6 +99,7 @@ class PymavlinkVehicleGateway:
         self._connection_state = ConnectionState.DISCONNECTED
         self._connection_error: str | None = None
         self._passive_connection = False
+        self._bench_arm_session_id: UUID | None = None
         self._telemetry_requests_enabled = False
         self._last_safety_request_monotonic: float | None = None
         self._receive_backlog = False
@@ -127,6 +133,7 @@ class PymavlinkVehicleGateway:
         self._uploaded: dict[str, str] = {}
         self._last_current_sequence: int | None = None
         self._last_mission_observation: tuple[int, int | None, int | None] | None = None
+        self._px4_mission_current = Px4FlightObservation()
         self._reached_sequences: set[int] = set()
         self._landed_state: int | None = None
         self._saw_sitl_airborne = False
@@ -191,7 +198,7 @@ class PymavlinkVehicleGateway:
                 self._connection = self._mavutil.mavlink_connection(
                     self._settings.effective_mavlink_connection,
                     baud=self._settings.mavlink_baud_rate,
-                    autoreconnect=True,
+                    autoreconnect=not self._settings.is_px4_bench_arm,
                     source_system=self._settings.mavlink_source_system_id,
                     source_component=self._settings.mavlink_source_component_id,
                     dialect=self._settings.mavlink_dialect,
@@ -205,6 +212,12 @@ class PymavlinkVehicleGateway:
                     )
                 self._ingest_message(heartbeat)
                 self._connection_state = ConnectionState.CONNECTED
+                if (
+                    self._settings.is_px4_bench_arm
+                    and self._settings.allow_vehicle_arm
+                    and not passive
+                ):
+                    self._bench_arm_session_id = uuid4()
                 if not self._passive_connection and not self._settings.px4_sitl_plan_validation:
                     await asyncio.to_thread(self._request_initial_state)
                     await asyncio.to_thread(self._drain_messages)
@@ -231,6 +244,7 @@ class PymavlinkVehicleGateway:
                 raise
 
     async def _close_connection_resource(self) -> None:
+        self._bench_arm_session_id = None
         connection = self._connection
         self._connection = None
         if connection is None:
@@ -279,6 +293,7 @@ class PymavlinkVehicleGateway:
         self._ground_speed_m_s = 0.0
         self._last_current_sequence = None
         self._last_mission_observation = None
+        self._px4_mission_current = Px4FlightObservation()
         self._reached_sequences.clear()
         self._landed_state = None
         self._saw_sitl_airborne = False
@@ -711,9 +726,9 @@ class PymavlinkVehicleGateway:
             self._autopilot_version = (
                 f"{major}.{minor}.{patch} (tipo {release_type}; vendor {vendor}; produto {product})"
             )
-        elif self._settings.px4_sitl_plan_validation and message_type == "EXTENDED_SYS_STATE":
+        elif is_px4 and message_type == "EXTENDED_SYS_STATE":
             self._landed_state = int(message.landed_state)
-            if self._landed_state == mavutil.mavlink.MAV_LANDED_STATE_IN_AIR:
+            if self._settings.px4_sitl_plan_validation and self._landed_state == 2:
                 self._saw_sitl_airborne = True
         elif is_px4 and self._passive_connection and message_type == "COMMAND_ACK":
             command = int(message.command)
@@ -739,17 +754,22 @@ class PymavlinkVehicleGateway:
             sequence = int(message.seq)
             sequence_changed = sequence != self._last_current_sequence
             self._last_current_sequence = sequence
-            observing_physical_px4 = (
-                is_px4
-                and self._passive_connection
-                and self._operational_source() is OperationalSource.HARDWARE_REAL
-            )
-            plan_id = _mission_plan_id(message, "mission_id", 6) if observing_physical_px4 else None
+            observing_px4 = is_px4 and self._passive_connection
+            plan_id = _mission_plan_id(message, "mission_id", 6) if observing_px4 else None
             mission_state = getattr(message, "mission_state", None)
+            if observing_px4:
+                total = getattr(message, "total", 0)
+                mission_mode = getattr(message, "mission_mode", None)
+                self._px4_mission_current = Px4FlightObservation(
+                    sequence=sequence if 0 <= sequence < 65535 and mission_state != 1 else None,
+                    mission_total=total if 0 < total < 65535 else None,
+                    mission_state=mission_state if mission_state in {1, 2, 3, 4, 5} else None,
+                    mission_mode=mission_mode if mission_mode in {1, 2} else None,
+                    native_plan_id=plan_id,
+                    mission_at=datetime.now(UTC),
+                )
             observation = (sequence, plan_id, mission_state)
-            changed_observation = (
-                observing_physical_px4 and observation != self._last_mission_observation
-            )
+            changed_observation = observing_px4 and observation != self._last_mission_observation
             self._last_mission_observation = observation
             if sequence_changed or changed_observation:
                 metadata: dict[str, str | int | float | bool | None] = {"sequence": sequence}
@@ -772,11 +792,24 @@ class PymavlinkVehicleGateway:
         elif message_type == "MISSION_ITEM_REACHED":
             sequence = int(message.seq)
             self._reached_sequences.add(sequence)
+            current = self._px4_mission_current
+            current_fresh = self._message_is_fresh("MISSION_CURRENT")
             self._queue_event(
                 event_type="MAVLINK_MISSION_ITEM_REACHED",
                 severity="INFO",
                 message=f"Autopiloto informou waypoint alcançado {sequence}.",
-                metadata={"sequence": sequence},
+                metadata={
+                    "sequence": sequence,
+                    **(
+                        {
+                            "native_plan_id": current.native_plan_id if current_fresh else None,
+                            "system_id": int(message.get_srcSystem()),
+                            "component_id": int(message.get_srcComponent()),
+                        }
+                        if is_px4 and self._passive_connection
+                        else {}
+                    ),
+                },
             )
         elif message_type == "STATUSTEXT":
             raw_text = message.text
@@ -966,6 +999,26 @@ class PymavlinkVehicleGateway:
         self._events.clear()
         return events
 
+    def _flight_observation(self, position_fresh: bool) -> Px4FlightObservation | None:
+        if self._settings.autopilot_system.strip().upper() != "PX4" or not self._passive_connection:
+            return None
+        current = (
+            self._px4_mission_current
+            if self._message_is_fresh("MISSION_CURRENT")
+            else Px4FlightObservation()
+        )
+        return current.model_copy(
+            update={
+                "landed_state": (
+                    self._landed_state
+                    if self._message_is_fresh("EXTENDED_SYS_STATE")
+                    and self._landed_state in {1, 2, 3, 4}
+                    else None
+                ),
+                "position_at": self._last_position_recorded_at if position_fresh else None,
+            }
+        )
+
     async def read_health(self) -> VehicleHealth:
         if self._connection is not None:
             await asyncio.to_thread(self._drain_messages)
@@ -1029,10 +1082,13 @@ class PymavlinkVehicleGateway:
                 current_longitude=self._longitude if position_fresh else None,
                 current_altitude_m=self._relative_altitude_m if position_fresh else None,
                 current_amsl_m=self._current_amsl_m if position_fresh else None,
+                current_ground_speed_m_s=self._ground_speed_m_s if position_fresh else None,
+                px4_flight=self._flight_observation(position_fresh),
                 mission_upload_enabled=self._settings.allow_mission_upload,
                 flight_commands_enabled=self._settings.allow_flight_commands,
                 mission_start_enabled=self._settings.allow_mission_start,
                 vehicle_arm_enabled=self._settings.allow_vehicle_arm,
+                bench_arm_session_id=self._bench_arm_session_id if connected else None,
                 connection_error=self._connection_error,
             )
         except ValidationError as exc:
@@ -1131,7 +1187,40 @@ class PymavlinkVehicleGateway:
             "nenhum ARM foi enviado."
         )
 
-    def _arm_vehicle_sync(self) -> None:
+    async def arm_bench(self, request: BenchArmClaim) -> BenchArmEvidence:
+        evidence = BenchArmEvidence()
+        async with self._arm_command_lock:
+            async with self._connection_lock:
+                try:
+                    if (
+                        not self._settings.is_px4_bench_arm
+                        or not self._settings.allow_vehicle_arm
+                        or request.session_id != self._bench_arm_session_id
+                    ):
+                        raise UnsafeOperationError(
+                            "Sessão física de ARM indisponível ou substituída."
+                        )
+                    await asyncio.to_thread(self._prepare_arm_transaction)
+                    self._require_live_heartbeat("ARM de bancada")
+                    connection = self._required_connection()
+                    if (connection.target_system, connection.target_component) != (
+                        request.target_system,
+                        request.target_component,
+                    ):
+                        raise UnsafeOperationError("Alvo MAVLink diferente da solicitação.")
+                    if self._armed is not False:
+                        raise UnsafeOperationError("O último heartbeat não confirma desarmamento.")
+                    await asyncio.to_thread(self._arm_vehicle_sync, evidence, request.expires_at)
+                    evidence.detail = "PX4 aceitou ARM e um novo heartbeat confirmou armamento."
+                except (GatewayError, OSError) as exc:
+                    evidence.detail = str(exc)
+        return evidence
+
+    def _arm_vehicle_sync(
+        self,
+        evidence: BenchArmEvidence | None = None,
+        expires_at: datetime | None = None,
+    ) -> None:
         connection = self._required_connection()
         mavlink = self._required_mavutil().mavlink
         command = mavlink.MAV_CMD_COMPONENT_ARM_DISARM
@@ -1139,11 +1228,19 @@ class PymavlinkVehicleGateway:
         first_heartbeat = self._last_heartbeat_monotonic
         transaction_deadline = time.monotonic() + self._settings.mission_command_timeout_seconds
 
-        attempts = 1 if self._settings.px4_sitl_plan_validation else self._ARM_MAX_SEND_ATTEMPTS
+        attempts = (
+            1
+            if evidence is not None or self._settings.px4_sitl_plan_validation
+            else self._ARM_MAX_SEND_ATTEMPTS
+        )
         for attempt in range(attempts):
             remaining = transaction_deadline - time.monotonic()
             if remaining <= 0:
                 break
+            if expires_at is not None and datetime.now(UTC) >= expires_at:
+                raise UnsafeOperationError("Prazo de transmissão da solicitação expirou.")
+            if evidence is not None:
+                evidence.transmitted = None  # A falha de escrita pode ser parcial.
             try:
                 connection.mav.command_long_send(
                     connection.target_system,
@@ -1158,6 +1255,8 @@ class PymavlinkVehicleGateway:
                     0,
                     0,
                 )
+                if evidence is not None:
+                    evidence.transmitted = True
             except (AttributeError, OSError, TypeError, ValueError) as exc:
                 raise VehicleConnectionError(
                     "Falha ao enviar o comando MAVLink normal de armamento."
@@ -1176,6 +1275,8 @@ class PymavlinkVehicleGateway:
                 first_heartbeat=first_heartbeat,
                 deadline=ack_deadline,
             )
+            if evidence is not None:
+                evidence.ack_result = result
             if result is None:
                 if armed_heartbeat_seen:
                     raise VehicleTimeoutError(
@@ -1194,6 +1295,8 @@ class PymavlinkVehicleGateway:
                 first_heartbeat,
                 deadline=transaction_deadline,
             ):
+                if evidence is not None:
+                    evidence.armed_confirmed = True
                 return
             if armed_heartbeat_seen:
                 raise VehicleTimeoutError(

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from app.core.config import Settings
 from app.core.exceptions import MissionUploadError
+from app.core.sitl_isolation import is_loopback_only_container
 from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
 from app.models import AuthorizedMission, MissionStatus, MissionWaypoint
 
@@ -20,9 +21,7 @@ from app.models import AuthorizedMission, MissionStatus, MissionWaypoint
 def assert_isolated() -> None:
     if os.environ.get("DEVCORE_ISOLATED_SITL_PROBE") != "1":
         raise RuntimeError("Explicit isolated SITL probe confirmation is required.")
-    if not Path("/.dockerenv").is_file() or {
-        p.name for p in Path("/sys/class/net").iterdir()
-    } != {"lo"}:
+    if not is_loopback_only_container():
         raise RuntimeError(
             "Refusing to run outside a container with loopback as its only interface."
         )

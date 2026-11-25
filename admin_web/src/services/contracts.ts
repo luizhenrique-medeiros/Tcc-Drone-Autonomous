@@ -164,6 +164,7 @@ export interface Mission {
   authorization?: MissionAuthorization;
   qgroundcontrol_review_status?: 'CURRENT' | 'OUTDATED';
   qgroundcontrol_sitl_review_event_id?: string;
+  qgroundcontrol_plan_exported_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -206,6 +207,7 @@ export interface VehicleHealth extends OperationalMetadata {
   current_longitude: number | null;
   current_altitude_m: number | null;
   current_amsl_m?: number | null;
+  current_ground_speed_m_s?: number | null;
   geofence_enabled: boolean | null;
   rtl_configured: boolean | null;
   px4_diagnostics?: {
@@ -320,6 +322,47 @@ export interface MissionOriginRevisionInput {
   position_confirmed: boolean;
 }
 
+export interface FlightPoint extends Coordinates {
+  recorded_at: string;
+}
+
+export interface ObservedFlight {
+  id: string;
+  vehicle_id: string;
+  vehicle_name?: string | null;
+  source?: OperationalSource;
+  mission_id: string | null;
+  ended_at: string | null;
+  stale: boolean;
+  phase: 'WAITING' | 'ARMED' | 'ARMED_ON_GROUND' | 'TAKING_OFF' | 'AIRBORNE' | 'MANUAL'
+    | 'MISSION' | 'PAUSED' | 'RETURNING' | 'LANDING' | 'LANDED' | 'DISARMED';
+  estimated: boolean;
+  link: 'UNASSOCIATED' | 'OPERATOR' | 'VERIFIED' | 'DIVERGENT';
+  revision: number | null;
+  associated_at: string | null;
+  associated_by: string | null;
+  last_seen_at: string | null;
+  armed: boolean | null;
+  mode: string | null;
+  landed_state: number | null;
+  mission_state: number | null;
+  sequence: number | null;
+  mapping_current: boolean;
+  destination_sequence: number | null;
+  return_sequence: number | null;
+  reached_sequences: number[];
+  destination: 'CONFIRMED' | 'ESTIMATED' | null;
+  early_return: boolean;
+  mission_finished_reported: boolean;
+  normal_completion: boolean;
+  point: FlightPoint | null;
+  altitude_m: number | null;
+  speed_m_s: number | null;
+  distance_m: number | null;
+  track: FlightPoint[][];
+  events: Array<{ id: string; event_type: string; message: string; created_at: string; metadata: { observed_at?: string } }>;
+}
+
 export interface AdminApi {
   login(input: LoginInput): Promise<AuthSession>;
   me(): Promise<AdminUser>;
@@ -327,8 +370,12 @@ export interface AdminApi {
   getOrder(id: string): Promise<Order>;
   approveOrder(id: string): Promise<Order>;
   rejectOrder(id: string, reason: string): Promise<Order>;
+  confirmDelivery(id: string, evidence: string): Promise<Order>;
   prepareMission(orderId: string): Promise<Mission>;
   getMission(id: string): Promise<Mission>;
+  getMissionFlight(id: string): Promise<ObservedFlight | null>;
+  getVehicleFlight(id: string): Promise<ObservedFlight | null>;
+  trackMission(id: string, vehicleId: string, version: number, hash: string): Promise<ObservedFlight | null>;
   markMissionUnderReview(id: string): Promise<Mission>;
   markMissionReviewed(id: string): Promise<Mission>;
   reviseMissionOrigin(id: string, input: MissionOriginRevisionInput): Promise<Mission>;
@@ -344,6 +391,7 @@ export interface AdminApi {
   ): Promise<Mission>;
   exportMission(id: string): Promise<void>;
   exportQgcDraft(id: string, vehicleId?: string, homeAmsl?: number): Promise<void>;
+  downloadQgcPlan(id: string, version: number, digest: string, homeAmsl?: number): Promise<string>;
   downloadReviewedQgcPlan(id: string): Promise<string>;
   recordQgcReview(id: string, version: number, hash: string, plan: string): Promise<{
     plan_sha256: string;

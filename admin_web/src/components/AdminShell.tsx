@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Radio,
+  Settings,
   X,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -23,6 +24,7 @@ const navItems = [
   { to: '/vehicles', label: 'Saúde do veículo', icon: Gauge },
   { to: '/operations', label: 'Operação ao vivo', icon: Radio },
   { to: '/history', label: 'Histórico e eventos', icon: History },
+  { to: '/settings', label: 'Configurações', icon: Settings },
 ];
 
 const pageLabels: Record<string, string> = {
@@ -31,6 +33,7 @@ const pageLabels: Record<string, string> = {
   '/vehicles': 'Saúde do veículo',
   '/operations': 'Operação ao vivo',
   '/history': 'Histórico e eventos',
+  '/settings': 'Configurações',
   '/design-system': 'Catálogo visual',
 };
 

@@ -341,6 +341,15 @@ export const demoApi: AdminApi = {
   async exportQgcDraft() {
     throw new Error('O rascunho QGroundControl requer telemetria real ou SITL do backend.');
   },
+  async downloadQgcPlan() {
+    throw new Error('Exportação .plan disponível somente com a API conectada.');
+  },
+  async confirmDelivery() {
+    throw new Error('Registro da entrega disponível somente com a API conectada.');
+  },
+  async getMissionFlight() { return null; },
+  async getVehicleFlight() { return null; },
+  async trackMission() { throw new Error('O acompanhamento requer a API conectada.'); },
   async downloadReviewedQgcPlan() {
     throw new Error('O plano revisado precisa estar registrado no backend.');
   },

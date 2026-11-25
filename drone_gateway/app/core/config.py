@@ -1,3 +1,4 @@
+import re
 from enum import StrEnum
 from pathlib import Path
 from tempfile import gettempdir
@@ -6,6 +7,7 @@ from pydantic import AliasChoices, Field, SecretStr, field_validator, model_vali
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.exceptions import ConfigurationError
+from app.core.sitl_isolation import is_loopback_only_container
 
 
 class MavlinkMode(StrEnum):
@@ -15,6 +17,7 @@ class MavlinkMode(StrEnum):
     DIRECT = "direct"
     QGROUNDCONTROL_FORWARD = "qgroundcontrol_forward"
     MAVLINK_ROUTER = "mavlink_router"
+    PX4_BENCH_ARM = "px4_bench_arm"
     MISSION_PLANNER_FORWARD = "mission_planner_forward"
 
 
@@ -109,7 +112,12 @@ class Settings(BaseSettings):
             MavlinkMode.MISSION_PLANNER_FORWARD,
             MavlinkMode.QGROUNDCONTROL_FORWARD,
             MavlinkMode.MAVLINK_ROUTER,
+            MavlinkMode.PX4_BENCH_ARM,
         }
+
+    @property
+    def is_px4_bench_arm(self) -> bool:
+        return self.mavlink_mode is MavlinkMode.PX4_BENCH_ARM
 
     @property
     def connection_topology(self) -> str:
@@ -121,6 +129,8 @@ class Settings(BaseSettings):
             return MavlinkMode.QGROUNDCONTROL_FORWARD.value
         if self.mavlink_mode is MavlinkMode.MAVLINK_ROUTER:
             return MavlinkMode.MAVLINK_ROUTER.value
+        if self.is_px4_bench_arm:
+            return MavlinkMode.PX4_BENCH_ARM.value
         if self.mavlink_mode is MavlinkMode.SITL:
             return MavlinkMode.SITL.value
         if self.mavlink_mode is MavlinkMode.SIMULATION:
@@ -182,10 +192,34 @@ class Settings(BaseSettings):
             or self.gateway_runtime is not GatewayRuntime.CONTAINER
             or not self.mavlink_connection.startswith("udpin:127.0.0.1:")
             or self.allow_telemetry_requests
-            or not Path("/.dockerenv").is_file()
-            or {entry.name for entry in Path("/sys/class/net").iterdir()} != {"lo"}
+            or not is_loopback_only_container()
         ):
             raise ConfigurationError("O ensaio PX4 exige SITL em container com somente loopback.")
+        if self.is_px4_bench_arm and (
+            self.autopilot_system.strip().upper() != "PX4"
+            or self.gateway_runtime is not GatewayRuntime.HOST
+            or not re.fullmatch(r"COM[1-9]\d*", self.mavlink_connection, re.IGNORECASE)
+            or not self.mavlink_target_system_id
+            or not self.mavlink_target_component_id
+            or not self.mavlink2_enabled
+            or self.allow_mission_upload
+            or self.allow_flight_commands
+            or self.allow_mission_start
+            or self.allow_telemetry_requests
+            or self.mission_command_timeout_seconds > 15
+            or (
+                self.allow_vehicle_arm
+                and (
+                    not self.real_hardware_acknowledged
+                    or self.gateway_api_key.get_secret_value()
+                    in {"change_me_gateway_key", "development-gateway-key"}
+                )
+            )
+        ):
+            raise ConfigurationError(
+                "ARM de bancada exige PX4 no host, porta COM dedicada, alvo MAVLink 2 "
+                "explícito e somente a permissão específica de ARM."
+            )
         if self.mavlink_mode in {
             MavlinkMode.QGROUNDCONTROL_FORWARD,
             MavlinkMode.MAVLINK_ROUTER,
@@ -200,6 +234,7 @@ class Settings(BaseSettings):
         if (
             self.autopilot_system.strip().upper() == "PX4"
             and not self.px4_sitl_plan_validation
+            and not self.is_px4_bench_arm
             and (
                 self.allow_mission_upload
                 or self.allow_flight_commands
@@ -216,11 +251,20 @@ class Settings(BaseSettings):
             raise ConfigurationError(
                 "MAVLINK_RECONNECT_INITIAL_SECONDS não pode exceder MAVLINK_RECONNECT_MAX_SECONDS."
             )
-        if self.allow_vehicle_arm and not self.allow_flight_commands:
+        if self.allow_vehicle_arm and not self.allow_flight_commands and not self.is_px4_bench_arm:
             raise ConfigurationError("ALLOW_VEHICLE_ARM=true exige ALLOW_FLIGHT_COMMANDS=true.")
         if self.allow_mission_start and not self.allow_flight_commands:
             raise ConfigurationError("ALLOW_MISSION_START=true exige ALLOW_FLIGHT_COMMANDS=true.")
-        if self.gateway_runtime is GatewayRuntime.CONTAINER and self.is_hardware_mode:
+        isolated_observation = (
+            self.mavlink_mode is MavlinkMode.QGROUNDCONTROL_FORWARD
+            and self.mavlink_forward_source is ForwardSource.SITL
+            and self.mavlink_connection.startswith("udpin:127.0.0.1:")
+        )
+        if (
+            self.gateway_runtime is GatewayRuntime.CONTAINER
+            and self.is_hardware_mode
+            and not isolated_observation
+        ):
             raise ConfigurationError(
                 "Modos MAVLink de hardware nao podem executar no container Linux. "
                 "Inicie banco/backend/admin no Docker e execute scripts/start_gateway.ps1 "

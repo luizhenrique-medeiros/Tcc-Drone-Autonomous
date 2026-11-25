@@ -1,5 +1,64 @@
 # Protocolo backend–gateway
 
+## Recepção operacional PX4
+
+```text
+Pixhawk ↔ QGroundControl → encaminhamento UDP → gateway → API/painel
+```
+
+O gateway publica heartbeat com o snapshot recebido e envia observações
+com identificação do veículo, origem e timestamps. Altitude relativa e AMSL
+têm campos distintos. `current_ground_speed_m_s` é nulo quando a velocidade
+atual não está disponível. Trate os campos ausentes e a idade da amostra
+independentemente. O backend só associa progresso observado a uma missão
+quando a evidência identifica a mesma revisão de forma inequívoca.
+
+O runtime de observação ignora o journal de execução e a fila de comandos e
+recusa as opções de escrita. O transporte não envia heartbeat GCS, pedidos
+de taxa, consultas de parâmetros, transferências de missão ou comandos à
+aeronave. Veja [Conexão PX4](CONEXAO_DRONE_PX4.md).
+
+### Observação automática do voo
+
+| Mensagem | Evidência utilizada |
+|---|---|
+| `HEARTBEAT` | Bit armado e modo PX4. Armado em solo exige estado do detector de pouso. Selecionar o modo Missão ou receber um índice em solo não indica execução. |
+| `EXTENDED_SYS_STATE` | Estado de solo, decolagem, em voo e pouso em andamento. O pouso observado exige retorno a solo informado pelo PX4. |
+| `GLOBAL_POSITION_INT` | Posição, altitude relativa ao Home e velocidade horizontal. Com estado de solo indisponível, o voo pode ser estimado quando armado, com referência recente de solo, ganho de pelo menos 3 m e velocidade horizontal de pelo menos 1,5 m/s sustentados por amostras ao longo de pelo menos 2 s. A estimativa não produz pouso. |
+| `MISSION_CURRENT` | Sequência, número de itens, modo da missão, estado e identificador nativo, quando presentes e válidos. A execução requer evidência aérea e modo Missão. Estado pausado exige indicação explícita, mesmo se a aeronave estiver em espera. |
+| `MISSION_ITEM_REACHED` | Item informado como alcançado. O gateway acrescenta IDs da origem e, quando válido, o identificador nativo do último `MISSION_CURRENT`. O backend deduplica itens na sessão e só os relaciona à missão se o vínculo estiver válido. |
+
+No QGroundControl 5.1.5 para PX4, o Home planejado fica fora da lista transmitida.
+No arquivo canônico, Takeoff, Waypoint e RTL correspondem aos índices MAVLink
+0, 1 e 2. Revisões podem ter itens diferentes. O mapeamento é nomeado no painel
+somente quando a evidência de releitura identifica a revisão e os itens. O
+`mission_id` MAVLink é um identificador da controladora. O SHA-256 identifica
+bytes do arquivo local. Alterações de ID, quantidade informada ou revisão
+suspendem o vínculo dos itens após o início observado. A associação manual
+permite acompanhar índices brutos, com correspondência pendente de verificação.
+Veja [conjunto MAVLink Common](https://mavlink.io/en/messages/common.html#MISSION_CURRENT)
+e [ajuste de sequência no QGroundControl 5.1.5](https://github.com/mavlink/qgroundcontrol/blob/v5.1.5/src/MissionManager/PlanManager.cc#L53-L85).
+
+Durante execução, com posição válida em amostras de pelo menos 2 s a até 8 m
+do destino, o painel pode indicar proximidade estimada. A confirmação pelo
+waypoint exige `MISSION_ITEM_REACHED` com a sequência verificada. Uma saída em
+RTL na sequência anterior ao destino, com vínculo verificado e sem lacuna
+observada, permite identificar retorno antecipado. Nos demais retornos, a
+passagem pelo destino pode ficar sem confirmação. Conclusão normal exige
+destino confirmado, estado completo informado pelo PX4, pouso e desarmamento.
+O pedido só conclui por confirmação administrativa de recebimento.
+
+Na reconexão, os eventos refletem somente os estados observados. Leituras
+ausentes não geram transições e o mapa separa trechos com amostras ausentes
+ou intervalos maiores que 5 s. A visualização usa até 600 snapshots do voo
+e 80 eventos recentes. O acompanhamento não utiliza um percentual de
+distância, duração ou itens.
+
+## Contratos históricos de simulação
+
+As seções seguintes documentam estados e contratos legados cobertos em
+testes isolados. Elas preservam a referência do protocolo de escrita.
+
 ## Versão substituída durante pré-voo
 
 Em `WAITING_OPERATOR_ARM`, somente com os quatro gates locais falsos, heartbeat
@@ -195,56 +254,19 @@ e [MissionItemProtocol_Waypoints](https://github.com/ArduPilot/ardupilot/blob/Co
 Os testes usam doubles determinísticos, inclusive uma missão completa de sete itens;
 não constituem upload/releitura executados contra SITL ou Pixhawk.
 
-## Modos
+## Modos e evidência anterior
 
-`simulation` usa fake determinístico, sem socket, e publica `SIMULATION`. `sitl` usa Pymavlink com conexão de desenvolvimento e publica `SITL`. Para compatibilidade, `real` continua representando hardware com conexão explícita; as duas topologias reais preferidas são `direct` e `mission_planner_forward`, ambas publicando `HARDWARE_REAL` somente a partir de amostras ao vivo. O mesmo DTO é usado, mas evidências permanecem rotuladas; valor ausente ou legado é `UNKNOWN` e nunca recebe prontidão operacional.
+`simulation` usa o fake determinístico. A escrita PX4 para testes exige o
+perfil SITL com isolamento de rede. Para observação real use
+`qgroundcontrol_forward` ou o roteador UDP documentado em
+[Conexão PX4](CONEXAO_DRONE_PX4.md). O perfil experimental `px4_bench_arm`
+fica fora do runtime operacional.
 
-No Compose, `GATEWAY_RUNTIME=container` usa variáveis `GATEWAY_CONTAINER_*` separadas e recusa
-`real`, `direct` e `mission_planner_forward`. O launcher Windows define runtime host; somente ele
-pode abrir COM7 ou o endpoint local encaminhado pelo Mission Planner.
-
-```text
-direct:
-  MAVLINK_MODE=direct
-  MAVLINK_CONNECTION=COM7
-  MAVLINK_BAUD=57600
-  gateway é o único dono da COM
-
-mission_planner_forward:
-  MAVLINK_MODE=mission_planner_forward
-  Mission Planner é o único dono de COM7 @ 57600
-  Mavlink Mirror = UDP Client → 127.0.0.1:14551, Write access OFF
-  MAVLINK_FORWARD_CONNECTION=udpin:127.0.0.1:14551
-```
-
-No estado observado, o Mission Planner possuía um listener AutoConnect **Mavlink alt port**, UDP 14551, direção **Inbound**. Ele recebe tráfego destinado ao Mission Planner e não encaminha a `COM7`; precisa ser desabilitado para o gateway conseguir fazer bind em `udpin:127.0.0.1:14551`. O mirror só é iniciado depois de o Mission Planner conectar à `COM7` a 57600.
-
-O baseline de leitura mantém `REAL_HARDWARE_ACKNOWLEDGED=false`, `ALLOW_TELEMETRY_REQUESTS=false`, `ALLOW_MISSION_UPLOAD=false`, `ALLOW_FLIGHT_COMMANDS=false`, `ALLOW_MISSION_START=false` e `ALLOW_VEHICLE_ARM=false`. Nesse estado, não se envia heartbeat de GCS, pedido de intervalo, missão, comando, modo ou armamento. Registrar `REAL_HARDWARE_ACKNOWLEDGED=true`, habilitar **Write access** no mirror e definir `ALLOW_MISSION_UPLOAD=true` requer sessão posterior autorizada e permite somente upload/releitura desarmados; os outros três gates continuam falsos. Uma sessão posterior de ARM exige habilitar deliberadamente `ALLOW_VEHICLE_ARM`, `ALLOW_FLIGHT_COMMANDS` e `ALLOW_MISSION_START`, além de satisfazer todos os checks; esses valores nunca são inferidos de ambiente, conexão ou estado da UI.
-
-O opt-in independente `ALLOW_TELEMETRY_REQUESTS=true` permite somente consultas
-`GET_HOME_POSITION` e `PARAM_REQUEST_READ` de `FENCE_ENABLE`/`RTL_ALT`, sem liberar
-qualquer gate de atuação. Consultas são renovadas após conexão/reconexão e no loop
-de saúde, no máximo um lote por 2 s na configuração padrão, apenas com heartbeat
-válido e fila drenada. Home e cada parâmetro expiram separadamente em 5 s por
-padrão; outra mensagem `PARAM_VALUE` não renova sua validade. Resposta ausente ou
-inválida permanece `null`, sem fabricar prontidão. O diagnóstico explicitamente
-passivo continua transmitindo zero bytes. O gateway não habilita escrita no mirror.
-
-Durante a releitura de missão, telemetria intercalada é ingerida antes de filtrar
-as mensagens da transação, preservando Home e heartbeat atuais. Se a Home necessária
-estiver vencida, a conexão com consultas habilitadas solicita e aguarda uma nova
-resposta por tempo limitado antes de iniciar o download; ausência bloqueia.
-
-No adaptador MAVLink, `MAVLINK_TARGET_SYSTEM_ID` e `MAVLINK_TARGET_COMPONENT_ID` filtram globalmente todas as mensagens operacionais. Fora do diagnóstico passivo e somente com escrita autorizada, o gateway pode solicitar `AUTOPILOT_VERSION` e intervalos dos tipos de telemetria necessários, sem alterar parâmetros de segurança. A conexão serial usa porta e baud explícitos; `python -m app.tools.list_ports` lista candidatas sem selecionar uma automaticamente.
-
-Para auditoria, cada amostra registra fonte e frescor. Em 20 de agosto de 2026, uma sessão
-receive-only direta em COM7/57600 publicou 129 snapshots `HARDWARE_REAL`: alvo `1/1`,
-`STABILIZE`, `armed=false`, bateria 74–75%, GPS máximo fix 3/5 satélites e final fix 1/0,
-EKF/preflight falsos e home/origin ausentes. REST/WS refletiram a origem e, após parar,
-`is_stale=true`. Nenhum intervalo, missão, comando ou byte de escrita foi enviado. O forwarding
-14551 expirou sem heartbeat porque estava configurado como Inbound. Upload/releitura, ensaio de
-motor, armamento e voo permanecem não comprovados.
+Em 20 de agosto de 2026, uma sessão de recepção direta ArduPilot em COM7/57600
+publicou 129 snapshots `HARDWARE_REAL`. A amostra ficou desatualizada após
+encerrar o processo. O encaminhamento 14551 expirou porque a porta estava
+configurada como Inbound. Nenhum dado MAVLink foi transmitido pelo gateway.
 
 ## Abortamento e RTL
 
-O admin solicita; backend verifica papel/estado e registra; gateway valida conexão e emite apenas o comando permitido pelo adaptador. A decisão entre RTL, pouso ou intervenção manual considera estado/área/ArduPilot e procedimento humano; não há `except` que converta falha em sucesso.
+No ensaio isolado, os endpoints legados verificam papel, estado e vínculo com o simulador. Na operação real, o operador controla retorno e intervenção pelo QGroundControl.

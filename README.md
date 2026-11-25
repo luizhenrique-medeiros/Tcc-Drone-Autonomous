@@ -1,6 +1,6 @@
 # DEVcore — entrega por drone via coordenadas
 
-Protótipo acadêmico de um sistema de entrega por drone no qual o cliente escolhe o ponto exato no aplicativo Flutter Android/Web, um administrador aprova o pedido e, em uma segunda etapa independente, autoriza uma missão revisada para execução pelo gateway MAVLink.
+Protótipo acadêmico de um sistema de entrega por drone no qual o cliente escolhe o ponto exato no aplicativo Flutter Android/Web, um administrador aprova o pedido e disponibiliza a revisão da missão em `.plan`. O operador revisa e controla a aeronave no QGroundControl.
 
 > **Segurança:** este repositório não autoriza operação comercial nem substitui avaliação aeronáutica. O modo padrão é simulado. Conectar uma Pixhawk, armar motores ou voar exige operador responsável, área controlada, checklist, failsafes e evidência manual. Nenhum health check arma ou inicia o veículo.
 
@@ -12,20 +12,24 @@ Protótipo acadêmico de um sistema de entrega por drone no qual o cliente escol
 | Coordenadas e pedidos | API e persistência reais | MapTiler depende de chave configurada |
 | Catálogo | Dados acadêmicos | Produtos e avaliações não são comerciais |
 | Pagamento | Escolha simulada | Nenhum dado de cartão é coletado ou processado |
-| Aprovação e autorização | Duas ações e endpoints distintos | Exigem papel `ADMIN` e auditoria |
-| Missão | Waypoints e arquivo QGC WPL 110 | Revisão humana no Mission Planner continua obrigatória |
-| Gateway | Simulação, SITL, serial direta e forwarding do Mission Planner | Upload, ARM normal, comandos e início possuem gates independentes, falsos por padrão; hardware executa somente no host |
-| Pixhawk 6C e voo | COM7/57600 e telemetria real recebida passivamente em modo direto | O veículo não atingiu preflight; forwarding, upload, ensaio de motor e voo não foram validados |
+| Aprovação e geração | Duas ações administrativas auditadas | Independentes da telemetria |
+| Missão | Arquivo `.plan` para QGroundControl, identificado por pedido e revisão | Revisão operacional e upload feitos no QGroundControl |
+| Gateway | Recepção passiva PX4 e ambientes de teste isolados | O gateway real não transmite MAVLink |
+| Pixhawk 6C | Telemetria recebida pelo encaminhamento UDP | PX4 controla a aeronave e aplica as proteções nativas |
 
 ## Fluxo principal
 
 ```text
-Flutter → FastAPI/PostGIS → aprovação do pedido no React
-        → geração e revisão da missão → checklist e autorização do voo
-        → gateway → SITL ou Pixhawk/ArduPilot → telemetria → Flutter/React
+Flutter → FastAPI/PostGIS → aprovação e geração no painel → download do .plan
+                                                          → QGroundControl
+Pixhawk/PX4 ↔ QGroundControl → recepção UDP → gateway → API/painel
 ```
 
-A aprovação do pedido apenas permite preparar a missão. O upload/execução exige outra autorização, vinculada à versão da missão, de uso único e com validade curta.
+No painel, abra o pedido aprovado, prepare a missão e clique em **Baixar missão
+para QGroundControl**. Abra em **Plan → Open** e confira origem, rota, altitude
+e retorno. O operador conduz o restante no QGroundControl. O painel mantém
+exportação e execução observada separadas e permite confirmar entrega mediante
+evidência.
 
 ## Componentes
 
@@ -45,8 +49,8 @@ O diretório `flutter/`, quando presente localmente, é um SDK de desenvolviment
 - Docker Desktop com Compose;
 - Node.js 24 ou superior;
 - Flutter 3.47/Dart 3.13, Android SDK com API 37, AGP 9.1.1 e Gradle 9.3.1;
-- WSL 2 e ArduPilot SITL para testes MAVLink;
-- Mission Planner e Pixhawk 6C apenas para as etapas controladas de integração real.
+- PX4 SITL para testes de protocolo em ambiente isolado;
+- QGroundControl para abrir e revisar o plano. Pixhawk é necessária apenas para acompanhar telemetria real.
 
 ## Configuração e execução
 
@@ -71,9 +75,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -ConfirmSimulationGateway
 ```
 
-Esse modo força runtime `container`, `simulation`, `udp:0.0.0.0:14550` e os quatro gates falsos.
+Esse modo força runtime `container`, `simulation`, `udp:0.0.0.0:14550` e as permissões de escrita desativadas.
 Para apenas validar pré-requisitos/configuração sem iniciar serviços, acrescente `-ValidateOnly`.
-COM7/forwarding continuam em outro terminal via `scripts\start_gateway.ps1`.
+A recepção real usa o encaminhamento UDP do QGroundControl e o gateway do host.
 
 Para subir somente a pilha de API, banco e painel:
 
@@ -94,13 +98,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 Ele fica em `http://localhost:5174`, usa hot reload e lê a configuração Web do MapTiler no `.env` sem imprimir a chave. O painel administrativo continua sendo outra aplicação, em `http://localhost:5173`.
 
-Para incluir o gateway determinístico no teste ponta a ponta:
+Para o acompanhamento real, configure o encaminhamento unidirecional e inicie
+o gateway conforme [Conexão PX4](docs/CONEXAO_DRONE_PX4.md). Os exercícios
+legados de comandos dependem de aplicação e banco de teste dedicados.
 
-```powershell
-docker compose --profile gateway up --build
-$env:ADMIN_INITIAL_PASSWORD='SENHA_LOCAL'
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\integration_smoke.ps1 -ConfirmSimulationMutation
-```
+
 
 4. Para executar componentes separadamente:
 
@@ -108,12 +110,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\integration_sm
 .\scripts\start_backend.ps1
 .\scripts\start_admin.ps1
 .\scripts\start_mobile.ps1
-.\scripts\start_gateway.ps1
+.\scripts\start_gateway.ps1 -ObserveOnly
 ```
 
-O padrão versionado é `MAVLINK_MODE=simulation`. Para o primeiro ensaio físico, execute antes `scripts\start_gateway.ps1 -DiagnoseOnly`: ele apenas recebe, mostra heartbeat/telemetria realmente observados e termina. Os modos `direct` e `mission_planner_forward`, a COM7/57600 e as travas independentes de upload, comandos e início estão em [Setup Mission Planner/Pixhawk](docs/MISSION_PLANNER_SETUP.md).
-
-O profile Docker usa `GATEWAY_CONTAINER_*`, identifica `GATEWAY_RUNTIME=container` e recusa modos reais. Serial direta e forwarding são iniciados exclusivamente no host Windows pelo script acima.
+O padrão versionado é `MAVLINK_MODE=simulation`. Na operação PX4,
+`scripts/start_gateway.ps1 -ObserveOnly` recebe o encaminhamento do
+QGroundControl e publica observações. O perfil Docker usa variáveis
+`GATEWAY_CONTAINER_*` separadas para simulação.
 
 Para comandos separados de Flutter Web, Android e APK, consulte [Build e execução](docs/BUILD_AND_RUN.md). Para celular físico, não use `localhost`: siga [Rede local](docs/LOCAL_NETWORK_SETUP.md).
 

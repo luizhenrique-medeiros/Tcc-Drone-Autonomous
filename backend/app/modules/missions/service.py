@@ -26,6 +26,7 @@ from app.modules.delivery_points.models import DeliveryPoint
 from app.modules.delivery_points.service import haversine_distance_m
 from app.modules.missions.models import GatewayCommand, Mission, MissionWaypoint
 from app.modules.missions.qgroundcontrol_plan import (
+    QGC_EXPORT_EVENT,
     QGC_REVIEW_EVENT,
     PlanPosition,
     QGroundControlCandidate,
@@ -110,10 +111,27 @@ def admin_missions_to_read(session: Session, missions: list[Mission]) -> list[Ad
     for mission_id, version, sha256 in review_rows:
         latest_qgc_bindings.setdefault(mission_id, (version, sha256))
 
+    exported_at: dict[tuple[UUID | None, int | None, str | None], datetime] = {}
+    export_rows = session.execute(
+        select(
+            SystemEvent.mission_id,
+            SystemEvent.event_metadata["mission_version"].as_integer(),
+            SystemEvent.event_metadata["mission_sha256"].as_string(),
+            SystemEvent.created_at,
+        )
+        .where(SystemEvent.mission_id.in_(mission_ids), SystemEvent.event_type == QGC_EXPORT_EVENT)
+        .order_by(SystemEvent.created_at.desc(), SystemEvent.id.desc())
+    )
+    for mission_id, version, sha256, timestamp in export_rows:
+        exported_at.setdefault((mission_id, version, sha256), _as_utc(timestamp))
+
     return [
         AdminMissionRead.model_validate(mission).model_copy(
             update={
                 "authorization": latest_by_mission.get(mission.id),
+                "qgroundcontrol_plan_exported_at": exported_at.get(
+                    (mission.id, mission.version, mission.mission_sha256)
+                ),
                 "qgroundcontrol_review_status": (
                     None
                     if mission.id not in latest_qgc_bindings
@@ -242,7 +260,7 @@ def prepare_mission(session: Session, order: Order, admin: User, settings: Setti
         order_id=order.id,
         mission_id=mission.id,
         event_type="MISSION_GENERATED",
-        message="Missão e arquivo Mission Planner gerados",
+        message="Missão gerada a partir das coordenadas aprovadas",
         metadata={"version": 1, "sha256": mission.mission_sha256},
     )
     session.commit()
@@ -606,19 +624,23 @@ def _observation_time(event: SystemEvent) -> datetime | None:
     return recorded_at if recorded_at.tzinfo is not None else None
 
 
-def correlate_physical_progress(
-    session: Session, vehicle: Vehicle, observation: SystemEvent
-) -> SystemEvent | None:
+def match_physical_plan(
+    session: Session,
+    vehicle: Vehicle,
+    *,
+    native_id: int | None,
+    sequence: int | None,
+    system_id: int | None,
+    component_id: int | None,
+    observed_at: datetime | None,
+) -> tuple[Mission, SystemEvent, SystemEvent] | None:
     if (
         vehicle.operational_source != OperationalSource.HARDWARE_REAL
         or vehicle.autopilot_system.upper() != "PX4"
-        or observation.event_type != "MAVLINK_MISSION_CURRENT"
+        or type(native_id) is not int
+        or not 0 < native_id <= 0xFFFFFFFF
+        or type(sequence) is not int
     ):
-        return None
-    metadata = observation.event_metadata
-    native_id = metadata.get("native_plan_id")
-    sequence = metadata.get("sequence")
-    if type(native_id) is not int or not 0 < native_id <= 0xFFFFFFFF or type(sequence) is not int:
         return None
     verification = session.scalar(
         select(SystemEvent)
@@ -633,7 +655,6 @@ def correlate_physical_progress(
     if verification is None:
         return None
     verified_at = _observation_time(verification)
-    observed_at = _observation_time(observation)
     evidence = verification.event_metadata
     count = evidence.get("item_count")
     if (
@@ -645,8 +666,8 @@ def correlate_physical_progress(
         or type(evidence.get("native_plan_id")) is not int
         or evidence.get("native_plan_id") != native_id
         or any(
-            type(metadata.get(key)) is not int or metadata.get(key) != evidence.get(key)
-            for key in ("system_id", "component_id")
+            type(value) is not int or value != evidence.get(key)
+            for key, value in (("system_id", system_id), ("component_id", component_id))
         )
     ):
         return None
@@ -669,7 +690,7 @@ def correlate_physical_progress(
         )
         .distinct()
     )
-    matches = []
+    matches: list[tuple[Mission, SystemEvent]] = []
     for mission in candidates:
         if mission.vehicle_id is not None and mission.vehicle_id != vehicle.id:
             continue
@@ -680,12 +701,41 @@ def correlate_physical_progress(
             _reviewed_plan_bytes(mission, review)
         except ConflictError:
             continue
-        matches.append(mission)
+        matches.append((mission, review))
         if len(matches) > 1:
             return None
     if not matches:
         return None
-    matched = matches[0]
+    mission, review = matches[0]
+    return mission, review, verification
+
+
+def correlate_physical_progress(
+    session: Session, vehicle: Vehicle, observation: SystemEvent
+) -> SystemEvent | None:
+    if observation.event_type != "MAVLINK_MISSION_CURRENT":
+        return None
+    metadata = observation.event_metadata
+    native_id = metadata.get("native_plan_id")
+    sequence = metadata.get("sequence")
+    system_id = metadata.get("system_id")
+    component_id = metadata.get("component_id")
+    if any(type(value) is not int for value in (native_id, sequence, system_id, component_id)):
+        return None
+    match = match_physical_plan(
+        session,
+        vehicle,
+        native_id=int(native_id),
+        sequence=int(sequence),
+        system_id=int(system_id),
+        component_id=int(component_id),
+        observed_at=_observation_time(observation),
+    )
+    if match is None:
+        return None
+    matched, review, verification = match
+    digest = review.event_metadata.get("plan_sha256")
+    count = int(verification.event_metadata["item_count"])
     event, _ = record_event(
         session,
         actor_type="GATEWAY",
@@ -693,7 +743,7 @@ def correlate_physical_progress(
         mission_id=matched.id,
         vehicle_id=vehicle.id,
         event_type="PX4_PHYSICAL_MISSION_PROGRESS_OBSERVED",
-        message=f"PX4 informou o item {sequence + 1} de {count} da missão física do pedido.",
+        message=f"PX4 informou o item {int(sequence) + 1} de {count} da missão física do pedido.",
         metadata={
             "native_plan_id": native_id,
             "plan_sha256": digest,
@@ -706,7 +756,7 @@ def correlate_physical_progress(
     return event
 
 
-def _reviewed_px4_artifact(mission: Mission, review: SystemEvent) -> QGroundControlCandidate:
+def reviewed_px4_artifact(mission: Mission, review: SystemEvent) -> QGroundControlCandidate:
     content, plan_digest = _reviewed_plan_bytes(mission, review)
     try:
         items = validate_reviewed_plan(
@@ -769,7 +819,7 @@ def gateway_mission_artifact(
     review = session.get(SystemEvent, review_id)
     if review is None:
         raise ConflictError("A revisão vinculada à autorização está indisponível")
-    candidate = _reviewed_px4_artifact(mission, review)
+    candidate = reviewed_px4_artifact(mission, review)
     if candidate.sha256 != candidate_sha256:
         raise ConflictError("O artefato PX4 mudou após a autorização")
     waypoints = []
@@ -871,7 +921,7 @@ def authorize_flight(
         _reject_unbound_qgroundcontrol_review(session, mission)
     else:
         review = _px4_authorization_review(session, mission, review_id, settings)
-        candidate = _reviewed_px4_artifact(mission, review)
+        candidate = reviewed_px4_artifact(mission, review)
     renewing = mission.status == MissionStatus.VERIFIED
     if candidate is not None and renewing:
         raise InvalidStateError("O ensaio SITL do plano revisado não renova autorizações")
@@ -1281,6 +1331,7 @@ def apply_gateway_status(
     event_id: str,
     detail: str | None,
 ) -> tuple[Mission, bool]:
+    _require_non_hardware_vehicle(session, mission.vehicle_id)
     _event, created = record_event(
         session,
         event_id=event_id,

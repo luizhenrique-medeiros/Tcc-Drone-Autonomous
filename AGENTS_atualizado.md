@@ -13,15 +13,15 @@ Você é um **Engenheiro de Software Full-Stack Sênior e Especialista em Sistem
 
 ### 1.1 Escopo vigente
 
-**Regra prioritária — separação de responsabilidades:** o site (cliente, admin e backend) não realiza verificações de aptidão para voo, incluindo bateria, satélites, GPS, EKF, bússola, geofence, pre-arm, modo ou estado de armamento. Pode exibir telemetria e alertas recebidos, sem transformá-los em condições para aprovar pedidos ou exportar missões. O painel administrativo e o QGroundControl podem solicitar armamento normal e início de missão; o PX4 é a autoridade final sobre aceitação dos comandos e segurança. Não remover, reduzir ou contornar as proteções nativas do PX4. Verificações físicas e procedimentos do operador permanecem externos ao site. Validações de dados, autenticação, integridade e testes de software permanecem obrigatórios. Esta regra prevalece sobre descrições legadas de estados e endpoints.
+**Regra prioritária de responsabilidades.** O site recebe coordenadas, aprova pedidos, gera missões e permite baixar o `.plan` identificado por pedido e revisão. O site e o gateway acompanham dados recebidos passivamente. Aprovação, geração e exportação independem da conexão e da aptidão do veículo. O operador revisa e controla a aeronave pelo QGroundControl. O PX4 decide se aceita os comandos e mantém suas proteções nativas. Validações de dados, autenticação, integridade e testes continuam obrigatórios.
 
 - PX4 e QGroundControl são a plataforma alvo. A migração está em andamento: consulte `docs/MIGRACAO_PX4_QGROUNDCONTROL.md` e verifique o código antes de afirmar que algum fluxo está disponível.
-- Em PX4, o painel administrativo pode solicitar upload, armamento normal e início da missão por ações explícitas e separadas do operador autenticado, encaminhadas pelo gateway. O QGroundControl permanece disponível para operação e revisão; o PX4 aceita ou rejeita os comandos. A validação em SITL e em hardware permanece separada.
+- A importação, a revisão operacional, o upload, o armamento, o início, o retorno e o desarmamento são realizados pelo operador no QGroundControl. Os ensaios de software com escrita permanecem isolados da operação real.
 - Adapte formatos de missão, HOME, modos, checks, progresso e contratos às versões utilizadas. `.plan` é distinto de `QGC WPL 110`; não apresente recursos legados como migrados.
 - Valores legados persistidos ou compartilhados, como `EXPORTED_TO_MISSION_PLANNER` e `mission_planner_forward`, exigem estratégia de compatibilidade e migração coordenada entre código, dados, testes e documentação.
 - O resultado final pretendido inclui hardware real em ambiente controlado; SITL é a etapa de regressão obrigatória antes da Pixhawk, não uma evidência de voo real.
 - O catálogo e a escolha de pagamento são os únicos elementos intencionalmente simulados; nenhum dado bancário real é coletado.
-- Aprovar o pedido é uma decisão administrativa do site. O operador pode solicitar armamento e início pelo painel administrativo ou QGroundControl, respeitando a decisão do PX4.
+- Aprovar o pedido é uma decisão administrativa do site. Registre separadamente geração, exportação e execução observada.
 - O site não possui autorização de voo, checklist pré-voo, confirmações humanas de voo ou bloqueios próprios baseados na saúde do veículo. A revisão operacional da missão ocorre no QGroundControl.
 - O MapTiler, renderizado por MapLibre, é o provedor principal do aplicativo; sem chave, somente um fallback de desenvolvimento claramente identificado pode ser usado.
 - O endereço pesquisado centraliza a região. Apenas as coordenadas finais, escolhidas manualmente na segunda etapa em mapa satélite, alimentam a missão.
@@ -59,7 +59,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - Registro e validação de pedidos.
 - Simulação da escolha de forma de pagamento.
 - Painel administrativo separado com autenticação, fila, mapa, revisão, telemetria e auditoria.
-- Aprovação humana do pedido no site; solicitação explícita de armamento e início pelo painel administrativo ou QGroundControl.
+- Aprovação humana no site, exportação por revisão e operação do veículo pelo QGroundControl.
 - Criação e persistência de missão de voo vinculada ao pedido.
 - Integração com PX4 SITL via `pymavlink` no módulo `drone_gateway`.
 - Telemetria básica e acompanhamento em tempo real por REST e WebSocket.
@@ -163,9 +163,9 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Abstração:** Crie uma interface/protocolo `VehicleGateway` e implementações para SITL, conexão real e fake de testes.
 - **Padrão seguro:** O modo padrão deve ser `simulation`; conexão real exige configuração explícita.
 - **Arming:** Nunca arme o veículo real automaticamente durante inicialização, health check ou teste.
-- **Armamento:** O administrador autenticado pode solicitar armamento normal no site; o gateway encaminha o comando ao PX4, que aceita ou rejeita conforme suas proteções nativas. O QGroundControl permanece disponível para armamento e desarmamento. Nunca ofereça force/bypass ou rearmamento automático.
-- **Missões:** O site gera e exporta o arquivo de missão; após revisão operacional, o administrador pode solicitar upload e início separadamente pelo gateway, ou operar pelo QGroundControl. Correlacione respostas do PX4 e registre eventos; não declare sucesso sem confirmação.
-- **Heartbeat:** Utilize heartbeat para indicar conexão e atualidade da telemetria; não o use para bloquear pedidos ou exportações no site. Para envio de comandos reais, confirme conexão e identidade do veículo; isso é validação de transporte, não de aptidão de voo.
+- **Armamento:** O operador controla armamento e desarmamento pelo QGroundControl. O gateway real é exclusivamente receptor.
+- **Missões:** Exporte a revisão com origem e destino registrados e a referência de altitude do projeto. O download registra exportação do arquivo. Registre execução observada somente quando houver evidência que identifique a missão.
+- **Heartbeat:** Indique conexão e atualidade. Exiba campos ausentes como indisponíveis e dados antigos como desatualizados. A telemetria é independente do fluxo de pedido e exportação.
 - **Pre-arm:** As verificações são executadas pelo PX4 e apresentadas no QGroundControl. O site pode exibir mensagens recebidas, sem executar checks próprios ou alterar parâmetros.
 - **Altitude:** A altitude vem de configuração validada, nunca do aplicativo cliente.
 - **Coordenadas:** Valide somente a integridade e o formato dos dados no site. A avaliação operacional de origem, destino, alcance e limites de voo cabe ao operador no QGroundControl e ao PX4.
@@ -176,7 +176,7 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Duplicidade:** O gateway não deve executar a mesma missão duas vezes.
 - **Falha do backend:** Uma missão já em execução continua sob controle do PX4; o gateway deve tentar registrar o estado ao reconectar.
 - **Failsafes:** Nunca desative failsafes. O código deve registrar RTL, abortamento e perda de link como eventos críticos, sem comandar o veículo real.
-- **Comandos administrativos:** ARM normal e início de missão são ações independentes, sem encadeamento automático. Exija resposta correlacionada e estado posterior do PX4 para confirmar resultado; não repita automaticamente comandos críticos nem contorne rejeições. A missão enviada deve corresponder à missão revisada pelo operador.
+- **Recepção:** O gateway real não consulta parâmetros, nem transfere missões, reivindica comandos ou retoma solicitações de sessões anteriores. O site apresenta somente observações recebidas e correlacionadas.
 - **Hardware:** Testes reais devem exigir configuração explícita, operador responsável e checklist externo ao site.
 
 ### 4.6 Logging, Telemetry & Observability
@@ -184,8 +184,8 @@ Antes de criar, alterar ou refatorar qualquer arquivo no repositório, você **D
 - **Contexto:** Inclua `request_id`, `user_id`, `order_id`, `mission_id` e `vehicle_id` quando disponíveis.
 - **Níveis:** Use `DEBUG`, `INFO`, `WARNING`, `ERROR` e `CRITICAL` corretamente.
 - **Correlação:** Propague um identificador de correlação entre API, gateway e eventos da missão.
-- **Eventos:** Registre criação, validação, claim, upload, execução, destino, retorno, conclusão, abortamento e falha.
-- **Telemetria mínima:** Latitude, longitude, altitude relativa, velocidade, bateria, modo, armamento, GPS e estado da missão.
+- **Eventos:** Registre aprovação, geração, exportação, revisão, observações correlacionadas e confirmação administrativa da entrega.
+- **Telemetria:** Exiba conexão, horário, posição, altitude, velocidade, modo, armamento e bateria conforme recebidos. Permita associação administrativa do voo à revisão exportada. Nomear os itens do plano exige prova do vínculo com a missão a bordo. Identifique estimativas e preserve lacunas na reconexão.
 - **Frequência:** A taxa de persistência deve ser configurável e menor ou igual à taxa recebida.
 - **Privacidade:** Não registre dados desnecessários do usuário.
 - **MVP:** Não introduza Grafana, Loki ou Prometheus sem solicitação explícita.
@@ -403,7 +403,7 @@ drone-delivery/
 
 ### 6.7 Approvals
 - Registra decisão administrativa do pedido e motivo de rejeição.
-- Não implementa checks técnicos, três confirmações humanas, modal de autorização de voo ou frase digitada. O painel administrativo oferece ações explícitas e separadas de upload, armamento normal e início de missão, sem checklist de aptidão próprio.
+- O painel disponibiliza o arquivo e exibe os dados recebidos. Revisão operacional e comandos de voo pertencem ao QGroundControl.
 - A aprovação do pedido nunca dispara comandos de voo.
 
 ### 6.8 Vehicles
@@ -474,14 +474,14 @@ FAILED
 - Pedido confirmado não pode ter itens ou ponto de entrega alterados silenciosamente.
 - Cada pedido possui no máximo uma missão ativa.
 - Estados legados de autorização não constituem permissão de voo; preserve compatibilidade durante a migração.
-- O gateway real acompanha a missão e a telemetria e encaminha solicitações explícitas de upload, armamento normal e início de missão de administrador autenticado; não exige autorização de aptidão de voo do site.
+- O gateway real recebe e publica telemetria sem transmitir MAVLink, inclusive na inicialização e na reconexão.
 - Aprovar um pedido não inicia, não envia e não autoriza a missão.
 - Rejeição de pedido exige motivo; a confirmação de área controlada é responsabilidade do operador, fora do site.
 - Claim de missão deve impedir que dois gateways executem a mesma missão.
 - Missão `COMPLETED`, `ABORTED` ou `FAILED` é terminal, salvo procedimento administrativo explícito.
 - O aplicativo não pode forçar transição de missão.
 - Telemetria antiga não pode sobrescrever leitura mais recente.
-- O status do pedido deve ser derivado de eventos válidos da missão quando o voo já tiver iniciado.
+- Waypoint, pouso ou desarmamento não encerram pedido real. A confirmação administrativa exige evidência e registra ator e horário.
 - Nenhuma falha deve ser convertida em sucesso apenas para manter a demonstração.
 
 ---
@@ -490,7 +490,7 @@ FAILED
 
 ### 8.1 Initial Endpoints
 
-Os endpoints legados de autorização de voo, claim, upload-status e comandos permanecem listados para compatibilidade de contratos e simulação. Os endpoints de comandos devem suportar solicitações explícitas de upload, armamento normal e início no hardware real após validação da integração. O painel não apresenta checklist de autorização de voo; abortamento e RTL permanecem operáveis pelo QGroundControl. Preserve autenticação, associação ao veículo e missão, prevenção de duplicidade, auditoria, timeout e confirmação do PX4.
+O fluxo vigente usa a API de pedidos, exportação `.plan`, confirmação de entrega e telemetria. Os endpoints legados de autorização de voo, claim, upload-status e comandos nesta lista permanecem para testes. Fora de `APP_ENV=test`, nenhuma fila antiga é oferecida para execução e rotas de escrita de comando são bloqueadas.
 ```text
 GET  /health
 GET  /ready
@@ -611,9 +611,9 @@ ALLOW_MISSION_UPLOAD=false
 ALLOW_FLIGHT_COMMANDS=false
 ALLOW_MISSION_START=false
 ALLOW_VEHICLE_ARM=false
-# Flags acima são defaults seguros de desenvolvimento, não proibições permanentes.
-# Após validação SITL e de bancada, o operador pode habilitar explicitamente upload,
-# comandos, armamento normal e início no ambiente real controlado; nunca automaticamente.
+ALLOW_TELEMETRY_REQUESTS=false
+# Mantenha todos os controles de transmissão desativados para observar hardware.
+# Validação de protocolo com escrita fica restrita ao ambiente de teste isolado.
 
 DEFAULT_TAKEOFF_ALTITUDE_M=10
 TELEMETRY_PERSIST_INTERVAL_SECONDS=2
@@ -637,7 +637,7 @@ MISSION_COMMAND_TIMEOUT_SECONDS=15
 - O código nunca deve executar armamento real como efeito colateral.
 - Testes de API e unitários nunca devem abrir uma porta MAVLink real.
 - Todo comando crítico deve possuir log, timeout e resultado verificável.
-- Uma missão real pode ser iniciada por ação explícita do operador no painel administrativo ou QGroundControl, com aceitação pelo PX4. Backend e gateway não executam checks próprios de aptidão; validam identidade, integridade e entrega dos comandos.
+- O operador inicia e controla a missão real no QGroundControl. Backend e gateway preservam o histórico e acompanham a telemetria sem emitir comandos ou decidir aptidão.
 - A confirmação do usuário sobre o ponto não substitui a revisão operacional no QGroundControl.
 - O procedimento de abortamento e RTL deve ser documentado para execução pelo operador no QGroundControl; o site apenas acompanha os eventos.
 - RTL não deve ser usado como solução automática para toda falha sem considerar o estado do veículo; delegue decisões críticas ao PX4 e ao operador conforme documentação.
@@ -679,7 +679,7 @@ Tokens, componentes Flutter/React, análise das referências, acessibilidade e c
 Fluxo em duas etapas, mapa híbrido, marcador manual, MapTiler/MapLibre e fallback de desenvolvimento.
 
 ### `docs/ADMIN_FLOW.md` e `docs/MIGRACAO_PX4_QGROUNDCONTROL.md`
-Fila, aprovação do pedido, exportação `.plan` e comandos administrativos explícitos de upload, armamento normal e início pelo site, com aceitação pelo PX4.
+Fila, aprovação do pedido, exportação `.plan` e confirmação de entrega com evidência administrativa.
 
 ### `docs/HARDWARE.md` e `docs/PREFLIGHT_CHECKLIST.md`
 Componentes confirmados, limites, bancada e checklist sem inventar pinagem ou parâmetros.

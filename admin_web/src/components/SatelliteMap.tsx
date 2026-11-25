@@ -8,7 +8,7 @@ import type {
   Map as MapLibreMap,
   Marker,
 } from 'maplibre-gl';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { appConfig, type Coordinates } from '../services';
 import { formatCoordinate } from '../utils/format';
 
@@ -18,6 +18,7 @@ interface SatelliteMapProps {
   height?: number;
   activeIndex?: number;
   homePoint?: Coordinates | null;
+  routeSegments?: Coordinates[][];
 }
 
 interface ProjectedPoint extends Coordinates {
@@ -61,29 +62,21 @@ const projectPoints = (points: Coordinates[]): ProjectedPoint[] => {
 };
 
 const buildRouteData = (
-  points: Coordinates[],
+  segments: Coordinates[][],
 ): Parameters<GeoJSONSource['setData']>[0] => ({
   type: 'FeatureCollection',
-  features:
-    points.length > 1
-      ? [
-          {
-            type: 'Feature',
-            properties: {},
-            geometry: {
-              type: 'LineString',
-              coordinates: points.map((point) => [
-                point.longitude,
-                point.latitude,
-              ]),
-            },
-          },
-        ]
-      : [],
+  features: segments.filter((points) => points.length > 1).map((points) => ({
+    type: 'Feature',
+    properties: {},
+    geometry: {
+      type: 'LineString',
+      coordinates: points.map((point) => [point.longitude, point.latitude]),
+    },
+  })),
 });
 
-const syncRoute = (map: MapLibreMap, points: Coordinates[]) => {
-  const routeData = buildRouteData(points);
+const syncRoute = (map: MapLibreMap, segments: Coordinates[][]) => {
+  const routeData = buildRouteData(segments);
   const existingSource = map.getSource(ROUTE_SOURCE_ID) as
     | GeoJSONSource
     | undefined;
@@ -166,6 +159,7 @@ interface CoordinateFallbackProps {
   points: Coordinates[];
   activeIndex: number;
   homePoint: Coordinates | null;
+  routeSegments?: Coordinates[][];
   reason: string;
   onRetry?: () => void;
 }
@@ -174,30 +168,35 @@ function CoordinateFallback({
   points,
   activeIndex,
   homePoint,
+  routeSegments,
   reason,
   onRetry,
 }: CoordinateFallbackProps) {
-  const projected = useMemo(
-    () => projectPoints(homePoint ? [...points, homePoint] : points),
-    [points, homePoint],
-  );
+  const markers = homePoint ? [...points, homePoint] : points;
+  const projected = projectPoints([...markers, ...(routeSegments?.flat() ?? [])]);
+  let cursor = markers.length;
+  const routes = routeSegments?.map((segment) => {
+    const path = projected.slice(cursor, cursor + segment.length);
+    cursor += segment.length;
+    return path;
+  }) ?? [projected.slice(0, points.length)];
 
   return (
     <div className="coordinate-map" data-testid="coordinate-map-fallback">
       <div className="coordinate-map__grid" aria-hidden="true" />
-      {points.length > 1 ? (
+      {routes.some((route) => route.length > 1) ? (
         <svg
           className="coordinate-map__route"
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
           aria-hidden="true"
         >
-          <polyline
-            points={projected.slice(0, points.length).map((point) => `${point.x},${point.y}`).join(' ')}
-          />
+          {routes.map((route, index) => (
+            <polyline key={index} points={route.map((point) => `${point.x},${point.y}`).join(' ')} />
+          ))}
         </svg>
       ) : null}
-      {projected.map((point, index) => (
+      {projected.slice(0, markers.length).map((point, index) => (
         <span
           key={`${point.latitude}-${point.longitude}-${index}`}
           className={`coordinate-map__point ${
@@ -234,6 +233,7 @@ export function SatelliteMap({
   height = 330,
   activeIndex,
   homePoint = null,
+  routeSegments,
 }: SatelliteMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -357,7 +357,7 @@ export function SatelliteMap({
     }
 
     try {
-      syncRoute(map, points);
+      syncRoute(map, routeSegments ?? [points]);
       const markerPoints = validHome ? [...points, validHome] : points;
       markersRef.current = replaceMarkers(
         map,
@@ -366,12 +366,12 @@ export function SatelliteMap({
         resolvedActiveIndex,
         validHome ? points.length : -1,
       );
-      fitMapToPoints(map, markerPoints);
+      fitMapToPoints(map, [...markerPoints, ...(routeSegments?.flat() ?? [])]);
     } catch {
       setProviderFailure('O mapa carregou, mas não conseguiu representar a rota.');
       setStatus('error');
     }
-  }, [coordinatesAreValid, points, resolvedActiveIndex, status, validHome]);
+  }, [coordinatesAreValid, points, resolvedActiveIndex, routeSegments, status, validHome]);
 
   const isMapVisible = status === 'loading' || status === 'ready';
   const statusLabel =
@@ -426,6 +426,7 @@ export function SatelliteMap({
             points={points.filter(isValidCoordinate)}
             activeIndex={resolvedActiveIndex}
             homePoint={validHome}
+            routeSegments={routeSegments}
             reason={fallbackReason}
             onRetry={
               status === 'error'

@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   listEvents: vi.fn(),
   listVehicles: vi.fn(),
   getVehicleHealth: vi.fn(),
+  getVehicleFlight: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../src/services', async (importOriginal) => ({
@@ -16,8 +17,11 @@ vi.mock('../src/services', async (importOriginal) => ({
   adminApi: api,
 }));
 vi.mock('../src/hooks/useOperationsStream', () => ({ useOperationsStream: () => 'connected' }));
+vi.mock('../src/components/SatelliteMap', () => ({
+  SatelliteMap: ({ title }: { title: string }) => <div>{title}</div>,
+}));
 
-it('mostra ACK e waypoint do veículo observado mesmo sem missão vinculada', async () => {
+it('mostra ACK do veículo e omite progresso sem vínculo com uma missão', async () => {
   api.listOrders.mockResolvedValue([]);
   api.listVehicles.mockResolvedValue([readyVehicle]);
   api.getVehicleHealth.mockResolvedValue({ ...readyHealth, armed: true, flight_mode: 'AUTO.MISSION' });
@@ -51,9 +55,26 @@ it('mostra ACK e waypoint do veículo observado mesmo sem missão vinculada', as
   render(<MemoryRouter><OperationsPage /></MemoryRouter>);
 
   expect(await screen.findByText(/PX4 respondeu ao comando 400/)).toBeInTheDocument();
-  expect(screen.getByText('Autopiloto informou waypoint atual 1.')).toBeInTheDocument();
+  expect(screen.queryByText('Autopiloto informou waypoint atual 1.')).not.toBeInTheDocument();
   expect(screen.getByText('AUTO.MISSION')).toBeInTheDocument();
   expect(screen.getByText('Armado')).toBeInTheDocument();
   expect(screen.getByText('Nenhuma missão disponível')).toBeInTheDocument();
   expect(screen.queryByText('Evento de outro veículo.')).not.toBeInTheDocument();
+});
+
+it('apresenta posição vencida, velocidade recebida e bateria ausente sem missão', async () => {
+  api.listOrders.mockResolvedValue([]);
+  api.listEvents.mockResolvedValue([]);
+  api.listVehicles.mockResolvedValue([{ ...readyVehicle, operational_source: 'HARDWARE_REAL' }]);
+  api.getVehicleHealth.mockResolvedValue({
+    ...readyHealth,
+    is_stale: true,
+    current_ground_speed_m_s: 1.5,
+    battery_percent: null,
+    battery_voltage: null,
+  });
+  render(<MemoryRouter><OperationsPage /></MemoryRouter>);
+  expect(await screen.findByText('Última posição · desatualizada')).toBeInTheDocument();
+  expect(screen.getByText('1,5 m/s')).toBeInTheDocument();
+  expect(screen.getByText('Indisponível')).toBeInTheDocument();
 });

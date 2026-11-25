@@ -15,6 +15,7 @@ import type {
   MissionAuthorization,
   MissionOriginRevisionInput,
   MissionStatus,
+  ObservedFlight,
   OperationalMetadata,
   OperationalSource,
   Order,
@@ -121,6 +122,7 @@ export interface RawMission {
   authorization?: RawMissionAuthorization | null;
   qgroundcontrol_review_status?: Mission['qgroundcontrol_review_status'] | null;
   qgroundcontrol_sitl_review_event_id?: string | null;
+  qgroundcontrol_plan_exported_at?: string | null;
 }
 
 interface RawAuthorizationResult {
@@ -185,6 +187,7 @@ export interface BackendVehicleHealth {
   current_longitude?: string | number | null;
   current_altitude_m?: number | null;
   current_amsl_m?: number | null;
+  current_ground_speed_m_s?: number | null;
   connection_state?: string | null;
   connection_mode?: string | null;
   connection_topology?: string | null;
@@ -334,6 +337,7 @@ export const adaptMission = (raw: RawMission): Mission => ({
     : undefined,
   qgroundcontrol_review_status: raw.qgroundcontrol_review_status ?? undefined,
   qgroundcontrol_sitl_review_event_id: raw.qgroundcontrol_sitl_review_event_id ?? undefined,
+  qgroundcontrol_plan_exported_at: raw.qgroundcontrol_plan_exported_at ?? undefined,
   created_at: raw.created_at,
   updated_at: raw.updated_at,
 });
@@ -451,6 +455,7 @@ export const adaptVehicleHealth = (
   current_longitude: nullableNumberFromApi(raw.current_longitude),
   current_altitude_m: raw.current_altitude_m ?? null,
   current_amsl_m: nullableNumberFromApi(raw.current_amsl_m),
+  current_ground_speed_m_s: nullableNumberFromApi(raw.current_ground_speed_m_s),
   geofence_enabled: raw.geofence_enabled,
   rtl_configured: raw.rtl_configured,
   px4_diagnostics: raw.is_stale ? null : raw.px4_diagnostics ?? null,
@@ -575,6 +580,8 @@ const postSitl = async <T>(path: string, body: object): Promise<T> => {
 };
 
 export const px4SitlApi = {
+  verifiedMissions: async () =>
+    (await apiRequest<RawMission[]>('/admin/missions?status=VERIFIED')).map(adaptMission),
   upload: (id: string, vehicleId: string, reviewId: string) =>
     postSitl<RawMission>(`/admin/missions/${id}/px4-sitl/upload`, {
       vehicle_id: vehicleId,
@@ -585,6 +592,50 @@ export const px4SitlApi = {
     postSitl<RawGatewayCommand>(`/admin/missions/${id}/px4-sitl/commands/${action}`, { confirmed: true }),
   commands: (id: string) =>
     apiRequest<RawGatewayCommand[]>(`/admin/missions/${id}/px4-sitl/commands`),
+};
+
+export interface BenchArmRequest {
+  id: string;
+  vehicle_id: string;
+  status: 'PENDING' | 'DISPATCHING' | 'EXPIRED' | 'NOT_SENT' | 'REJECTED' | 'UNCONFIRMED' | 'CONFIRMED';
+  requested_at: string;
+  expires_at: string;
+  transmitted: boolean | null;
+  ack_result: number | null;
+  confirmed_heartbeat_at: string | null;
+  detail: string | null;
+}
+
+export interface BenchArmTarget {
+  id: string;
+  name: string;
+  session_id: string | null;
+  armed: boolean | null;
+  heartbeat_at: string | null;
+}
+
+interface BenchArmStatus {
+  enabled: boolean;
+  target: BenchArmTarget | null;
+  request: BenchArmRequest | null;
+}
+
+const benchArmKeys = new Map<string, string>();
+
+export const benchArmApi = {
+  status: () => apiRequest<BenchArmStatus>('/admin/bench-arm'),
+  request: async (target: BenchArmTarget) => {
+    const fingerprint = JSON.stringify([target.id, target.session_id]);
+    const key = benchArmKeys.get(fingerprint) ?? createRequestId();
+    benchArmKeys.set(fingerprint, key);
+    const request = await postCritical<BenchArmRequest>(
+      `/admin/bench-arm/${target.id}`,
+      { confirmed: true, session_id: target.session_id },
+      key,
+    );
+    benchArmKeys.delete(fingerprint);
+    return request;
+  },
 };
 
 const originRevisionRequestIds = new Map<string, string>();
@@ -747,6 +798,23 @@ export const realApi: AdminApi = {
     await downloadMissionFile(response, filename);
     return filename;
   },
+  downloadQgcPlan: async (id, version, digest, homeAmsl) => {
+    const token = sessionToken.get();
+    const response = await fetch(`${appConfig.apiBaseUrl}/admin/missions/${id}/qgroundcontrol-plan`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ expected_version: version, expected_sha256: digest, home_amsl_m: homeAmsl }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null) as ApiErrorBody | null;
+      throw new ApiError(body?.detail || 'Não foi possível exportar a missão.', response.status);
+    }
+    const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]
+      ?? `missao-${id}-v${version}.plan`;
+    await downloadMissionFile(response, filename);
+    return filename;
+  },
   exportQgcDraft: async (id, vehicleId, homeAmsl) => {
     const token = sessionToken.get();
     const response = await fetch(`${appConfig.apiBaseUrl}/admin/missions/${id}/qgroundcontrol-draft`, {
@@ -781,6 +849,14 @@ export const realApi: AdminApi = {
     adaptVehicleHealth(
       await apiRequest<BackendVehicleHealth>(`/admin/vehicles/${id}/health`),
     ),
+  confirmDelivery: async (id, evidence) =>
+    adaptAdminOrder(await post<BackendAdminOrder>(`/admin/orders/${id}/confirm-delivery`, { evidence })),
+  getMissionFlight: (id) => apiRequest<ObservedFlight | null>(`/admin/missions/${id}/observed-flight`),
+  getVehicleFlight: (id) => apiRequest<ObservedFlight | null>(`/admin/vehicles/${id}/observed-flight`),
+  trackMission: (id, vehicleId, version, hash) =>
+    post<ObservedFlight | null>(`/admin/missions/${id}/observed-flight`, {
+      vehicle_id: vehicleId, expected_version: version, expected_sha256: hash,
+    }),
   listEvents: async () =>
     (await apiRequest<RawEvent[]>('/admin/events')).map(
       (event): SystemEvent => ({

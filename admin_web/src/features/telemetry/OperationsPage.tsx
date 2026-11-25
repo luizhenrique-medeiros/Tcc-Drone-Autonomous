@@ -39,6 +39,8 @@ import {
   type Vehicle,
   type VehicleHealth,
 } from '../../services';
+import { isBenchObservation } from '../../services/bench-mode';
+import { benchModePreference } from '../../services/session';
 import {
   formatCoordinate,
   formatDateTime,
@@ -48,6 +50,7 @@ import {
   formatTime,
   shortId,
 } from '../../utils/format';
+import { FlightTrackingPanel } from './FlightTrackingPanel';
 
 interface OperationsData {
   missions: Mission[];
@@ -114,6 +117,8 @@ export function OperationsPage() {
       missions[0] ??
       null;
     const vehicle =
+      vehicles.find((item) => item.operational_source === 'HARDWARE_REAL' && item.connected) ??
+      vehicles.find((item) => item.operational_source === 'HARDWARE_REAL') ??
       vehicles.find((item) => item.id === selected?.vehicle_id) ?? vehicles[0] ?? null;
 
     let telemetry: TelemetryPoint[] = [];
@@ -176,11 +181,16 @@ export function OperationsPage() {
     : [];
   const latest = telemetry.at(-1);
   const missionEvents = selectedMission
-    ? data.events.filter((event) => event.mission_id === selectedMission.id)
+    ? data.events.filter((event) => event.mission_id === selectedMission.id
+      && event.type !== 'PX4_PHYSICAL_MISSION_PROGRESS_OBSERVED')
     : [];
   const vehicleObservations = data.vehicle
     ? data.events.filter(
-        (event) => event.vehicle_id === data.vehicle?.id && !event.mission_id && event.type.startsWith('MAVLINK_'),
+        (event) => event.vehicle_id === data.vehicle?.id
+          && !event.mission_id
+          && event.type.startsWith('MAVLINK_')
+          && event.type !== 'MAVLINK_MISSION_CURRENT'
+          && event.type !== 'MAVLINK_MISSION_ITEM_REACHED',
       )
     : [];
   const alertEvents = data.events.filter(
@@ -194,6 +204,7 @@ export function OperationsPage() {
     data.telemetryError,
     data.healthError,
   ].filter(Boolean);
+  const benchMode = benchModePreference.get() && !error && !data.healthError;
   const operationalAlerts = generateOperationalAlerts({
     backendError: partialErrors.join(' '),
     streamStatus,
@@ -201,6 +212,7 @@ export function OperationsPage() {
     health: data.health,
     telemetry,
     events: alertEvents,
+    benchMode,
     expectVehicle: true,
   });
   const telemetryCoordinates = telemetry.flatMap((point) =>
@@ -212,18 +224,21 @@ export function OperationsPage() {
         }]
       : [],
   );
-  const mapPoints = selectedMission
-    ? telemetryCoordinates.length > 0
-      ? [selectedMission.origin, ...telemetryCoordinates, selectedMission.destination]
-      : selectedMission.waypoints
-    : [];
+  const health = data.health;
+  const position = health?.current_latitude != null && health.current_longitude != null
+    ? { latitude: health.current_latitude, longitude: health.current_longitude, label: 'Posição recebida' }
+    : null;
+  const observationStale = health?.is_stale === true || Boolean(error);
+  const mapPoints = telemetryCoordinates.length
+    ? telemetryCoordinates
+    : selectedMission ? [selectedMission.origin, selectedMission.destination] : [];
 
   return (
     <>
       <PageHeader
         eyebrow="Acompanhamento"
         title="Operação ao vivo"
-        description="Telemetria normalizada recebida do backend. O navegador não envia comandos MAVLink diretamente."
+        description="Acompanhamento passivo da aeronave. A operação de voo é feita no QGroundControl."
         actions={
           <>
             <span className={`stream-status stream-status--${streamStatus}`}>
@@ -241,10 +256,15 @@ export function OperationsPage() {
           {error} · os últimos dados bem-sucedidos permanecem visíveis e identificados.
         </Feedback>
       ) : null}
+      {isBenchObservation(benchMode, data.health) ? (
+        <Feedback tone="info" className="page-feedback">
+          Modo bancada ativo. Avisos esperados de GPS ficam na trilha de eventos.
+        </Feedback>
+      ) : null}
 
       <div className="operations-selector">
         <div className="field">
-          <label htmlFor="mission-select">Missão acompanhada</label>
+          <label htmlFor="mission-select">Missão para consulta</label>
           <select
             className="select"
             id="mission-select"
@@ -272,28 +292,38 @@ export function OperationsPage() {
 
       {data.vehicle ? (
         <Card title="Veículo observado" action={<Link to="/vehicles">Diagnóstico do veículo</Link>}>
-          {data.health ? (
+          {health ? (
             <>
               <div className="health-source-note">
                 <strong>{data.vehicle.name}</strong>
-                <OperationalSourceBadge {...data.health} />
-                <small>recebido {formatDateTime(data.health.received_at)}</small>
+                <OperationalSourceBadge {...health} is_stale={observationStale} />
+                <small>recebido {formatDateTime(health.received_at)}</small>
               </div>
+              {position ? (
+                <SatelliteMap points={[position]} title={observationStale ? 'Última posição · desatualizada' : 'Posição recebida do veículo'} height={300} />
+              ) : null}
               <dl className="data-list telemetry-current">
-                <div><dt>Modo informado</dt><dd>{formatNullableText(data.health.flight_mode)}</dd></div>
-                <div><dt>Armamento informado</dt><dd>{data.health.armed === true ? 'Armado' : data.health.armed === false ? 'Desarmado' : '--'}</dd></div>
-                <div><dt>Posição recebida</dt><dd className="mono">{data.health.current_latitude != null && data.health.current_longitude != null
-                  ? `${formatCoordinate(data.health.current_latitude)}, ${formatCoordinate(data.health.current_longitude)}`
-                  : '--'}</dd></div>
-                <div><dt>Altitude relativa recebida</dt><dd>{data.health.current_altitude_m != null
-                  ? `${formatOptionalNumber(data.health.current_altitude_m, { maximumFractionDigits: 1 })} m`
-                  : '--'}</dd></div>
+                <div><dt>Conexão do veículo</dt><dd>{observationStale ? 'Desatualizada' : health.connected && health.heartbeat_ok ? 'Conectado' : 'Sem conexão atual'}</dd></div>
+                <div><dt>Modo informado</dt><dd>{health.flight_mode ?? 'Indisponível'}</dd></div>
+                <div><dt>Armamento informado</dt><dd>{health.armed === true ? 'Armado' : health.armed === false ? 'Desarmado' : 'Indisponível'}</dd></div>
+                <div><dt>Posição recebida</dt><dd className="mono">{position
+                  ? `${formatCoordinate(position.latitude)}, ${formatCoordinate(position.longitude)}`
+                  : 'Indisponível'}</dd></div>
+                <div><dt>Altitude relativa recebida</dt><dd>{health.current_altitude_m != null
+                  ? `${formatOptionalNumber(health.current_altitude_m, { maximumFractionDigits: 1 })} m`
+                  : 'Indisponível'}</dd></div>
+                <div><dt>Velocidade em solo</dt><dd>{health.current_ground_speed_m_s != null
+                  ? `${formatOptionalNumber(health.current_ground_speed_m_s, { maximumFractionDigits: 1 })} m/s`
+                  : 'Indisponível'}</dd></div>
+                <div><dt>Bateria</dt><dd>{health.battery_percent != null ? formatPercent(health.battery_percent)
+                  : health.battery_voltage != null ? `${formatOptionalNumber(health.battery_voltage, { maximumFractionDigits: 2 })} V`
+                  : 'Indisponível'}</dd></div>
               </dl>
             </>
           ) : data.healthError ? (
             <Feedback tone="error">Falha ao carregar a leitura do veículo: {data.healthError}</Feedback>
           ) : null}
-          <h3>Respostas e progresso recebidos do veículo</h3>
+          <h3>Eventos recebidos do veículo</h3>
           {vehicleObservations.length > 0 ? (
             <>
               <p>Mensagens associadas ao veículo. O vínculo com o pedido exige identificar a missão em execução.</p>
@@ -307,9 +337,13 @@ export function OperationsPage() {
               </div>
             </>
           ) : (
-            <StateView state="empty" compact title="Nenhuma resposta ou evento de progresso recebido" />
+            <StateView state="empty" compact title="Nenhum evento recebido" />
           )}
         </Card>
+      ) : null}
+
+      {data.vehicle && ['HARDWARE_REAL', 'SITL'].includes(data.vehicle.operational_source) ? (
+        <FlightTrackingPanel key={data.vehicle.id} vehicleId={data.vehicle.id} />
       ) : null}
 
       {!selectedMission ? (
@@ -322,7 +356,7 @@ export function OperationsPage() {
             onAction={() => void reload()}
           />
         ) : (
-          <StateView state="empty" title="Nenhuma missão disponível" description="Prepare e revise uma missão para iniciar o acompanhamento." />
+          <StateView state="empty" title="Nenhuma missão disponível" />
         )
       ) : (
         <>
@@ -375,9 +409,9 @@ export function OperationsPage() {
             <Card title="Posição e rota" action={<Link to={`/missions/${selectedMission.id}`}>Abrir missão</Link>}>
               <SatelliteMap
                 points={mapPoints}
-                title="Trajeto monitorado"
+                title={telemetryCoordinates.length ? 'Posições vinculadas à missão' : 'Origem e destino planejados'}
                 height={410}
-                activeIndex={telemetryCoordinates.length > 0 ? telemetryCoordinates.length : undefined}
+                activeIndex={telemetryCoordinates.length > 0 ? telemetryCoordinates.length - 1 : undefined}
               />
               {latest ? (
                 <dl className="data-list telemetry-current">

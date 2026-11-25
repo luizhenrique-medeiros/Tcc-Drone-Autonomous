@@ -3,17 +3,29 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.dependencies import AdminUser, AppSettings, DatabaseSession
+from app.api.dependencies import (
+    AdminUser,
+    AppSettings,
+    DatabaseSession,
+    require_simulation_commands,
+)
 from app.core.enums import GatewayCommandType, MissionStatus, OrderStatus
 from app.core.exceptions import ConflictError, InvalidStateError, NotFoundError
 from app.core.websocket import manager
 from app.modules.idempotency.service import execute_idempotently
+from app.modules.missions.flight_observations import (
+    ObservedFlightRead,
+    TrackRequest,
+    read_flight,
+    track_mission,
+)
 from app.modules.missions.models import GatewayCommand, Mission
 from app.modules.missions.qgroundcontrol_plan import (
+    QGC_EXPORT_EVENT,
     QGC_REVIEW_EVENT,
     PlanPosition,
     build_reviewed_candidate,
@@ -33,6 +45,7 @@ from app.modules.missions.schemas import (
     Px4SITLCommandRequest,
     Px4SITLUploadRequest,
     QGroundControlDraftRequest,
+    QGroundControlExportRequest,
     QGroundControlReviewRead,
     QGroundControlReviewRequest,
     SafetyActionRequest,
@@ -55,12 +68,14 @@ from app.modules.missions.service import (
 from app.modules.orders.admin_schemas import (
     AdminOrderRead,
     ApproveOrderRequest,
+    ConfirmDeliveryRequest,
     RejectOrderRequest,
 )
 from app.modules.orders.models import Order
 from app.modules.orders.service import (
     admin_order_to_read,
     approve_order,
+    confirm_delivery,
     get_order_for_user,
     order_to_read,
     reject_order,
@@ -147,6 +162,84 @@ async def admin_reject_order(
 
 
 @router.post(
+    "/orders/{order_id}/confirm-delivery",
+    response_model=AdminOrderRead,
+    summary="Registrar confirmação administrativa da entrega do pedido",
+)
+async def admin_confirm_delivery(
+    order_id: UUID, payload: ConfirmDeliveryRequest, session: DatabaseSession, admin: AdminUser
+) -> AdminOrderRead:
+    order = confirm_delivery(session, order_id, admin, payload.evidence)
+    await _broadcast_order(session, order)
+    return admin_order_to_read(session, order)
+
+
+@router.post(
+    "/missions/{mission_id}/qgroundcontrol-plan",
+    response_class=Response,
+    summary="Exportar a revisão da missão como .plan para QGroundControl",
+)
+def admin_export_qgroundcontrol_plan(
+    mission_id: UUID,
+    payload: QGroundControlExportRequest,
+    session: DatabaseSession,
+    admin: AdminUser,
+) -> Response:
+    mission = session.scalar(
+        select(Mission).where(Mission.id == mission_id).with_for_update(read=True)
+    )
+    if not mission:
+        raise NotFoundError("Missão não encontrada")
+    if (mission.version, mission.mission_sha256) != (
+        payload.expected_version,
+        payload.expected_sha256,
+    ):
+        raise ConflictError(
+            "A revisão da missão mudou; atualize a página para baixar a versão atual"
+        )
+    try:
+        destination = PlanPosition(
+            float(mission.destination_latitude), float(mission.destination_longitude)
+        )
+        content = create_draft_plan(
+            PlanPosition(float(mission.origin_latitude), float(mission.origin_longitude)),
+            destination,
+            home_amsl_m=payload.home_amsl_m,
+            altitude_m=float(mission.takeoff_altitude_m),
+        )
+        validate_reviewed_plan(content, destination)
+    except ValueError as exc:
+        raise ConflictError(str(exc)) from exc
+    digest = plan_sha256(content.encode("utf-8"))
+    filename = f"pedido-{mission.order_id}-v{mission.version}-{digest[:8]}.plan"
+    record_event(
+        session,
+        actor_type="ADMIN",
+        actor_user_id=admin.id,
+        order_id=mission.order_id,
+        mission_id=mission.id,
+        event_type=QGC_EXPORT_EVENT,
+        message="Arquivo de missão exportado para revisão no QGroundControl",
+        metadata={
+            "mission_version": mission.version,
+            "mission_sha256": mission.mission_sha256,
+            "plan_sha256": digest,
+            "filename": filename,
+        },
+    )
+    session.commit()
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Plan-SHA256": digest,
+        },
+    )
+
+
+@router.post(
     "/orders/{order_id}/prepare-mission",
     response_model=AdminMissionRead,
     status_code=status.HTTP_201_CREATED,
@@ -195,6 +288,57 @@ def admin_mission_detail(
             .limit(1)
         )
     return result
+
+
+@router.get(
+    "/missions/{mission_id}/observed-flight",
+    response_model=ObservedFlightRead | None,
+    summary="Acompanhar voo observado associado à missão",
+)
+def admin_mission_flight(
+    mission_id: UUID,
+    session: DatabaseSession,
+    settings: AppSettings,
+    _admin: AdminUser,
+) -> ObservedFlightRead | None:
+    if session.get(Mission, mission_id) is None:
+        raise NotFoundError("Missão não encontrada")
+    return read_flight(session, settings, mission_id=mission_id)
+
+
+@router.post(
+    "/missions/{mission_id}/observed-flight",
+    response_model=ObservedFlightRead | None,
+    summary="Associar revisão e veículo apenas para acompanhamento",
+)
+async def admin_track_mission(
+    mission_id: UUID,
+    payload: TrackRequest,
+    session: DatabaseSession,
+    settings: AppSettings,
+    admin: AdminUser,
+) -> ObservedFlightRead | None:
+    track_mission(session, mission_id, payload, admin, settings)
+    await manager.broadcast_admin(
+        {"type": "flight.observation", "data": {"mission_id": str(mission_id)}}
+    )
+    return read_flight(session, settings, mission_id=mission_id)
+
+
+@router.get(
+    "/vehicles/{vehicle_id}/observed-flight",
+    response_model=ObservedFlightRead | None,
+    summary="Acompanhar o último voo observado do veículo",
+)
+def admin_vehicle_flight(
+    vehicle_id: UUID,
+    session: DatabaseSession,
+    settings: AppSettings,
+    _admin: AdminUser,
+) -> ObservedFlightRead | None:
+    if session.get(Vehicle, vehicle_id) is None:
+        raise NotFoundError("Veículo não encontrado")
+    return read_flight(session, settings, vehicle_id=vehicle_id)
 
 
 @router.get(
@@ -284,7 +428,7 @@ def admin_download_qgroundcontrol_review(
     if not mission:
         raise NotFoundError("Missão não encontrada")
     content, digest = export_reviewed_qgc_plan(session, mission)
-    filename = f"missao-{mission.id}-v{mission.version}-revisada-{digest[:8]}.plan"
+    filename = f"pedido-{mission.order_id}-v{mission.version}-revisada-{digest[:8]}.plan"
     return Response(
         content=content,
         media_type="application/json",
@@ -506,6 +650,7 @@ def admin_px4_sitl_commands(
 
 @router.post(
     "/missions/{mission_id}/authorize-flight",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=MissionAuthorizationResult,
     summary="Emitir autorização de voo explícita e de uso único",
 )
@@ -601,7 +746,12 @@ async def admin_revise_origin(
     )
 
 
-@router.post("/missions/{mission_id}/abort", response_model=AdminMissionRead, status_code=202)
+@router.post(
+    "/missions/{mission_id}/abort",
+    dependencies=[Depends(require_simulation_commands)],
+    response_model=AdminMissionRead,
+    status_code=202,
+)
 async def admin_abort(
     mission_id: UUID,
     session: DatabaseSession,
@@ -646,7 +796,12 @@ async def admin_abort(
     )
 
 
-@router.post("/missions/{mission_id}/request-rtl", response_model=AdminMissionRead, status_code=202)
+@router.post(
+    "/missions/{mission_id}/request-rtl",
+    dependencies=[Depends(require_simulation_commands)],
+    response_model=AdminMissionRead,
+    status_code=202,
+)
 async def admin_request_rtl(
     mission_id: UUID,
     session: DatabaseSession,
@@ -693,6 +848,7 @@ async def admin_request_rtl(
 
 @router.post(
     "/missions/{mission_id}/commands/{action}",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=AdminMissionRead,
     status_code=202,
 )
@@ -750,6 +906,7 @@ async def admin_request_flight_command(
 
 @router.post(
     "/missions/{mission_id}/arm",
+    dependencies=[Depends(require_simulation_commands)],
     response_model=VehicleArmResult,
     status_code=202,
     summary="Solicitar armamento normal com confirmações presenciais",

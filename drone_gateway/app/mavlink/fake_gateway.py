@@ -41,7 +41,8 @@ class FakeVehicleGateway:
     def mark_reconnecting(self) -> None:
         self._connected = False
 
-    async def connect(self) -> None:
+    async def connect(self, *, passive: bool = False) -> None:
+        del passive
         self._connected = True
 
     async def read_health(self) -> VehicleHealth:

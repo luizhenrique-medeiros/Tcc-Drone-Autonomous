@@ -33,6 +33,8 @@ import {
   type Vehicle,
   type VehicleHealth,
 } from '../../services';
+import { isBenchObservation } from '../../services/bench-mode';
+import { benchModePreference } from '../../services/session';
 import {
   formatDateTime,
   formatNullableText,
@@ -78,6 +80,7 @@ export function VehiclesPage() {
     );
   }, []);
   const { data, isLoading, error, reload } = useAsyncData(loader);
+  const benchMode = benchModePreference.get() && !error;
   const streamStatus = useOperationsStream(() => void reload());
   const operationalAlerts = (data ?? []).flatMap(
     ({ vehicle, health, healthError }) =>
@@ -118,8 +121,7 @@ export function VehiclesPage() {
       />
       <Feedback tone="info" className="page-feedback">
         Atualização automática a cada 10 segundos e também ao receber eventos no
-        WebSocket administrativo. Ausências permanecem como -- e bloqueiam a leitura
-        correspondente.
+        WebSocket administrativo. Leituras indisponíveis aparecem como --.
       </Feedback>
       {isLoading && !data ? <StateView state="loading" /> : null}
       {error && !data ? (
@@ -150,6 +152,7 @@ export function VehiclesPage() {
       {data ? (
         <div className="vehicles-stack">
           {data.map(({ vehicle, health, healthError }) => {
+            const benchObservation = isBenchObservation(benchMode, health);
             return (
               <Card
                 key={vehicle.id}
@@ -264,9 +267,11 @@ export function VehiclesPage() {
                             : `Altitude ${formatOptionalNumber(health.current_altitude_m, { maximumFractionDigits: 1 })} m`
                         }
                         ok={
+                          !benchObservation &&
                           health.current_latitude !== null &&
                           health.current_longitude !== null
                         }
+                        informational={benchObservation}
                       />
                       <Diagnostic
                         icon={<Activity />}
@@ -299,9 +304,9 @@ export function VehiclesPage() {
                         icon={<Satellite />}
                         label="GPS"
                         value={`${formatNullableText(health.gps_fix)} · ${formatOptionalNumber(health.satellites)} satélites`}
-                        detail="Leitura do veículo"
+                        detail={benchObservation ? 'Checagem suspensa em bancada' : 'Leitura do veículo'}
                         informational
-                        ok
+                        ok={!benchObservation}
                       />
                       <Diagnostic
                         icon={<Activity />}
@@ -335,8 +340,9 @@ export function VehiclesPage() {
                               ? 'Origem desconhecida'
                               : '--'
                         }
-                        detail="Home recebido pela telemetria"
-                        ok={health.origin_known === true}
+                        detail={benchObservation ? 'Checagem suspensa em bancada' : 'Home recebido pela telemetria'}
+                        ok={!benchObservation && health.origin_known === true}
+                        informational={benchObservation}
                       />
                       <Diagnostic
                         icon={<RefreshCw />}
@@ -348,13 +354,16 @@ export function VehiclesPage() {
                               ? 'Não configurado'
                               : '--'
                         }
-                          detail={
-                            px4RtlDetail(health) ??
-                            (vehicle.autopilot_system.trim().toUpperCase() === 'PX4'
+                        detail={
+                          px4RtlDetail(health) ??
+                          (benchObservation
+                            ? 'Checagem suspensa em bancada'
+                            : vehicle.autopilot_system.trim().toUpperCase() === 'PX4'
                               ? 'Para atualizar a leitura PX4, use Parameters → Tools → Refresh no QGroundControl.'
                               : 'Área de retorno ainda exige conferência humana')
-                          }
-                        ok={health.rtl_configured === true}
+                        }
+                        ok={!benchObservation && health.rtl_configured === true}
+                        informational={benchObservation}
                       />
                       <Diagnostic
                         icon={<Clock3 />}

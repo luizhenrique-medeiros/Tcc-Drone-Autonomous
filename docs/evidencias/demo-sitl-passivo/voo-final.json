@@ -1,0 +1,951 @@
+{
+  "id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+  "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+  "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+  "ended_at": "2026-11-25T00:20:30.524197Z",
+  "stale": false,
+  "phase": "DISARMED",
+  "estimated": false,
+  "link": "OPERATOR",
+  "revision": 1,
+  "associated_at": "2026-11-25T00:18:47.944517Z",
+  "associated_by": "Administrador",
+  "last_seen_at": "2026-11-25T00:20:30.472433Z",
+  "armed": false,
+  "mode": "LOITER",
+  "landed_state": 1,
+  "mission_state": 5,
+  "sequence": 2,
+  "mapping_current": false,
+  "destination_sequence": null,
+  "return_sequence": null,
+  "reached_sequences": [
+    0,
+    2
+  ],
+  "destination": "ESTIMATED",
+  "early_return": false,
+  "mission_finished_reported": true,
+  "normal_completion": false,
+  "point": {
+    "latitude": 47.3977404,
+    "longitude": 8.5455999,
+    "recorded_at": "2026-11-25T00:20:30.514985Z"
+  },
+  "altitude_m": 0.239,
+  "speed_m_s": 0.11401754250991379,
+  "distance_m": 41.55,
+  "track": [
+    [
+      {
+        "latitude": 47.3977412,
+        "longitude": 8.5455916,
+        "recorded_at": "2026-11-25T00:19:22.760555Z"
+      },
+      {
+        "latitude": 47.3977441,
+        "longitude": 8.5455955,
+        "recorded_at": "2026-11-25T00:19:23.335076Z"
+      },
+      {
+        "latitude": 47.3977521,
+        "longitude": 8.5455998,
+        "recorded_at": "2026-11-25T00:19:23.897225Z"
+      },
+      {
+        "latitude": 47.3977656,
+        "longitude": 8.5456054,
+        "recorded_at": "2026-11-25T00:19:24.467008Z"
+      },
+      {
+        "latitude": 47.3977826,
+        "longitude": 8.5456115,
+        "recorded_at": "2026-11-25T00:19:25.023575Z"
+      },
+      {
+        "latitude": 47.3978008,
+        "longitude": 8.5456185,
+        "recorded_at": "2026-11-25T00:19:25.593195Z"
+      },
+      {
+        "latitude": 47.3978185,
+        "longitude": 8.545626,
+        "recorded_at": "2026-11-25T00:19:26.155182Z"
+      },
+      {
+        "latitude": 47.3978366,
+        "longitude": 8.545634,
+        "recorded_at": "2026-11-25T00:19:26.735667Z"
+      },
+      {
+        "latitude": 47.3978555,
+        "longitude": 8.5456429,
+        "recorded_at": "2026-11-25T00:19:27.303423Z"
+      },
+      {
+        "latitude": 47.3978737,
+        "longitude": 8.5456517,
+        "recorded_at": "2026-11-25T00:19:27.862999Z"
+      },
+      {
+        "latitude": 47.3978932,
+        "longitude": 8.5456607,
+        "recorded_at": "2026-11-25T00:19:28.434577Z"
+      },
+      {
+        "latitude": 47.397913,
+        "longitude": 8.5456708,
+        "recorded_at": "2026-11-25T00:19:28.997895Z"
+      },
+      {
+        "latitude": 47.3979328,
+        "longitude": 8.5456804,
+        "recorded_at": "2026-11-25T00:19:29.569359Z"
+      },
+      {
+        "latitude": 47.3979526,
+        "longitude": 8.5456902,
+        "recorded_at": "2026-11-25T00:19:30.129985Z"
+      },
+      {
+        "latitude": 47.3979735,
+        "longitude": 8.5456993,
+        "recorded_at": "2026-11-25T00:19:30.702056Z"
+      },
+      {
+        "latitude": 47.3979942,
+        "longitude": 8.5457081,
+        "recorded_at": "2026-11-25T00:19:31.264188Z"
+      },
+      {
+        "latitude": 47.3980148,
+        "longitude": 8.5457175,
+        "recorded_at": "2026-11-25T00:19:31.835788Z"
+      },
+      {
+        "latitude": 47.3980336,
+        "longitude": 8.5457268,
+        "recorded_at": "2026-11-25T00:19:32.404443Z"
+      },
+      {
+        "latitude": 47.3980491,
+        "longitude": 8.5457342,
+        "recorded_at": "2026-11-25T00:19:32.969697Z"
+      },
+      {
+        "latitude": 47.3980643,
+        "longitude": 8.5457407,
+        "recorded_at": "2026-11-25T00:19:33.608089Z"
+      },
+      {
+        "latitude": 47.3980757,
+        "longitude": 8.5457442,
+        "recorded_at": "2026-11-25T00:19:34.186019Z"
+      },
+      {
+        "latitude": 47.3980847,
+        "longitude": 8.5457457,
+        "recorded_at": "2026-11-25T00:19:34.770963Z"
+      },
+      {
+        "latitude": 47.3980921,
+        "longitude": 8.5457454,
+        "recorded_at": "2026-11-25T00:19:35.340532Z"
+      },
+      {
+        "latitude": 47.3980974,
+        "longitude": 8.5457457,
+        "recorded_at": "2026-11-25T00:19:35.913513Z"
+      },
+      {
+        "latitude": 47.398101,
+        "longitude": 8.5457474,
+        "recorded_at": "2026-11-25T00:19:36.476033Z"
+      },
+      {
+        "latitude": 47.3981035,
+        "longitude": 8.5457481,
+        "recorded_at": "2026-11-25T00:19:37.050744Z"
+      },
+      {
+        "latitude": 47.3981051,
+        "longitude": 8.545748,
+        "recorded_at": "2026-11-25T00:19:37.649018Z"
+      },
+      {
+        "latitude": 47.3981067,
+        "longitude": 8.5457479,
+        "recorded_at": "2026-11-25T00:19:38.233301Z"
+      },
+      {
+        "latitude": 47.3981073,
+        "longitude": 8.5457484,
+        "recorded_at": "2026-11-25T00:19:38.812390Z"
+      },
+      {
+        "latitude": 47.3981065,
+        "longitude": 8.5457499,
+        "recorded_at": "2026-11-25T00:19:39.375133Z"
+      },
+      {
+        "latitude": 47.3981057,
+        "longitude": 8.5457513,
+        "recorded_at": "2026-11-25T00:19:39.957133Z"
+      },
+      {
+        "latitude": 47.3981053,
+        "longitude": 8.5457524,
+        "recorded_at": "2026-11-25T00:19:40.521407Z"
+      },
+      {
+        "latitude": 47.3981054,
+        "longitude": 8.5457527,
+        "recorded_at": "2026-11-25T00:19:41.100412Z"
+      },
+      {
+        "latitude": 47.3981053,
+        "longitude": 8.5457524,
+        "recorded_at": "2026-11-25T00:19:41.676682Z"
+      },
+      {
+        "latitude": 47.3981054,
+        "longitude": 8.5457511,
+        "recorded_at": "2026-11-25T00:19:42.252063Z"
+      },
+      {
+        "latitude": 47.3981057,
+        "longitude": 8.5457503,
+        "recorded_at": "2026-11-25T00:19:42.822915Z"
+      },
+      {
+        "latitude": 47.3981062,
+        "longitude": 8.545751,
+        "recorded_at": "2026-11-25T00:19:43.378613Z"
+      },
+      {
+        "latitude": 47.3981065,
+        "longitude": 8.5457517,
+        "recorded_at": "2026-11-25T00:19:43.952158Z"
+      },
+      {
+        "latitude": 47.3981065,
+        "longitude": 8.5457516,
+        "recorded_at": "2026-11-25T00:19:44.508229Z"
+      },
+      {
+        "latitude": 47.3981063,
+        "longitude": 8.5457514,
+        "recorded_at": "2026-11-25T00:19:45.079759Z"
+      },
+      {
+        "latitude": 47.3981067,
+        "longitude": 8.5457493,
+        "recorded_at": "2026-11-25T00:19:45.641557Z"
+      },
+      {
+        "latitude": 47.398107,
+        "longitude": 8.5457463,
+        "recorded_at": "2026-11-25T00:19:46.226098Z"
+      },
+      {
+        "latitude": 47.3981071,
+        "longitude": 8.5457446,
+        "recorded_at": "2026-11-25T00:19:46.796734Z"
+      },
+      {
+        "latitude": 47.3981071,
+        "longitude": 8.5457436,
+        "recorded_at": "2026-11-25T00:19:47.357356Z"
+      },
+      {
+        "latitude": 47.398107,
+        "longitude": 8.5457425,
+        "recorded_at": "2026-11-25T00:19:47.925143Z"
+      },
+      {
+        "latitude": 47.3981035,
+        "longitude": 8.5457399,
+        "recorded_at": "2026-11-25T00:19:48.483474Z"
+      },
+      {
+        "latitude": 47.3980957,
+        "longitude": 8.5457372,
+        "recorded_at": "2026-11-25T00:19:49.041453Z"
+      },
+      {
+        "latitude": 47.3980836,
+        "longitude": 8.5457338,
+        "recorded_at": "2026-11-25T00:19:49.604501Z"
+      },
+      {
+        "latitude": 47.3980674,
+        "longitude": 8.5457295,
+        "recorded_at": "2026-11-25T00:19:50.174713Z"
+      },
+      {
+        "latitude": 47.3980495,
+        "longitude": 8.5457241,
+        "recorded_at": "2026-11-25T00:19:50.732651Z"
+      },
+      {
+        "latitude": 47.398032,
+        "longitude": 8.5457175,
+        "recorded_at": "2026-11-25T00:19:51.293201Z"
+      },
+      {
+        "latitude": 47.398015,
+        "longitude": 8.5457098,
+        "recorded_at": "2026-11-25T00:19:51.849820Z"
+      },
+      {
+        "latitude": 47.3979966,
+        "longitude": 8.5457015,
+        "recorded_at": "2026-11-25T00:19:52.413613Z"
+      },
+      {
+        "latitude": 47.3979772,
+        "longitude": 8.5456931,
+        "recorded_at": "2026-11-25T00:19:52.970079Z"
+      },
+      {
+        "latitude": 47.3979585,
+        "longitude": 8.545685,
+        "recorded_at": "2026-11-25T00:19:53.528563Z"
+      },
+      {
+        "latitude": 47.3979392,
+        "longitude": 8.545676,
+        "recorded_at": "2026-11-25T00:19:54.086614Z"
+      },
+      {
+        "latitude": 47.3979188,
+        "longitude": 8.5456674,
+        "recorded_at": "2026-11-25T00:19:54.645631Z"
+      },
+      {
+        "latitude": 47.397899,
+        "longitude": 8.5456589,
+        "recorded_at": "2026-11-25T00:19:55.207335Z"
+      },
+      {
+        "latitude": 47.3978789,
+        "longitude": 8.54565,
+        "recorded_at": "2026-11-25T00:19:55.763052Z"
+      },
+      {
+        "latitude": 47.397858,
+        "longitude": 8.5456398,
+        "recorded_at": "2026-11-25T00:19:56.324916Z"
+      },
+      {
+        "latitude": 47.3978378,
+        "longitude": 8.5456304,
+        "recorded_at": "2026-11-25T00:19:56.881089Z"
+      },
+      {
+        "latitude": 47.3978172,
+        "longitude": 8.5456217,
+        "recorded_at": "2026-11-25T00:19:57.461602Z"
+      },
+      {
+        "latitude": 47.3977996,
+        "longitude": 8.5456142,
+        "recorded_at": "2026-11-25T00:19:58.045940Z"
+      },
+      {
+        "latitude": 47.3977865,
+        "longitude": 8.5456086,
+        "recorded_at": "2026-11-25T00:19:58.609651Z"
+      },
+      {
+        "latitude": 47.3977752,
+        "longitude": 8.545603,
+        "recorded_at": "2026-11-25T00:19:59.181845Z"
+      },
+      {
+        "latitude": 47.3977648,
+        "longitude": 8.5455986,
+        "recorded_at": "2026-11-25T00:19:59.744605Z"
+      },
+      {
+        "latitude": 47.3977566,
+        "longitude": 8.5455954,
+        "recorded_at": "2026-11-25T00:20:00.302709Z"
+      },
+      {
+        "latitude": 47.3977494,
+        "longitude": 8.5455929,
+        "recorded_at": "2026-11-25T00:20:00.861123Z"
+      },
+      {
+        "latitude": 47.3977435,
+        "longitude": 8.5455911,
+        "recorded_at": "2026-11-25T00:20:01.420814Z"
+      },
+      {
+        "latitude": 47.3977389,
+        "longitude": 8.5455903,
+        "recorded_at": "2026-11-25T00:20:01.981384Z"
+      },
+      {
+        "latitude": 47.3977353,
+        "longitude": 8.5455884,
+        "recorded_at": "2026-11-25T00:20:02.541314Z"
+      },
+      {
+        "latitude": 47.3977326,
+        "longitude": 8.5455868,
+        "recorded_at": "2026-11-25T00:20:03.099059Z"
+      },
+      {
+        "latitude": 47.3977312,
+        "longitude": 8.5455865,
+        "recorded_at": "2026-11-25T00:20:03.658445Z"
+      },
+      {
+        "latitude": 47.397731,
+        "longitude": 8.5455866,
+        "recorded_at": "2026-11-25T00:20:04.214647Z"
+      },
+      {
+        "latitude": 47.3977314,
+        "longitude": 8.5455864,
+        "recorded_at": "2026-11-25T00:20:04.773912Z"
+      },
+      {
+        "latitude": 47.3977322,
+        "longitude": 8.5455864,
+        "recorded_at": "2026-11-25T00:20:05.330757Z"
+      },
+      {
+        "latitude": 47.3977328,
+        "longitude": 8.545587,
+        "recorded_at": "2026-11-25T00:20:05.886132Z"
+      },
+      {
+        "latitude": 47.3977336,
+        "longitude": 8.545587,
+        "recorded_at": "2026-11-25T00:20:06.446025Z"
+      },
+      {
+        "latitude": 47.3977345,
+        "longitude": 8.5455874,
+        "recorded_at": "2026-11-25T00:20:07.006573Z"
+      },
+      {
+        "latitude": 47.3977355,
+        "longitude": 8.5455873,
+        "recorded_at": "2026-11-25T00:20:07.563806Z"
+      },
+      {
+        "latitude": 47.3977365,
+        "longitude": 8.545588,
+        "recorded_at": "2026-11-25T00:20:08.121916Z"
+      },
+      {
+        "latitude": 47.3977376,
+        "longitude": 8.5455889,
+        "recorded_at": "2026-11-25T00:20:08.680472Z"
+      },
+      {
+        "latitude": 47.3977386,
+        "longitude": 8.5455895,
+        "recorded_at": "2026-11-25T00:20:09.241677Z"
+      },
+      {
+        "latitude": 47.3977392,
+        "longitude": 8.5455916,
+        "recorded_at": "2026-11-25T00:20:09.800944Z"
+      },
+      {
+        "latitude": 47.3977398,
+        "longitude": 8.5455937,
+        "recorded_at": "2026-11-25T00:20:10.356651Z"
+      },
+      {
+        "latitude": 47.3977403,
+        "longitude": 8.545596,
+        "recorded_at": "2026-11-25T00:20:10.915614Z"
+      },
+      {
+        "latitude": 47.3977408,
+        "longitude": 8.5455976,
+        "recorded_at": "2026-11-25T00:20:11.471218Z"
+      },
+      {
+        "latitude": 47.3977412,
+        "longitude": 8.5455989,
+        "recorded_at": "2026-11-25T00:20:12.028644Z"
+      },
+      {
+        "latitude": 47.3977413,
+        "longitude": 8.5455989,
+        "recorded_at": "2026-11-25T00:20:12.584196Z"
+      },
+      {
+        "latitude": 47.3977412,
+        "longitude": 8.5455996,
+        "recorded_at": "2026-11-25T00:20:13.150518Z"
+      },
+      {
+        "latitude": 47.3977409,
+        "longitude": 8.5456008,
+        "recorded_at": "2026-11-25T00:20:13.713355Z"
+      },
+      {
+        "latitude": 47.397741,
+        "longitude": 8.5456005,
+        "recorded_at": "2026-11-25T00:20:14.268387Z"
+      },
+      {
+        "latitude": 47.3977413,
+        "longitude": 8.5456003,
+        "recorded_at": "2026-11-25T00:20:14.830079Z"
+      },
+      {
+        "latitude": 47.3977416,
+        "longitude": 8.5456002,
+        "recorded_at": "2026-11-25T00:20:15.386231Z"
+      },
+      {
+        "latitude": 47.3977416,
+        "longitude": 8.5455997,
+        "recorded_at": "2026-11-25T00:20:15.944625Z"
+      },
+      {
+        "latitude": 47.3977417,
+        "longitude": 8.5455991,
+        "recorded_at": "2026-11-25T00:20:16.500917Z"
+      },
+      {
+        "latitude": 47.3977418,
+        "longitude": 8.5455973,
+        "recorded_at": "2026-11-25T00:20:17.058642Z"
+      },
+      {
+        "latitude": 47.397742,
+        "longitude": 8.5455945,
+        "recorded_at": "2026-11-25T00:20:17.614712Z"
+      },
+      {
+        "latitude": 47.397742,
+        "longitude": 8.5455926,
+        "recorded_at": "2026-11-25T00:20:18.170314Z"
+      },
+      {
+        "latitude": 47.3977423,
+        "longitude": 8.5455919,
+        "recorded_at": "2026-11-25T00:20:18.727952Z"
+      },
+      {
+        "latitude": 47.3977423,
+        "longitude": 8.5455924,
+        "recorded_at": "2026-11-25T00:20:19.285907Z"
+      },
+      {
+        "latitude": 47.3977423,
+        "longitude": 8.5455927,
+        "recorded_at": "2026-11-25T00:20:19.845626Z"
+      },
+      {
+        "latitude": 47.3977419,
+        "longitude": 8.5455924,
+        "recorded_at": "2026-11-25T00:20:20.401746Z"
+      },
+      {
+        "latitude": 47.3977416,
+        "longitude": 8.5455923,
+        "recorded_at": "2026-11-25T00:20:20.957681Z"
+      },
+      {
+        "latitude": 47.3977416,
+        "longitude": 8.5455931,
+        "recorded_at": "2026-11-25T00:20:21.519492Z"
+      },
+      {
+        "latitude": 47.3977417,
+        "longitude": 8.5455938,
+        "recorded_at": "2026-11-25T00:20:22.080579Z"
+      },
+      {
+        "latitude": 47.3977415,
+        "longitude": 8.545593,
+        "recorded_at": "2026-11-25T00:20:22.637604Z"
+      },
+      {
+        "latitude": 47.3977416,
+        "longitude": 8.5455924,
+        "recorded_at": "2026-11-25T00:20:23.195380Z"
+      },
+      {
+        "latitude": 47.3977419,
+        "longitude": 8.5455939,
+        "recorded_at": "2026-11-25T00:20:23.756674Z"
+      },
+      {
+        "latitude": 47.397742,
+        "longitude": 8.5455962,
+        "recorded_at": "2026-11-25T00:20:24.324740Z"
+      },
+      {
+        "latitude": 47.3977421,
+        "longitude": 8.5455978,
+        "recorded_at": "2026-11-25T00:20:24.888170Z"
+      },
+      {
+        "latitude": 47.3977418,
+        "longitude": 8.5455981,
+        "recorded_at": "2026-11-25T00:20:25.446058Z"
+      },
+      {
+        "latitude": 47.3977414,
+        "longitude": 8.5455981,
+        "recorded_at": "2026-11-25T00:20:26.009215Z"
+      },
+      {
+        "latitude": 47.397741,
+        "longitude": 8.5455982,
+        "recorded_at": "2026-11-25T00:20:26.573764Z"
+      },
+      {
+        "latitude": 47.3977406,
+        "longitude": 8.5455983,
+        "recorded_at": "2026-11-25T00:20:27.138185Z"
+      },
+      {
+        "latitude": 47.3977403,
+        "longitude": 8.5455987,
+        "recorded_at": "2026-11-25T00:20:27.709772Z"
+      },
+      {
+        "latitude": 47.3977401,
+        "longitude": 8.5455999,
+        "recorded_at": "2026-11-25T00:20:28.267301Z"
+      },
+      {
+        "latitude": 47.3977399,
+        "longitude": 8.5456008,
+        "recorded_at": "2026-11-25T00:20:28.825579Z"
+      },
+      {
+        "latitude": 47.3977398,
+        "longitude": 8.5456004,
+        "recorded_at": "2026-11-25T00:20:29.388380Z"
+      },
+      {
+        "latitude": 47.39774,
+        "longitude": 8.5455998,
+        "recorded_at": "2026-11-25T00:20:29.957894Z"
+      },
+      {
+        "latitude": 47.3977404,
+        "longitude": 8.5455999,
+        "recorded_at": "2026-11-25T00:20:30.524197Z"
+      },
+      {
+        "latitude": 47.3977407,
+        "longitude": 8.5456002,
+        "recorded_at": "2026-11-25T00:20:31.087320Z"
+      },
+      {
+        "latitude": 47.3977412,
+        "longitude": 8.5456004,
+        "recorded_at": "2026-11-25T00:20:31.647355Z"
+      }
+    ]
+  ],
+  "events": [
+    {
+      "id": "036584dd-90f1-4504-91db-0c88b2692627",
+      "event_id": null,
+      "actor_user_id": "f1a90b01-5279-4137-83c3-d0b6b903913a",
+      "actor_type": "ADMIN",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ASSOCIATED",
+      "severity": "INFO",
+      "message": "Acompanhamento associado pelo administrador.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:18:47.944517+00:00",
+        "mission_version": 1,
+        "mission_sha256": "3d7d84534eb41b93f2fd716a8aa3f01cd1eed0bfde9a6d3b5110d257e97d24c9",
+        "exported_plan_sha256": "591e741160bea4c7380b8222027a21a3696b2e2b1d6d83310ef9f0a6c965a1e8",
+        "export_event_id": "fdbdc3a0-04ce-4897-9cb2-47384c982c15",
+        "system_id": 1,
+        "component_id": 1
+      },
+      "created_at": "2026-11-25T00:18:47.947083Z"
+    },
+    {
+      "id": "9e69239c-84bb-4ebb-a480-41054dffdf1f",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ARMED",
+      "severity": "INFO",
+      "message": "Armamento observado no heartbeat.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:06.431098+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:06.438284Z"
+    },
+    {
+      "id": "ce1bdd40-9ce1-46cb-98c4-bba28fc59740",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ARMED_ON_GROUND",
+      "severity": "INFO",
+      "message": "Aeronave armada em solo.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:06.431098+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:06.438288Z"
+    },
+    {
+      "id": "32d6845b-7b99-4841-b4d5-05b2937ae753",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_TAKING_OFF",
+      "severity": "INFO",
+      "message": "PX4 informou decolagem.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:12.681255+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:12.685083Z"
+    },
+    {
+      "id": "c9807122-d8be-466d-b312-938584ea767c",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_AIRBORNE",
+      "severity": "INFO",
+      "message": "Aeronave observada em voo.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:22.760555+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:22.764374Z"
+    },
+    {
+      "id": "1244c041-4b09-4ab4-b3c8-606cb801f8fa",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_MISSION",
+      "severity": "INFO",
+      "message": "Execução da missão observada.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:22.760555+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:22.764379Z"
+    },
+    {
+      "id": "3f44a69c-4398-4122-964c-2d5a7f123b13",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ITEM_REACHED",
+      "severity": "INFO",
+      "message": "PX4 informou item MAVLink 0 alcançado.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:22.741031+00:00",
+        "sequence": 0
+      },
+      "created_at": "2026-11-25T00:19:22.779546Z"
+    },
+    {
+      "id": "08b57eca-206c-404d-93ce-5689425f530e",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_DESTINATION_ESTIMATED",
+      "severity": "INFO",
+      "message": "Proximidade do destino observada por posição.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:35.340532+00:00",
+        "estimated": true
+      },
+      "created_at": "2026-11-25T00:19:35.345324Z"
+    },
+    {
+      "id": "5cdb0995-1125-4f7d-b5a0-630520e82ad6",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_MISSION_COMPLETE_REPORTED",
+      "severity": "INFO",
+      "message": "PX4 informou itens da missão concluídos.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:37.050744+00:00"
+      },
+      "created_at": "2026-11-25T00:19:37.055954Z"
+    },
+    {
+      "id": "2946ac8d-0daa-42ea-9b00-0a37cde1d876",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_AIRBORNE",
+      "severity": "INFO",
+      "message": "Aeronave em voo.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:37.050744+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:37.055960Z"
+    },
+    {
+      "id": "c5df8549-0104-4877-a9bb-6aa2e65bbd89",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ITEM_REACHED",
+      "severity": "INFO",
+      "message": "PX4 informou item MAVLink 2 alcançado.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:37.033121+00:00",
+        "sequence": 2
+      },
+      "created_at": "2026-11-25T00:19:37.077776Z"
+    },
+    {
+      "id": "7015d226-f310-4c7f-ae79-1de6a58265b5",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_RETURNING",
+      "severity": "INFO",
+      "message": "Retorno observado.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:38.233301+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:38.237108Z"
+    },
+    {
+      "id": "c4faf0c0-3167-429b-b06b-31a532d2ede9",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_LANDING",
+      "severity": "INFO",
+      "message": "PX4 informou pouso em andamento.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:19:57.461602+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:19:57.467751Z"
+    },
+    {
+      "id": "04a99395-625d-49a6-b74f-52ecb0601375",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_LANDED",
+      "severity": "INFO",
+      "message": "PX4 informou aeronave em solo após o voo.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:20:28.267301+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:20:28.271238Z"
+    },
+    {
+      "id": "8600b65d-fb72-4b98-8662-1eb8faf8d648",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_DISARMED",
+      "severity": "INFO",
+      "message": "Desarmamento observado no heartbeat.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:20:30.524197+00:00",
+        "estimated": false
+      },
+      "created_at": "2026-11-25T00:20:30.529727Z"
+    },
+    {
+      "id": "64172629-2a6e-4532-aab9-87a635ec5e27",
+      "event_id": null,
+      "actor_user_id": null,
+      "actor_type": "GATEWAY",
+      "order_id": "d3a1cf2a-36b0-47ea-8f53-618c4dcea0bf",
+      "mission_id": "a48ffbb0-6a95-43d9-b1d8-7e6c99e0a2dd",
+      "vehicle_id": "a7edb7d0-0001-4ce3-a438-11be31f1c935",
+      "event_type": "FLIGHT_ENDED",
+      "severity": "INFO",
+      "message": "Voo encerrado.",
+      "metadata": {
+        "flight_id": "9765f290-8b2b-4189-841f-fdf17bcaacb0",
+        "observed_at": "2026-11-25T00:20:30.524197+00:00",
+        "normal_completion": false
+      },
+      "created_at": "2026-11-25T00:20:30.529746Z"
+    }
+  ]
+}

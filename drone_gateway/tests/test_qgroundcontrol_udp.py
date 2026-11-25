@@ -7,6 +7,7 @@ import pytest
 from pymavlink import mavutil
 
 from app.core.config import MavlinkMode, Settings
+from app.main import runtime_observation_only
 from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway
 from app.models import OperationalSource
 
@@ -31,7 +32,9 @@ async def test_px4_forward_receives_mavlink_on_loopback_without_sending(mode: Ma
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
         sender.bind(("127.0.0.1", 0))
         sender.setblocking(False)
-        connect_task = asyncio.create_task(gateway.connect())
+        connect_task = asyncio.create_task(
+            gateway.connect(passive=runtime_observation_only(settings))
+        )
         try:
             for _ in range(30):
                 if gateway._connection is not None or connect_task.done():
@@ -51,6 +54,44 @@ async def test_px4_forward_receives_mavlink_on_loopback_without_sending(mode: Ma
             assert health.connection_topology == mode.value
             assert health.source is OperationalSource.UNKNOWN
             assert health.serial_port is None
+            assert health.current_ground_speed_m_s is None
+            assert health.battery_percent is None
+            position = encoder.global_position_int_encode(
+                0, -231170000, -465500000, 710000, 10000, 300, 400, 0, 9000
+            )
+            sender.sendto(position.pack(encoder), ("127.0.0.1", port))
+            for _ in range(30):
+                health = await gateway.read_health()
+                if health.current_ground_speed_m_s is not None:
+                    break
+                await asyncio.sleep(0.01)
+            assert health.current_latitude == pytest.approx(-23.117)
+            assert health.current_altitude_m == 10
+            assert health.current_ground_speed_m_s == 5
+            assert health.battery_percent is None
+            assert health.px4_flight is not None
+            assert health.px4_flight.position_at is not None
+            assert health.px4_flight.landed_state is None
+            assert health.px4_flight.sequence is None
+            extended = encoder.extended_sys_state_encode(0, 2)
+            current = encoder.mission_current_encode(1)
+            reached = encoder.mission_item_reached_encode(1)
+            for message in (extended, current, reached):
+                sender.sendto(message.pack(encoder), ("127.0.0.1", port))
+            for _ in range(30):
+                health = await gateway.read_health()
+                if health.px4_flight and health.px4_flight.sequence == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert health.px4_flight is not None
+            assert health.px4_flight.landed_state == 2
+            assert health.px4_flight.sequence == 1
+            assert health.px4_flight.mission_at is not None
+            assert [
+                event.metadata.get("system_id")
+                for event in await gateway.drain_events()
+                if event.event_type == "MAVLINK_MISSION_ITEM_REACHED"
+            ] == [42]
             with pytest.raises(BlockingIOError):
                 sender.recvfrom(4096)
         finally:

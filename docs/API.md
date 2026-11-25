@@ -2,7 +2,7 @@
 
 Base: `/api/v1`. Respostas JSON usam UTC ISO-8601, UUID em texto e dinheiro como decimal serializado em string.
 
-## Revisão de origem em pré-voo
+## Revisão de origem em pré-voo (contrato legado)
 
 `POST /admin/missions/{id}/revise-origin` exige ADMIN e `Idempotency-Key`.
 Corpo estrito: `expected_version`, `expected_sha256`, `origin_latitude`,
@@ -158,6 +158,34 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 
 ## Administração
 
+`POST /admin/missions/{id}/qgroundcontrol-plan` requer `ADMIN` e corpo com
+`expected_version`, `expected_sha256` da missão e `home_amsl_m` opcional.
+Retorna anexo `pedido-{order_id}-v{version}-{hash}.plan`, `X-Plan-SHA256` e
+`Cache-Control: no-store`. Origem e destino vêm da revisão persistida. A
+sequência Takeoff, Waypoint com 5 s e RTL conserva a altitude relativa
+configurada. Versão/hash divergentes retornam `409`. O evento
+`QGROUNDCONTROL_PLAN_EXPORTED` identifica a exportação e o campo
+`qgroundcontrol_plan_exported_at` informa a última para a revisão atual.
+
+`POST /admin/orders/{id}/confirm-delivery` requer `ADMIN` e `evidence` em
+texto. Para os estados elegíveis, conclui o pedido com
+`ORDER_DELIVERY_CONFIRMED` e permite repetir sem duplicar o evento. A
+missão conserva seu estado. Upload e comandos do PX4 ficam no QGroundControl.
+
+`POST /admin/missions/{id}/observed-flight` associa o acompanhamento com
+`vehicle_id`, `expected_version` e `expected_sha256` do registro da missão.
+Exige `ADMIN`, exportação da revisão atual e heartbeat recente de PX4 físico ou SITL identificado.
+A operação grava ator, veículo, pedido e exportação em `FLIGHT_ASSOCIATED`.
+`GET` na mesma rota e em `/admin/vehicles/{id}/observed-flight` retorna a
+última sessão observada, ou `null`. O resultado inclui estado, proveniência
+do vínculo, dados observados, trechos do trajeto e eventos. `stale` indica
+perda de atualidade.
+
+Rotas de escrita de comandos e claims adiante estão restritas a
+`APP_ENV=test`. Em operação as filas `/gateway/missions/authorized` e
+`/gateway/commands/pending` retornam listas vazias a gateways autenticados,
+inclusive com registros antigos. O roteador físico de ARM não é montado.
+
 | Método e rota | Pré-condição |
 |---|---|
 | `GET /admin/orders` | `ADMIN` |
@@ -165,9 +193,11 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `POST /admin/orders/{id}/approve` | pendente |
 | `POST /admin/orders/{id}/reject` | pendente + motivo |
 | `POST /admin/orders/{id}/prepare-mission` | aprovado |
+| `POST /admin/orders/{id}/confirm-delivery` | estado elegível, evidência e `ADMIN` |
 | `GET /admin/missions` | `ADMIN` |
 | `GET /admin/missions/{id}` | `ADMIN` |
-| `GET /admin/missions/{id}/export` | missão gerada |
+| `POST /admin/missions/{id}/qgroundcontrol-plan` | versão/hash atuais e `ADMIN` |
+| `GET /admin/missions/{id}/export` | formato WPL legado |
 | `POST /admin/missions/{id}/qgroundcontrol-draft` | missão existente, com telemetria opcional |
 | `GET /admin/missions/{id}/qgroundcontrol-review` | `ADMIN` e revisão da versão atual |
 | `POST /admin/missions/{id}/mark-under-review` | exportada |
@@ -183,7 +213,7 @@ Os POSTs de persistência do checkout aceitam `Idempotency-Key`. Repetir a mesma
 | `GET /admin/events` | `ADMIN` e paginação |
 | `GET /admin/telemetry` | `ADMIN`, filtro opcional por missão |
 
-O rascunho `.plan` do QGroundControl contém Takeoff, um Waypoint no ponto
+O endpoint legado `qgroundcontrol-draft` contém Takeoff, um Waypoint no ponto
 confirmado do pedido com 5 segundos em `param1` e Return To Launch (RTL).
 O corpo aceita `{}`. Sem posição recente, o rascunho usa a origem planejada
 da missão. O parâmetro `home_amsl_m` é opcional e completa a altitude quando
@@ -204,8 +234,7 @@ O diagnóstico opcional `px4_diagnostics` inclui `current_mode_prearm_ok`,
 `rtl_type`, `rtl_return_alt_m`, `rtl_descend_alt_m`, `rtl_land_delay_s`,
 `rtl_cone_angle_deg` e `rtl_min_distance_m`.
 Os campos ausentes ou expirados permanecem nulos. O pré-arm se refere ao modo
-`flight_mode` da amostra. Os critérios de autorização continuam usando
-`preflight_ok` e `rtl_configured`.
+`flight_mode` da amostra. Autorização legada de teste pode usar `preflight_ok` e `rtl_configured`. A operação real exibe observações sem avaliar aptidão.
 
 As respostas administrativas de missão incluem `authorization` com o último registro real, quando existente: identificadores da autorização e do administrador, nome real do administrador e operador, status, versão, emissão, expiração e consumo. Isso preserva a evidência após reload sem expor checklist bruto nem fabricar nomes no navegador.
 
@@ -285,6 +314,17 @@ registrado após correlação da resposta com o comando e confirmação do estad
 esperado. Falhas e timeouts permanecem visíveis.
 
 ## Gateway
+
+Em observação, o gateway envia `POST /gateway/heartbeat` e, quando houver
+eventos, `POST /gateway/vehicles/{vehicle_id}/observations`. Saúde inclui
+`px4_flight` com estado de solo, índices e extensões de missão quando
+recebidos, e carimbos das posições e da missão.
+`current_ground_speed_m_s` em m/s quando recebida com posição atual. A API
+preserva o horário da leitura e o painel indica campos ausentes e dados
+desatualizados. O backend associa progresso físico somente a evidência
+que identifica a revisão atual, sem concluir entrega.
+
+As demais rotas abaixo incluem contratos usados em testes isolados.
 
 `POST /gateway/vehicles/{vehicle_id}/observations` recebe até 20 observações
 MAVLink normalizadas do veículo associado ao gateway autenticado. Os tipos

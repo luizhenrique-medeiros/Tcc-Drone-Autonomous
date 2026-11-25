@@ -8,10 +8,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.enums import MissionStatus
+from app.core.enums import GatewayCommandStatus, GatewayCommandType, MissionStatus
 from app.database.session import SessionLocal
+from app.main import app
 from app.modules.approvals.models import FlightAuthorization
-from app.modules.missions.models import Mission
+from app.modules.missions.models import GatewayCommand, Mission
 from app.modules.missions.qgroundcontrol_plan import (
     PlanPosition,
     build_reviewed_candidate,
@@ -20,6 +21,123 @@ from app.modules.missions.qgroundcontrol_plan import (
 )
 from app.modules.system_events.models import SystemEvent
 from tests.test_full_flow import _create_submitted_order
+
+
+def test_operational_export_and_delivery_confirmation(
+    client: TestClient,
+    customer_headers: dict[str, str],
+    admin_headers: dict[str, str],
+    gateway_headers: dict[str, str],
+    valid_point_payload: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings().model_copy(update={"app_env": "development"})
+    monkeypatch.setitem(app.dependency_overrides, get_settings, lambda: settings)
+    order = _create_submitted_order(client, customer_headers, valid_point_payload)
+    order_path = f"/api/v1/admin/orders/{order['id']}"
+    assert client.post(f"{order_path}/approve", headers=admin_headers).status_code == 200
+    mission = client.post(f"{order_path}/prepare-mission", headers=admin_headers).json()
+    mission_path = f"/api/v1/admin/missions/{mission['id']}"
+    assert mission["status"] == "GENERATED"
+    assert mission["qgroundcontrol_plan_exported_at"] is None
+
+    revision = {
+        "expected_version": mission["version"],
+        "expected_sha256": mission["mission_sha256"],
+    }
+    download = client.post(
+        f"{mission_path}/qgroundcontrol-plan", headers=admin_headers, json=revision
+    )
+    assert download.status_code == 200, download.text
+    plan = download.json()["mission"]
+    assert f"pedido-{order['id']}-v{mission['version']}-" in download.headers["content-disposition"]
+    assert download.headers["x-plan-sha256"] == hashlib.sha256(download.content).hexdigest()
+    assert plan["plannedHomePosition"] == [
+        float(mission["origin_latitude"]),
+        float(mission["origin_longitude"]),
+        None,
+    ]
+    assert [item["command"] for item in plan["items"]] == [22, 16, 20]
+    assert [item["frame"] for item in plan["items"]] == [3, 3, 2]
+    assert plan["items"][1]["params"][0] == 5
+    assert plan["items"][1]["params"][4:] == [
+        float(mission["destination_latitude"]),
+        float(mission["destination_longitude"]),
+        float(mission["takeoff_altitude_m"]),
+    ]
+    detail = client.get(mission_path, headers=admin_headers).json()
+    assert detail["qgroundcontrol_plan_exported_at"]
+    assert detail["status"] == "GENERATED"
+    assert client.get(order_path, headers=admin_headers).json()["status"] == "MISSION_READY"
+    stale_version = {**revision, "expected_version": mission["version"] + 1}
+    assert (
+        client.post(
+            f"{mission_path}/qgroundcontrol-plan", headers=admin_headers, json=stale_version
+        ).status_code
+        == 409
+    )
+
+    with SessionLocal() as db:
+        export_event = db.scalar(
+            select(SystemEvent).where(
+                SystemEvent.order_id == UUID(order["id"]),
+                SystemEvent.event_type == "QGROUNDCONTROL_PLAN_EXPORTED",
+            )
+        )
+        assert export_event is not None and export_event.actor_user_id is not None
+        previous_command = GatewayCommand(
+            mission_id=UUID(mission["id"]),
+            requested_by_id=export_event.actor_user_id,
+            command=GatewayCommandType.ARM,
+            gateway_id="gateway-sitl-1",
+        )
+        db.add(previous_command)
+        db.flush()
+        previous_command_id = previous_command.id
+        db.commit()
+    assert client.get("/api/v1/gateway/missions/authorized", headers=gateway_headers).json() == []
+    assert (
+        client.get(
+            "/api/v1/gateway/commands/pending?gateway_id=gateway-sitl-1", headers=gateway_headers
+        ).json()
+        == []
+    )
+    assert (
+        client.post(
+            f"/api/v1/gateway/missions/{mission['id']}/claim",
+            headers=gateway_headers,
+            json={"gateway_id": "gateway-sitl-1"},
+        ).status_code
+        == 404
+    )
+    assert client.post(f"{mission_path}/arm", headers=admin_headers).status_code == 404
+    assert client.get("/api/v1/admin/bench-arm", headers=admin_headers).status_code == 404
+    evidence = {"evidence": "Recebimento confirmado pelo destinatário."}
+    assert (
+        client.post(
+            f"{order_path}/confirm-delivery", headers=customer_headers, json=evidence
+        ).status_code
+        == 403
+    )
+    for _ in range(2):
+        delivered = client.post(
+            f"{order_path}/confirm-delivery", headers=admin_headers, json=evidence
+        )
+        assert delivered.status_code == 200, delivered.text
+        assert delivered.json()["status"] == "COMPLETED"
+    assert client.get(mission_path, headers=admin_headers).json()["status"] == "GENERATED"
+    with SessionLocal() as db:
+        previous_command_after = db.get(GatewayCommand, previous_command_id)
+        assert previous_command_after is not None
+        assert previous_command_after.status is GatewayCommandStatus.PENDING
+        (confirmation,) = db.scalars(
+            select(SystemEvent).where(
+                SystemEvent.order_id == UUID(order["id"]),
+                SystemEvent.event_type == "ORDER_DELIVERY_CONFIRMED",
+            )
+        ).all()
+        assert confirmation.actor_user_id is not None
+        assert confirmation.event_metadata == evidence
 
 
 def test_draft_uses_current_position_and_never_changes_mission_state(

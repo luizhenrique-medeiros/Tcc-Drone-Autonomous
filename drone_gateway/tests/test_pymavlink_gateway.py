@@ -19,7 +19,13 @@ from app.core.exceptions import (
     VehicleTimeoutError,
 )
 from app.mavlink.pymavlink_gateway import PymavlinkVehicleGateway, _mission_plan_id
-from app.models import AuthorizedMission, ConnectionState, MissionStatus, MissionWaypoint
+from app.models import (
+    AuthorizedMission,
+    BenchArmClaim,
+    ConnectionState,
+    MissionStatus,
+    MissionWaypoint,
+)
 from app.telemetry.normalizer import normalize_telemetry
 
 
@@ -315,6 +321,99 @@ class AckAfterCommandConnection(FakeConnection):
         if kwargs.get("blocking") is False:
             return None
         return super().recv_match(**kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "expected_ack", "armed_confirmed", "writes"),
+    [
+        ("accepted", 0, True, 1),
+        ("rejected", 2, False, 1),
+        ("timeout", None, False, 1),
+        ("wrong_ack_source", None, False, 1),
+        ("wrong_target", None, False, 0),
+        ("expired", None, False, 0),
+        ("reconnected", None, False, 0),
+    ],
+)
+async def test_physical_bench_arm_with_substituted_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    expected_ack: int | None,
+    armed_confirmed: bool,
+    writes: int,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        autopilot_system="PX4",
+        mavlink_mode=MavlinkMode.PX4_BENCH_ARM,
+        mavlink_connection="COM42",
+        mavlink_target_system_id=1,
+        mavlink_target_component_id=1,
+        allow_vehicle_arm=True,
+        real_hardware_acknowledged=True,
+        gateway_api_key="isolated-test-gateway-key",
+        mission_command_timeout_seconds=0.03,
+    )
+    messages = [FakeMessage("HEARTBEAT", autopilot=12, base_mode=0)]
+    if case in {"accepted", "rejected", "wrong_ack_source"}:
+        messages.append(
+            FakeMessage(
+                "COMMAND_ACK",
+                command=400,
+                source_system=2 if case == "wrong_ack_source" else 1,
+                result=2 if case == "rejected" else 0,
+            )
+        )
+    if case in {"accepted", "timeout", "wrong_ack_source"}:
+        messages.append(FakeMessage("HEARTBEAT", autopilot=12, base_mode=128))
+
+    connection = AckAfterCommandConnection(messages)
+    mavutil = fake_mavutil()
+    mavutil.mavlink_connection = lambda *args, **kwargs: connection
+    gateway = PymavlinkVehicleGateway(settings)
+    monkeypatch.setattr(gateway, "_load_mavutil", lambda: mavutil)
+    monkeypatch.setattr(gateway, "_validate_serial_port_exists", lambda: None)
+    await gateway.connect()
+    snapshot = await gateway.read_health()
+    assert snapshot.source.value == "HARDWARE_REAL"
+    assert snapshot.bench_arm_session_id is not None
+    assert snapshot.flight_commands_enabled is False
+    assert not connection.mav.calls
+
+    command = BenchArmClaim(
+        id=uuid4(),
+        vehicle_id=uuid4(),
+        session_id=uuid4() if case == "reconnected" else snapshot.bench_arm_session_id,
+        target_system=2 if case == "wrong_target" else 1,
+        target_component=1,
+        expires_at=datetime.now(UTC) + timedelta(seconds=-1 if case == "expired" else 1),
+    )
+    evidence = await gateway.arm_bench(command)
+    assert evidence.transmitted is bool(writes)
+    assert evidence.ack_result == expected_ack
+    assert evidence.armed_confirmed is armed_confirmed
+    assert (
+        connection.mav.calls
+        == [("command_long_send", (1, 1, 400, 0, 1, 0, 0, 0, 0, 0, 0))] * writes
+    )
+    await gateway.close()
+
+
+@pytest.mark.parametrize(
+    "flag", ["allow_flight_commands", "allow_mission_start", "allow_mission_upload"]
+)
+def test_bench_profile_rejects_mission_permissions(flag: str) -> None:
+    with pytest.raises(ConfigurationError, match="somente a permissão específica de ARM"):
+        Settings(
+            _env_file=None,
+            autopilot_system="PX4",
+            mavlink_mode=MavlinkMode.PX4_BENCH_ARM,
+            mavlink_connection="COM42",
+            mavlink_target_system_id=1,
+            mavlink_target_component_id=1,
+            **{flag: True},
+        )
 
 
 class QueuedArmConnection(AckAfterCommandConnection):
@@ -1780,6 +1879,45 @@ async def test_health_keeps_unreceived_mavlink_values_null_and_filters_other_veh
     assert health.battery_percent is None
     assert health.flight_mode is None
     assert health.armed is None
+
+
+@pytest.mark.asyncio
+async def test_passive_health_preserves_relative_altitude_accepted_by_backend() -> None:
+    gateway = PymavlinkVehicleGateway(
+        Settings(
+            _env_file=None,
+            autopilot_system="PX4",
+            mavlink_mode=MavlinkMode.QGROUNDCONTROL_FORWARD,
+            mavlink_connection="udpin:127.0.0.1:14445",
+        )
+    )
+    connection = FakeConnection()
+    gateway._connection = connection
+    gateway._mavutil = fake_mavutil()  # type: ignore[assignment]
+    gateway._passive_connection = True
+    gateway._last_heartbeat_monotonic = time.monotonic()
+    gateway._ingest_message(FakeMessage("GPS_RAW_INT", fix_type=3, satellites_visible=12))
+    gateway._ingest_message(
+        FakeMessage(
+            "GLOBAL_POSITION_INT",
+            lat=-231175000,
+            lon=-465502000,
+            alt=795_100,
+            relative_alt=-794_637,
+            vx=0,
+            vy=0,
+        )
+    )
+
+    health = await gateway.read_health()
+
+    assert health.connected is True
+    assert health.current_altitude_m == pytest.approx(-794.637)
+    assert health.current_amsl_m == pytest.approx(795.1)
+    assert health.current_latitude == pytest.approx(-23.1175)
+    assert health.gps_fix_type == 3
+    assert health.satellites == 12
+    assert connection.mav.calls == []
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.core.enums import UserRole
-from app.core.exceptions import AuthenticationError, AuthorizationError
+from app.core.exceptions import AuthenticationError, AuthorizationError, NotFoundError
 from app.core.security import decode_access_token
 from app.database.session import get_db
 from app.modules.users.models import User
@@ -18,6 +18,11 @@ from app.modules.users.models import User
 DatabaseSession = Annotated[Session, Depends(get_db)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 bearer = HTTPBearer(auto_error=False)
+
+
+def require_simulation_commands(settings: AppSettings) -> None:
+    if settings.app_env != "test":
+        raise NotFoundError("Comandos do gateway são exclusivos de testes de simulação")
 
 
 def get_current_user(
